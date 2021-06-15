@@ -1,2 +1,2 @@
 tdb_id,tdb_host,tdb_port,tdb_dbname,tdb_description
-base_test,localhost,5432,test_dest,"base de test"
+pg_test_db,localhost,5432,test_dest,"My lovely Postgres database to test Data2Pg with a Postgres source"

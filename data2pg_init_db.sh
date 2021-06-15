@@ -76,9 +76,7 @@ if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
   exit
 else
-  echo "  => target databases successfuly loaded. You can reload it on the data2pg database at any time, by executing the psql commands:"
-  echo "      truncate target_database;"
-  echo "      \copy data2pg.target_database FROM $TARGET_DB_FILE CSV HEADER"
+  echo "  => target databases successfuly loaded."
 fi
 echo ""
 echo "The data2pg database is ready"
