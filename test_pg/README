@@ -1,0 +1,24 @@
+Running tests with a Postgres source database !!!
+-------------------------------------------------
+
+cd <your_data2pg_directory>
+
+# Initialize the main data2pg database (This is done only once)
+./data2pg_init_db.sh
+
+# Prepare the test environment
+./test_pg/1-init.sh
+
+# Initialize the data2pg schema in the target Postgres Database
+./data2pg_init_schema.sh
+
+# Configure the migration
+./test_pg/3-configure.sh 
+
+# Migrate data in 2 steps
+perl data2pg.pl -c test_pg/batch0.conf --host localhost -p 5432 -a run -d
+perl data2pg.pl -c test_pg/batch1.conf --host localhost -p 5432 -a run -d
+
+# Compare data
+perl data2pg.pl -c test_pg/batch_compare.conf --host localhost -p 5432 -a run -d
+

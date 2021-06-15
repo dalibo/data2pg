@@ -1,0 +1,2 @@
+tdb_id,tdb_host,tdb_port,tdb_dbname,tdb_description
+base_test,localhost,5432,test_dest,"base de test"
