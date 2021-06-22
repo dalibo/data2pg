@@ -5,7 +5,7 @@
 
 \set ON_ERROR_STOP
 
---- 
+---
 --- Preliminary checks on roles.
 ---
 DO LANGUAGE plpgsql
@@ -49,11 +49,20 @@ SET search_path = data2pg;
 --
 -- The working_plan_type composite type is used as output record for the get_working_plan() function called by the data2pg.pl scheduler.
 CREATE TYPE working_plan_type AS (
-    wp_name                  TEXT,                    -- The name of the step
-    wp_sql_function          TEXT,                    -- The sql function to execute (for common cases)
-    wp_shell_script          TEXT,                    -- A shell script to execute (for specific purpose only)
-    wp_cost                  BIGINT,                  -- A relative cost indication used to plan the run (a table size for instance)
-    wp_parents               TEXT[]                   -- A set of parent steps that need to be completed to allow the step to start
+    wp_name                    TEXT,                    -- The name of the step
+    wp_sql_function            TEXT,                    -- The sql function to execute (for common cases)
+    wp_shell_script            TEXT,                    -- A shell script to execute (for specific purpose only)
+    wp_cost                    BIGINT,                  -- A relative cost indication used to plan the run (a table size for instance)
+    wp_parents                 TEXT[]                   -- A set of parent steps that need to be completed to allow the step to start
+);
+
+-- The step_report_type is used as output record for the elementary step functions called by the data2pg.pl scheduler.
+CREATE TYPE step_report_type AS (
+    sr_indicator               TEXT,                    -- The indicator, depending on the called function
+                                                        --   ('COPIED_ROWS'/'COPIED_SEQUENCES'/'COMPARED_ROWS'/...)
+    sr_value                   BIGINT,                  -- The numeric value associated to the message, if any
+    sr_rank                    SMALLINT,                -- The rank of the indicator when displayed by the scheduler
+    sr_is_main_indicator       BOOLEAN                  -- Boolean indicating whether the indicator is the main indicator to display by the monitoring clients
 );
 
 --
@@ -201,7 +210,7 @@ CREATE FUNCTION create_migration(
     p_userMappingOptions     TEXT
     )
     RETURNS INTEGER LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $create_migration$
 DECLARE
     v_serverName             TEXT;
@@ -338,7 +347,7 @@ CREATE FUNCTION drop_migration(
     p_migration               VARCHAR(16)
     )
     RETURNS INTEGER LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $drop_migration$
 DECLARE
     v_serverName             TEXT;
@@ -430,7 +439,7 @@ CREATE FUNCTION create_batch(
     p_batchType              TEXT DEFAULT 'COPY',     -- Batch type (either 'COPY', 'CHECK' or 'COMPARE')
     p_isFirstBatch           BOOLEAN DEFAULT TRUE     -- Boolean indicating whether the batch is the first one of the migration
     )
-    RETURNS INTEGER LANGUAGE plpgsql AS 
+    RETURNS INTEGER LANGUAGE plpgsql AS
 $create_batch$
 DECLARE
     v_firstBatch             TEXT;
@@ -789,7 +798,7 @@ CREATE FUNCTION register_table_part(
     p_table                  TEXT,               -- The table name
     p_partNum                INTEGER,            -- The part number, which is unique for a table. But part numbers are not necessarily in sequence
     p_condition              TEXT,               -- The condition that will filter the rows to copy at migration time. NULL if no row to copy
-    p_isFirstPart            BOOLEAN             -- Boolean indicating that the part is the first one for the table 
+    p_isFirstPart            BOOLEAN             -- Boolean indicating that the part is the first one for the table
                              DEFAULT FALSE,      --   (if TRUE, the pre-processing action is performed)
     p_isLastPart             BOOLEAN             -- Boolean indicating that the part is the last one for the table
                              DEFAULT FALSE       --   (if TRUE, the post-processing action is performed)
@@ -828,7 +837,7 @@ BEGIN
     END IF;
 -- Register the table part into the ... table_part table.
     INSERT INTO data2pg.table_part (
-            prt_schema, prt_table, prt_number, prt_condition, prt_is_first_step, prt_is_last_step 
+            prt_schema, prt_table, prt_number, prt_condition, prt_is_first_step, prt_is_last_step
         ) VALUES (
             p_schema, p_table, p_partNum, p_condition, p_isFirstPart, p_isLastPart
         );
@@ -907,7 +916,7 @@ BEGIN
             RAISE EXCEPTION 'register_sequences: The sequence %.% is already assigned to the migration %.',
                             p_schema, r_seq.relname, v_prevMigration;
         END IF;
--- For PostgreSQL source database only, 
+-- For PostgreSQL source database only,
 -- Create the foreign table mapped on the sequence in the source database to get its current value.
         IF v_sourceDbms = 'PostgreSQL' THEN
             EXECUTE format(
@@ -1271,7 +1280,7 @@ $assign_fkey_checks_to_batch$;
 CREATE FUNCTION complete_migration_configuration(
     p_migration              VARCHAR(16)
     )
-    RETURNS VOID LANGUAGE plpgsql AS 
+    RETURNS VOID LANGUAGE plpgsql AS
 $complete_migration_configuration$
 DECLARE
     v_batchArray             TEXT[];
@@ -1455,41 +1464,42 @@ CREATE FUNCTION copy_table(
     p_batchName                TEXT,
     p_step                     TEXT
     )
-    RETURNS BIGINT LANGUAGE plpgsql
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SET session_replication_role = 'replica'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $copy_table$
 DECLARE
-    v_rowsThreshold          CONSTANT BIGINT = 10000;      -- The estimated number of rows limit to drop and recreate the secondary indexes
-    v_schema                 TEXT;
-    v_table                  TEXT;
-    v_partNum                INTEGER;
-    v_partCondition          TEXT;
-    v_isFirstStep            BOOLEAN = TRUE;
-    v_isLastStep             BOOLEAN = TRUE;
-    v_foreignSchema          TEXT;
-    v_foreignTable           TEXT;
-    v_estimatedNbRows        BIGINT;
-    v_sortOrder              TEXT;
-    v_constraintToDropNames  TEXT[];
-    v_constraintToCreateDefs TEXT[];
-    v_indexToDropNames       TEXT[];
-    v_indexToCreateDefs      TEXT[];
-    v_insertColList          TEXT;
-    v_selectColList          TEXT;
-    v_someGenAlwaysIdentCol  BOOLEAN;
-    v_constraint             TEXT;
-    v_i                      INT;
-    v_index                  TEXT;
-    v_indexDef               TEXT;
-    v_stmt                   TEXT;
-    v_nbRows                 BIGINT = 0;
+    v_rowsThreshold            CONSTANT BIGINT = 10000;      -- The estimated number of rows limit to drop and recreate the secondary indexes
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_partNum                  INTEGER;
+    v_partCondition            TEXT;
+    v_isFirstStep              BOOLEAN = TRUE;
+    v_isLastStep               BOOLEAN = TRUE;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_estimatedNbRows          BIGINT;
+    v_sortOrder                TEXT;
+    v_constraintToDropNames    TEXT[];
+    v_constraintToCreateDefs   TEXT[];
+    v_indexToDropNames         TEXT[];
+    v_indexToCreateDefs        TEXT[];
+    v_insertColList            TEXT;
+    v_selectColList            TEXT;
+    v_someGenAlwaysIdentCol    BOOLEAN;
+    v_constraint               TEXT;
+    v_i                        INT;
+    v_index                    TEXT;
+    v_indexDef                 TEXT;
+    v_stmt                     TEXT;
+    v_nbRows                   BIGINT = 0;
+    r_output                   data2pg.step_report_type;
 BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
         FROM data2pg.step
         WHERE stp_name = p_step;
-    IF NOT FOUND THEN 
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_table: Step % not found in the step table.', p_step;
     END IF;
 -- Read the table_to_process table to get additional details.
@@ -1591,11 +1601,24 @@ BEGIN
         EXECUTE format(
             'ANALYZE %I.%I',
             v_schema, v_table);
----- temporary slowdown by 10
---      PERFORM pg_sleep(v_nbRows/6300);
+---- temporary slowdown
+      PERFORM pg_sleep(v_nbRows/1000);
     END IF;
+-- Return the result records
+    IF v_isLastStep THEN
+        r_output.sr_indicator = 'COPIED_TABLES';
+        r_output.sr_value = 1;
+        r_output.sr_rank = 10;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    r_output.sr_indicator = 'COPIED_ROWS';
+    r_output.sr_value = v_nbRows;
+    r_output.sr_rank = 11;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
 --
-    RETURN v_nbRows;
+    RETURN;
 END;
 $copy_table$;
 
@@ -1606,7 +1629,7 @@ CREATE FUNCTION copy_sequence(
     p_batchName                TEXT,
     p_step                     TEXT
     )
-    RETURNS BIGINT LANGUAGE plpgsql
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
 $copy_sequence$
 DECLARE
@@ -1617,6 +1640,7 @@ DECLARE
     v_sourceDbms               TEXT;
     v_lastValue                BIGINT;
     v_isCalled                 TEXT;
+    r_output                   data2pg.step_report_type;
 BEGIN
 -- Get the identity of the sequence.
     SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
@@ -1625,7 +1649,7 @@ BEGIN
              JOIN data2pg.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
              JOIN data2pg.migration ON (seq_migration = mgr_name)
         WHERE stp_name = p_step;
-    IF NOT FOUND THEN 
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_sequence: Step % not found in the step table.', p_step;
     END IF;
 -- Depending on the source DBMS, set the sequence's characteristics.
@@ -1648,8 +1672,14 @@ BEGIN
         'SELECT setval(%L, %s, %s)',
         quote_ident(v_schema) || '.' || quote_ident(v_sequence), v_lastValue, v_isCalled
         );
+-- Return the result record
+    r_output.sr_indicator = 'COPIED_SEQUENCES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 20;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
 --
-    RETURN 0;
+    RETURN;
 END;
 $copy_sequence$;
 
@@ -1660,27 +1690,28 @@ CREATE FUNCTION compare_table(
     p_batchName                TEXT,
     p_step                     TEXT
     )
-    RETURNS BIGINT LANGUAGE plpgsql
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $compare_table$
 DECLARE
-    v_schema                 TEXT;
-    v_table                  TEXT;
-    v_partNum                INTEGER;
-    v_partCondition          TEXT;
-    v_foreignSchema          TEXT;
-    v_foreignTable           TEXT;
-    v_estimatedNbRows        BIGINT;
-    v_sourceColList          TEXT;
-    v_destColList            TEXT;
-    v_stmt                   TEXT;
-    v_nbRows                 BIGINT = 0;
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_partNum                  INTEGER;
+    v_partCondition            TEXT;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_estimatedNbRows          BIGINT;
+    v_sourceColList            TEXT;
+    v_destColList              TEXT;
+    v_stmt                     TEXT;
+    v_nbRows                   BIGINT = 0;
+    r_output                   data2pg.step_report_type;
 BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
         FROM data2pg.step
         WHERE stp_name = p_step;
-    IF NOT FOUND THEN 
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'compare_table: Step % not found in the step table.', p_step;
     END IF;
 -- Read the table_to_process table to get additional details.
@@ -1734,8 +1765,26 @@ BEGIN
         EXECUTE v_stmt;
         GET DIAGNOSTICS v_nbRows = ROW_COUNT;
     END IF;
+-- Return the result record
+    r_output.sr_indicator = 'COMPARED_TABLES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 50;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    IF v_nbRows = 0 THEN
+        r_output.sr_indicator = 'EQUAL_TABLES';
+        r_output.sr_value = 1;
+        r_output.sr_rank = 51;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    r_output.sr_indicator = 'DIFFERENCES';
+    r_output.sr_value = v_nbRows;
+    r_output.sr_rank = 52;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
 --
-    RETURN v_nbRows;
+    RETURN;
 END;
 $compare_table$;
 
@@ -1745,24 +1794,26 @@ CREATE FUNCTION truncate_all(
     p_batchName                TEXT,
     p_step                     TEXT
     )
-    RETURNS BIGINT LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS  
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $truncate_all$
 DECLARE
     v_batchName                TEXT;
     v_tablesList               TEXT;
+    v_nbTables                 BIGINT;
     r_tbl                      RECORD;
+    r_output                   data2pg.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name INTO v_batchName
         FROM data2pg.step
         WHERE stp_name = p_step;
-    IF NOT FOUND THEN 
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'truncate_all: Step % not found in the step table.', p_step;
     END IF;
 -- Build the tables list of all tables of the migration.
-    SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name)
-        INTO v_tablesList
+    SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
+        INTO v_tablesList, v_nbTables
         FROM data2pg.table_to_process
              JOIN data2pg.batch ON (bat_migration = tbl_migration)
         WHERE bat_name = v_batchName;
@@ -1770,8 +1821,14 @@ BEGIN
           'TRUNCATE %s CASCADE',
           v_tablesList
           );
+-- Return the result record
+    r_output.sr_indicator = 'TRUNCATED_TABLES';
+    r_output.sr_value = v_nbTables;
+    r_output.sr_rank = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
 --
-  RETURN 0;
+    RETURN;
 END;
 $truncate_all$;
 
@@ -1782,20 +1839,21 @@ CREATE FUNCTION check_fkey(
     p_batchName                TEXT,
     p_step                     TEXT
     )
-    RETURNS BIGINT LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS  
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $check_fkey$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
     v_fkey                     TEXT;
     v_fkeyDef                  TEXT;
+    r_output                   data2pg.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_schema, stp_object, stp_sub_object INTO v_schema, v_table, v_fkey
         FROM data2pg.step
         WHERE stp_name = p_step;
-    IF NOT FOUND THEN 
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'check_fkey: Step % not found in the step table.', p_step;
     END IF;
 -- Get the FK definition.
@@ -1820,8 +1878,14 @@ BEGIN
           'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
           v_schema, v_table, v_fkey, v_fkeyDef
           );
+-- Return the result record
+    r_output.sr_indicator = 'CHECKED_FKEYS';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 30;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
 --
-  RETURN 0;
+  RETURN;
 END;
 $check_fkey$;
 

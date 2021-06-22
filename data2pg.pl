@@ -52,7 +52,6 @@ my $nbSteps = 0;                       # Number of steps to process by the run
 my $nbStepsReady;                      # Number of steps ready to be processed
 my $nbBusySessions;                    # Number of sessions currently running a step
 my $nbStepsOK;                         # Number of steps correctly processed by the run
-my $sumReturnValues = 0;               # Sum of returned values of elementary steps, typically representing the number of processed rows
 my $previousNbStepsOK;                 # Number of steps correctly processed by the previous restarted run
 
 # Global variables about the previous similar run.
@@ -375,8 +374,8 @@ sub getBackendPids {
     $ret = $sth->execute()
         or abort("Error while looking at the backebd pid status ($DBI::errstr).");
     if ($ret > 0) {
-        return $sth->fetchrow_hashref()->{pid_list}
-            or abort("Error while looking at the backebd pid status ($DBI::errstr).");
+        return ($sth->fetchrow_hashref()->{pid_list}
+            or abort("Error while looking at the backebd pid status ($DBI::errstr)."));
     } else {
         abort("getBackendPids: internal error while looking for backend pids for the run $runId.");
     }
@@ -727,18 +726,18 @@ sub copyWorkingPlan {
     my $ret;             # SQL result
     my $row;             # Row returned by a statement
 
-#   Copy the plan from the restarted run, after a cleanup of steps that were started but not completed.
-#   For the 'In_progress' steps, reset the status to 'Ready', delete the start timestamp and the assigned session_id.
+# Copy the plan from the restarted run, after a cleanup of steps that were started but not completed.
+# For the 'In_progress' steps, reset the status to 'Ready', delete the start timestamp and the assigned session_id.
     $sql = qq(
         INSERT INTO data2pg.step
                   (stp_run_id, stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents, stp_cum_cost,
-                   stp_status, stp_blocking, stp_ses_id, stp_start_ts, stp_stop_ts, stp_return_value)
+                   stp_status, stp_blocking, stp_ses_id, stp_start_ts, stp_stop_ts)
             SELECT $runId, stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents, stp_cum_cost,
                    CASE WHEN stp_status = 'In_progress' THEN 'Ready' ELSE stp_status END,           -- stp_status column
                    stp_blocking,
                    CASE WHEN stp_status = 'In_progress' THEN NULL ELSE stp_ses_id END,              -- stp_ses_id column
                    CASE WHEN stp_status = 'In_progress' THEN NULL ELSE stp_start_ts END,            -- stp_start_ts column
-                   stp_stop_ts, stp_return_value
+                   stp_stop_ts
         FROM data2pg.step
         WHERE stp_run_id = $previousRunId
     );
@@ -748,6 +747,16 @@ sub copyWorkingPlan {
     if ($nbSteps == 0) {
         abort("The session to restart had not completed its initialisation. Abort the run (--action abort) and respawn (--action run).");
     }
+
+# Copy the completed step results from the previous run
+    $sql = qq(
+        INSERT INTO data2pg.step_result
+            SELECT $runId, sr_step, sr_indicator, sr_value, sr_rank, sr_is_main_indicator
+        FROM data2pg.step_result
+        WHERE sr_run_id = $previousRunId
+    );
+    $d2pDbh->do($sql)
+        or abort("Error while copying the working plan ($DBI::errstr).");
 
 # Recompute the number of 'Ready' and already 'Completed' steps.
     $sql = qq(
@@ -887,7 +896,7 @@ sub reReadMaxSessions
 sub startStep
 # Start the next candidate step on the available session.
 {
-    my ($i) = @_;
+    my ($session) = @_;
     my $order;           # sort order
     my $sql;             # SQL statement
     my $ret;             # SQL result
@@ -931,7 +940,7 @@ sub startStep
 # Update the step state, the assigned session id and the start time.
     $sql = qq(
         UPDATE data2pg.step
-          SET stp_status = 'In_progress', stp_start_ts = clock_timestamp(), stp_ses_id = $i
+          SET stp_status = 'In_progress', stp_start_ts = clock_timestamp(), stp_ses_id = $session
           WHERE stp_run_id = $runId AND stp_name = $quotedStep
     );
     $ret = $d2pDbh->do($sql)
@@ -943,16 +952,16 @@ sub startStep
     if (defined($sqlFunction)) {
 # The step is a SQL function.
 # Open the connection if needed.
-        if ($sessions[$i]->{state} == 0) {
-            openSession($i);
+        if ($sessions[$session]->{state} == 0) {
+            openSession($session);
         }
 # And execute the function asynchronously.
         $sql = qq(
-            SELECT $sqlFunction($quotedBatchName, $quotedStep) AS return_value
+            SELECT * FROM $sqlFunction($quotedBatchName, $quotedStep) AS t
         );
-        $sessions[$i]->{sth} = $sessions[$i]->{dbh}->prepare($sql, {pg_async => PG_ASYNC})
+        $sessions[$session]->{sth} = $sessions[$session]->{dbh}->prepare($sql, {pg_async => PG_ASYNC})
           or abort("Error while starting a step ($DBI::errstr).");
-        $sessions[$i]->{sth}->execute()
+        $sessions[$session]->{sth}->execute()
           or abort("Error while starting a step ($DBI::errstr).");
     } else {
 
@@ -962,46 +971,74 @@ sub startStep
     }
 
 # Keep in memory the step and the session state.
-    $sessions[$i]->{step} = $step;
-    $sessions[$i]->{state} = 2;
+    $sessions[$session]->{step} = $step;
+    $sessions[$session]->{state} = 2;
 
-    if ($debug) {printDebug("On session $i, start the step $step (cost = $cost ; cum.cost = $cumCost)");}
+    if ($debug) {printDebug("On session $session, start the step $step (cost = $cost ; cum.cost = $cumCost)");}
 }
 
 # ---------------------------------------------------------------------------------------------
 sub checkStep
 # Check if an in_progress session is completed.
 {
-    my ($i) = @_;
+    my ($session) = @_;
+    my $insertValues;    # The VALUES clause for the INSERT statement that records the step results.
+    my $resultsList;     # The list of the step results to display in debug mode.
     my $ret;             # SQL result
+    my $i;               # Result rows counter
+    my $isMainIndicator; # Boolean indicating whether the indicators returned by the function are main indicators (to display by the monitoring clients)
     my $step;            # Selected step name 
     my $sql;             # SQL statement
     my $row;             # Row returned by a statement
-    my $returnValue;     # The step execution return value
+    my $quotedIndicator; # One indicator returned by the step execution, quoted to be used in a SQL statement
+    my $indicatorRank;   # The indicator rank returned by the step execution
+    my $indicatorValue;  # The value associated to the indicator returned by the step execution
     my $quotedStep;      # Quoted step so that it can be used in a SQL statement
 
 # Check if the statement of the session is completed.
-    if ($sessions[$i]->{dbh}->pg_ready) {
+    if ($sessions[$session]->{dbh}->pg_ready) {
 # The step is completed.
-        $step = $sessions[$i]->{step};
+        $step = $sessions[$session]->{step};
+        $quotedStep = $d2pDbh->quote($step, { pg_type => PG_VARCHAR });
 
-# Get the returned value.
-        $ret = $sessions[$i]->{dbh}->pg_result()
+# Get the returned values.
+        $insertValues = ''; $resultsList = '';
+        $ret = $sessions[$session]->{dbh}->pg_result()
             or abort("Error while processing the step $step ($DBI::errstr)");
-        $row = $sessions[$i]->{sth}->fetchrow_hashref()
+# Get and process each row of the step result.
+        for ($i = 1; $i <= $ret; $i++) {
+            $row = $sessions[$session]->{sth}->fetchrow_hashref()
+                or abort("Error while processing the step $step ($DBI::errstr)");
+            $quotedIndicator = $d2pDbh->quote($row->{sr_indicator}, { pg_type => PG_VARCHAR });
+            $indicatorValue = $row->{sr_value};
+            $indicatorRank = $row->{sr_rank};
+            $isMainIndicator = $row->{sr_is_main_indicator} == 1 ? 'TRUE' : 'FALSE';
+# Build the rows to insert into the step_result table
+            $insertValues .= "($runId, $quotedStep, $quotedIndicator, $indicatorValue, $indicatorRank, $isMainIndicator)";
+            $resultsList .= "$row->{sr_indicator}=$indicatorValue ";
+        }
+        $sessions[$session]->{sth}->finish()
             or abort("Error while processing the step $step ($DBI::errstr)");
-        $returnValue = $row->{return_value};
-        $sessions[$i]->{sth}->finish()
-            or abort("Error while processing the step $step ($DBI::errstr)");
+# Add a ',' character between each row to insert.
+        $insertValues =~ s/\)\(/\),\(/g;
 
 # Commit the step on the target database.
-        $sessions[$i]->{dbh}->commit();
+        $sessions[$session]->{dbh}->commit();
 
-# Update the step in the data2pg database (status, return value and end time).
+# Insert the step result into the data2pg database.
+        if ($insertValues ne '') {
+            $sql = qq(
+                INSERT INTO data2pg.step_result VALUES $insertValues
+            );
+            $d2pDbh->do($sql)
+                or abort("Error while processing the step $step ($DBI::errstr)");
+        }
+
+# Update the step in the data2pg database (status and end time).
         $quotedStep = $d2pDbh->quote($step, { pg_type => PG_VARCHAR });
         $sql = qq(
             UPDATE data2pg.step
-                SET stp_status = 'Completed', stp_return_value = $returnValue, stp_stop_ts = clock_timestamp()
+                SET stp_status = 'Completed', stp_stop_ts = clock_timestamp()
                 WHERE stp_run_id = $runId AND stp_name = $quotedStep
         );
         $ret = $d2pDbh->do($sql)
@@ -1038,16 +1075,18 @@ sub checkStep
         $d2pDbh->commit();
 
 # Change the state of this session and increment counters.
-        if ($sessions[$i]->{state} == 3) {
-            closeSession($i);
+        if ($sessions[$session]->{state} == 3) {
+            closeSession($session);
         } else {
-            $sessions[$i]->{state} = 1;
+            $sessions[$session]->{state} = 1;
         }
-        $sessions[$i]->{step} = '';
+        $sessions[$session]->{step} = '';
         $nbStepsOK++;
-        $sumReturnValues += $returnValue;
 
-        if ($debug) {printDebug("On session $i, the step $step is completed (Returned value = $returnValue)");}
+        if ($debug) {
+            $resultsList =~ s/ $//;                 # delete the last space
+            printDebug("On session $session, the step $step is completed ($resultsList)");
+        }
     }
 }
 
@@ -1092,6 +1131,8 @@ sub finalReport {
     my $sql;             # SQL statement
     my $ret;             # SQL result
     my $rowRun;          # Result row for the statement on the run table
+    my $elapseTime;      # Total elapse time of the run
+    my $stepResults;     # The aggregated step results
     my $state;           # Final state of the run
 
 # Compute the summary figures.
@@ -1110,17 +1151,31 @@ sub finalReport {
     }
     $rowRun = $d2pSth->fetchrow_hashref()
         or abort("Error while preparing the final report ($DBI::errstr)");
+    $elapseTime = $rowRun->{Elapse};
+
+    # The aggregated step results
+    $sql = qq(
+        SELECT sr_indicator, sr_rank, sum(sr_value) AS "total"
+        FROM data2pg.step_result
+        WHERE sr_run_id = $runId
+        GROUP BY sr_indicator, sr_rank
+        ORDER BY sr_rank
+    );
+    $stepResults = $d2pDbh->selectall_arrayref($sql, { Slice => {} });
 
 # Display the report.
     $state = 'completed'; $state = 'suspended' if ($nbSteps != $nbStepsOK);
     print "========================================================================================\n";
     print "The run #$runId is $state. (The operation details are available in the data2pg database).\n";
-    print "Run elapse time           : $rowRun->{Elapse}\n";
+    print "Run elapse time           : $elapseTime\n";
     if ($state eq 'suspended') {
         print "Number of scheduled steps : $nbSteps\n";
     }
     print "Number of processed steps : $nbStepsOK\n";
-    print "Sum of returned values    : $sumReturnValues\n";
+    print "Aggregated indicators\n";
+    foreach my $indicator ( @$stepResults ) {
+        printf("     %-20.20s : %d\n", $indicator->{sr_indicator}, $indicator->{total});
+    }
     if ($actionRestart) {
       print "Number of steps processed by the previous restarted run #$previousRunId : $previousNbStepsOK\n";
     }

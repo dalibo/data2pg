@@ -274,12 +274,14 @@ sub showRunDetails {
         }
         $sql = qq(
             SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking,
-                   stp_ses_id, stp_start_ts, stp_stop_ts, stp_return_value,
+                   stp_ses_id, stp_start_ts, stp_stop_ts,
                    CASE WHEN stp_status = 'Completed' THEN to_char(stp_stop_ts - stp_start_ts, 'HH24:MI:SS.US')
                         WHEN stp_status = 'In_progress' THEN to_char(current_timestamp - stp_start_ts, 'HH24:MI:SS')
                         ELSE NULL
-                   END AS stp_elapse
-            FROM data2pg.step,
+                   END AS stp_elapse,
+                   sr_value
+            FROM data2pg.step
+                 LEFT OUTER JOIN data2pg.step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
                  (VALUES ('In_progress',1),('Ready',2),('Blocked',3),('Completed',4)) AS state(state_name, state_order)
             WHERE state_name = stp_status::TEXT
               AND stp_run_id = $run
@@ -302,7 +304,7 @@ sub showRunDetails {
                 } elsif ($row->{'stp_status'} eq 'Blocked') {
                     print "    'Blocked' steps                   Estim.Cost Blocking";
                 } elsif ($row->{'stp_status'} eq 'Completed') {
-                    print "    'Completed' steps                 Estim.Cost Sess.       Start               Stop            Elapse      Return Value";
+                    print "    'Completed' steps                 Estim.Cost Sess.       Start               Stop            Elapse      Main indicator";
                 }
                 print "\n"; $currLine++;
             }
@@ -316,9 +318,15 @@ sub showRunDetails {
                 printf("%-35.35s %12u  %3u",
                     $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'nb_blocking'});
             } elsif ($row->{'stp_status'} eq 'Completed') {
-                printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s %12u",
-                    $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
-                    $row->{'stp_start_ts'}, $row->{'stp_stop_ts'}, $row->{'stp_elapse'}, $row->{'stp_return_value'});
+                if (defined($row->{'sr_value'})) {
+                    printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s %14u",
+                        $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
+                        $row->{'stp_start_ts'}, $row->{'stp_stop_ts'}, $row->{'stp_elapse'}, $row->{'sr_value'});
+                } else {
+                    printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s",
+                        $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
+                        $row->{'stp_start_ts'}, $row->{'stp_stop_ts'}, $row->{'stp_elapse'});
+                }
             }
             print "\n"; $currLine++;
             $previousStatus = $row->{'stp_status'};
