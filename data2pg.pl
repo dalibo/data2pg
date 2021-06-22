@@ -134,7 +134,7 @@ sub abort
         # ... and commit this last change.
         $d2pDbh->commit() or die $DBI::errstr;
 
-#### TODO: abort shell script in execution, if any
+#### TODO: abort shell script in execution, if any
     }
 
 # data2pg abort with an error message.
@@ -340,7 +340,7 @@ sub getPreviousRunStatus() {
         $previousRunPerlPid = $row->{run_perl_pid};
         $previousRunBatchType = $row->{run_batch_type};
 
-        # If the previous run may be still in execution, check.
+        # If the previous run may be still in execution, check.
         if ($previousRunState ne 'Completed' && $previousRunState ne 'Suspended' && $previousRunState ne 'Aborted') {
             $previousRunPerlIsExecuting = arePidsExecuting($previousRunPerlPid, 'data2pg.pl');
         }
@@ -393,6 +393,7 @@ sub initRun {
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $quotedWording;   # Wording properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
+    my $errorMsg;        # Error message reported by the check_batch_id() function
     my $pidList;         # List the postgres backend pid of the previous run when in restart
 
 # Perform checks for the normal run mode.
@@ -426,8 +427,8 @@ sub initRun {
 
 # Create the new run into the data2pg.run table and commit.
     $quotedWording = $d2pDbh->quote($wording, { pg_type => PG_VARCHAR });
-	$quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
-	$quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
+    $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
+    $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
 
     $sql = qq(
         INSERT INTO data2pg.run
@@ -466,6 +467,25 @@ sub initRun {
 # Prepare the requested sessions and open the first one on the target database.
     adjustSessions();
     openSession(1);
+
+# Check that the batch name exists on the target database and that its "migration" is in a correct state.
+    $sql = qq(
+        SELECT p_batchType, p_errorMsg
+          FROM data2pg.check_batch_id($quotedBatchName)
+    );
+    $sth = $sessions[1]->{dbh}->prepare($sql)
+        or abort("Error while checking the batch name ($DBI::errstr).");
+    $ret = $sth->execute()
+        or abort("Error while checking the batch name ($DBI::errstr).");
+    if ($ret == 1) {
+        $row = $sth->fetchrow_hashref()
+            or abort("Error while checking the batch name ($DBI::errstr).");
+        $batchType = $row->{p_batchtype};
+        $errorMsg = $row->{p_errormsg};
+    }
+    if ($errorMsg ne '') {
+        abort("The target database reports an error for the batch $batchName: $errorMsg.");
+    }
 
 # Build the working plan, depending on the action.
     buildWorkingPlan() if ($actionRun);
@@ -507,7 +527,7 @@ sub adjustSessions
 # Close the useless sessions.
     for (my $i = $maxSessions + 1; $i <= $#sessions; $i++) {
         if ($sessions[$i]->{state} == 2) {
-        # The in-used sessions are just mark as "to be closed just after the step's completion"
+        # The in-used sessions are just mark as "to be closed just after the step's completion"
             $sessions[$i]->{state} = 3;
         }
         # The idle sessions can be directly closed.
@@ -614,33 +634,12 @@ sub closeSession
 sub buildWorkingPlan {
 # Build the working plan by executing a dedicated function on the target database.
 
-    my $quotedbatchName; # The batch name quoted to be safely included into a SQL statement
+    my $quotedBatchName; # The batch name quoted to be safely included into a SQL statement
     my $sql;             # SQL statement
     my $ret;             # SQL result
     my $sth;             # Statement handle
     my $row;             # Row returned by a statement
     my $rows;            # Returned rows hash
-    my $errorMsg;        # Error message reported by the check_batch_id() function
-
-# Check that the batch name exists on the target database and that its "migration" is in a correct state.
-    $quotedbatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
-    $sql = qq(
-        SELECT p_batchType, p_errorMsg
-          FROM data2pg.check_batch_id($quotedbatchName)
-    );
-    $sth = $sessions[1]->{dbh}->prepare($sql)
-        or abort("Error while building the working plan ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while building the working plan ($DBI::errstr).");
-    if ($ret == 1) {
-        $row = $sth->fetchrow_hashref()
-            or abort("Error while building the working plan ($DBI::errstr).");
-        $batchType = $row->{p_batchtype};
-        $errorMsg = $row->{p_errormsg};
-    }
-    if ($errorMsg ne '') {
-        abort("The target database reports an error for the batch $batchName: $errorMsg.");
-    }
 
 # Prepare the INSERT into the step table.
     $sql = qq(
@@ -651,9 +650,10 @@ sub buildWorkingPlan {
         or abort("Error while building the working plan ($DBI::errstr).");
 
 # Get the working plan from the target database (on the first connection).
+    $quotedBatchName = $sessions[1]->{dbh}->quote($batchName, { pg_type => PG_VARCHAR });
     $sql = qq(
         SELECT wp_name, wp_sql_function, wp_shell_script, wp_cost, wp_parents
-          FROM data2pg.get_working_plan($quotedbatchName)
+          FROM data2pg.get_working_plan($quotedBatchName)
     );
     $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}})
         or abort("Error while building the working plan ($DBI::errstr).");
