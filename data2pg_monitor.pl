@@ -198,7 +198,7 @@ sub showRunDetails {
         $currLine = 0;
         system("clear");
 # Header line.
-        print ("$APPNAME (version $VERSION)     Run: $run at " . strftime('%d/%m/%Y - %H:%M:%S',localtime) . "\n");
+        print ("$APPNAME (version $VERSION)          Run: $run          " . strftime('%d/%m/%Y - %H:%M:%S',localtime) . "\n");
         $currLine++;
 # Get global statistics for the run.
         $sql = qq(
@@ -225,7 +225,7 @@ sub showRunDetails {
         $row = $sth->fetchrow_hashref();
         $loop = 0 if ($row->{run_status} =~ /Completed|Aborted|Suspended|Restarted/);
 # Display general information about the run.
-        printf("Database: %s Batch: %s Type: %s Status: '%s' Sessions: %u ",
+        printf("Database: %s    Batch: %s    Type: %s    Status: '%s'    Sessions: %u ",
                $row->{'run_database'}, $row->{'run_batch_name'}, $row->{'run_batch_type'},
                $row->{'run_status'}, $row->{'run_max_sessions'});
         if ($row->{'run_wording'} ne '') {
@@ -242,20 +242,20 @@ sub showRunDetails {
         printf("Started: %-19.19s",
                $row->{'run_start_ts'});
         if ($row->{'run_end_ts'} ne '') {
-            printf(" Ended:%-19.19s", $row->{'run_end_ts'});
+            printf("   Ended:%-19.19s", $row->{'run_end_ts'});
         }
         if ($row->{run_status} ne 'Aborted') {
-            printf(" Elapse:%-19.19s", $row->{'run_elapse'});
+            printf("   Elapse:%-19.19s", $row->{'run_elapse'});
         }
         print "\n"; $currLine++;
 #
-        printf("Steps Total: %d Completed: %d (%d%%/%d%%)",
+        printf("Steps Total: %d  Completed: %d (%d%%/%d%%)",
                $row->{'total_steps'}, $row->{'completed_steps'},
                $row->{'completed_steps'}*100/$row->{'total_steps'},
                $row->{'completed_cost'}*100/$row->{'total_cost'}
               );
         if ($row->{run_status} eq "In_progress") {
-            printf(" In_progress: %d (%d%%/%d%%) Other: %d (%d%%/%d%%)",
+            printf("  In_progress: %d (%d%%/%d%%)  Other: %d (%d%%/%d%%)",
                    $row->{'in_progress_steps'},
                    $row->{'in_progress_steps'}*100/$row->{'total_steps'},
                    floor($row->{'in_progress_cost'}*100/$row->{'total_cost'}),
