@@ -121,18 +121,21 @@ sub abort
 # If a run record has been created, change its state and record the end timestamp and the error message.
     if (defined $runId) {
         # Rollback any uncommited changes, if any.
-        $d2pDbh->rollback();
+        $d2pDbh->rollback()
+            or die "Error while rollbacking the current transaction at abort time ($DBI::errstr)\n";
 
-        # Update the in progress run,
+        # Update the in-progress run,
         $quotedMsg = $d2pDbh->quote($msg, { pg_type => PG_VARCHAR });
         $sql = qq(
           UPDATE data2pg.run
               SET run_status = 'Aborted', run_end_ts = clock_timestamp(), run_error_msg = $quotedMsg
               WHERE run_id = $runId
         );
-        $ret = $d2pDbh->do($sql) or die $DBI::errstr;
+        $ret = $d2pDbh->do($sql)
+            or die "Error while updating the current run status at abort time ($DBI::errstr)\n";
         # ... and commit this last change.
-        $d2pDbh->commit() or die $DBI::errstr;
+        $d2pDbh->commit()
+            or die "Error while commiting the run status update at abort time ($DBI::errstr)\n";
 
 #### TODO: abort shell script in execution, if any
     }
@@ -245,8 +248,7 @@ sub logonData2pg {
 # The function opens the connection on the data2pg database.
     my $d2pDsn;          # The DSN to reach the data2pg database
     my $sql;             # SQL statement
-    my $sth;             # Statement handle
-    my $ret;             # SQL result
+    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the data2pg database
     my $quotedTargetDb;  # target database quoted to be included into a SQL statement
     my $row;             # returned row
 
@@ -257,18 +259,17 @@ sub logonData2pg {
 
 # Open the connection on the data2pg database.
     my $p = scalar reverse $cnxRole;
+    if ($debug) {printDebug("Trying to connect on the data2pg database");}
     $d2pDbh = DBI->connect($d2pDsn, $cnxRole, $p, {AutoCommit=>0})
-        or abort("Error while logging on the data2pg database ($DBI::errstr).");
+          or abort("Error while logging on the data2pg database ($DBI::errstr).");
+    $d2pDbh->{RaiseError} = 1;
 
 # Check that the data2pg schema exists.
     $sql = qq(
-        SELECT 0 FROM pg_namespace WHERE nspname = 'data2pg'
+        SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg'
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while logging on the data2pg database ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while logging on the data2pg database ($DBI::errstr).");
-    ($ret == 1) or abort("The 'data2pg' schema does not exist in the data2pg database.");
+    ($schemaFound) = $d2pDbh->selectrow_array($sql)
+        or abort("The 'data2pg' schema does not exist in the data2pg database.");
 
 # Get the connection parameters for the target database.
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
@@ -277,21 +278,16 @@ sub logonData2pg {
             FROM data2pg.target_database
             WHERE tdb_id = $quotedTargetDb
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while logging on the data2pg database ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while logging on the data2pg database ($DBI::errstr).");
-    if ($ret > 0) {
-        # A session has already been executed for this database and this batch.
-        $row = $sth->fetchrow_hashref();
-        $pgDsn = "dbi:Pg:";
-        $pgDsn .= "dbname=" . $row->{'tdb_dbname'} if defined $row->{'tdb_dbname'};
-        $pgDsn .= ";host=" . $row->{'tdb_host'} if defined $row->{'tdb_host'};
-        $pgDsn .= ";port=" . $row->{'tdb_port'} if defined $row->{'tdb_port'};
-    } else {
-        abort("The target database $targetDb from the configuration file has not been found in the target_database table.");
-    }
-    if ($debug) {printDebug("Connection on the data2pg database opened");}
+    $row = $d2pDbh->selectrow_hashref($sql)
+        or abort("The target database $targetDb from the configuration file has not been found in the target_database table.");
+
+# Build the DSN of the target database.
+    $pgDsn = "dbi:Pg:";
+    $pgDsn .= "dbname=" . $row->{'tdb_dbname'} if defined $row->{'tdb_dbname'};
+    $pgDsn .= ";host=" . $row->{'tdb_host'} if defined $row->{'tdb_host'};
+    $pgDsn .= ";port=" . $row->{'tdb_port'} if defined $row->{'tdb_port'};
+
+    if ($debug) {printDebug("Connection on the data2pg database opened and target database found");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -309,8 +305,6 @@ sub getPreviousRunStatus() {
     my $quotedTargetDb;  # targetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $sql;             # SQL statement
-    my $sth;             # Statement handle
-    my $ret;             # SQL result
     my $row;             # SQL result row
     my $debugMsg;        # Final message displayed in debug mode
 
@@ -323,16 +317,10 @@ sub getPreviousRunStatus() {
             WHERE run_database = $quotedTargetDb AND run_batch_name = $quotedBatchName
             ORDER BY run_id DESC LIMIT 1
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while looking at the previous run status ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while looking at the previous run status ($DBI::errstr).");
+    $row = $d2pDbh->selectrow_hashref($sql);
 
-    if ($ret > 0) {
-        # A session has already been executed for this database and this batch.
-        $row = $sth->fetchrow_hashref()
-            or abort("Error while looking at the previous run status ($DBI::errstr).");
-
+    if (defined($row)) {
+        # A previous run has been found.
         $previousRunExists = 1;
         $previousRunId = $row->{run_id};
         $previousRunStartTime = $row->{run_start_ts};
@@ -340,7 +328,7 @@ sub getPreviousRunStatus() {
         $previousRunPerlPid = $row->{run_perl_pid};
         $previousRunBatchType = $row->{run_batch_type};
 
-        # If the previous run may be still in execution, check.
+        # If the previous run may be still in execution, check it.
         if ($previousRunState ne 'Completed' && $previousRunState ne 'Suspended' && $previousRunState ne 'Aborted') {
             $previousRunPerlIsExecuting = arePidsExecuting($previousRunPerlPid, 'data2pg.pl');
         }
@@ -349,8 +337,7 @@ sub getPreviousRunStatus() {
         $debugMsg = "(no previous run found)";
     }
 
-    if ($debug) {printDebug("Status of the previous run retrieved $debugMsg\n");}
-
+    if ($debug) {printDebug("Status of the previous run retrieved $debugMsg");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -359,8 +346,7 @@ sub getBackendPids {
 
     my ($runId) = @_;
     my $sql;             # SQL statement
-    my $sth;             # Statement handle
-    my $ret;             # SQL result
+    my $row;             # SQL result row
 
     # Build the pid list.
     $sql = qq(
@@ -369,13 +355,9 @@ sub getBackendPids {
             WHERE ses_run_id = $runId
               AND ses_backend_pid IS NOT NULL
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while looking at the backebd pid status ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while looking at the backebd pid status ($DBI::errstr).");
-    if ($ret > 0) {
-        return ($sth->fetchrow_hashref()->{pid_list}
-            or abort("Error while looking at the backebd pid status ($DBI::errstr)."));
+    $row = $d2pDbh->selectrow_hashref($sql);
+    if (defined($row->{pid_list})) {
+        return $row->{pid_list};
     } else {
         abort("getBackendPids: internal error while looking for backend pids for the run $runId.");
     }
@@ -425,7 +407,7 @@ sub initRun {
         }
     }
 
-# Create the new run into the data2pg.run table and commit.
+# Create the new run into the data2pg.run table and get its id.
     $quotedWording = $d2pDbh->quote($wording, { pg_type => PG_VARCHAR });
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
@@ -437,15 +419,7 @@ sub initRun {
               ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $quotedWording)
         RETURNING run_id
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while initializing the run ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while initializing the run ($DBI::errstr).");
-
-    # ... and get the identifier of this new run
-    $row = $sth->fetchrow_hashref()
-        or abort("Error while initializing the run ($DBI::errstr).");
-    $runId = $row->{run_id};
+    ($runId) = $d2pDbh->selectrow_array($sql);
 
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
@@ -456,10 +430,10 @@ sub initRun {
                 SET run_status = 'Restarted', run_restart_id = $runId
                 WHERE run_id = $previousRunId
         );
-        $ret = $d2pDbh->do($sql)
-        or abort("Error while initializing the run ($DBI::errstr).");
+        $ret = $d2pDbh->do($sql);
     }
 
+# Commit the creation of the run.
     $d2pDbh->commit();
 
 #### TODO: create needed directories to handle scripts executions
@@ -473,16 +447,7 @@ sub initRun {
         SELECT p_batchType, p_errorMsg
           FROM data2pg.check_batch_id($quotedBatchName)
     );
-    $sth = $sessions[1]->{dbh}->prepare($sql)
-        or abort("Error while checking the batch name ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while checking the batch name ($DBI::errstr).");
-    if ($ret == 1) {
-        $row = $sth->fetchrow_hashref()
-            or abort("Error while checking the batch name ($DBI::errstr).");
-        $batchType = $row->{p_batchtype};
-        $errorMsg = $row->{p_errormsg};
-    }
+    ($batchType, $errorMsg) = $sessions[1]->{dbh}->selectrow_array($sql);
     if ($errorMsg ne '') {
         abort("The target database reports an error for the batch $batchName: $errorMsg.");
     }
@@ -498,8 +463,7 @@ sub initRun {
             SET run_status = 'In_progress', run_batch_type = $quotedBatchType
             WHERE run_id = $runId
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while initializing the run ($DBI::errstr).");
+    $ret = $d2pDbh->do($sql);
 
 # Commit this change.
     $d2pDbh->commit();
@@ -545,54 +509,43 @@ sub openSession
 {
     my ($i) = @_;
     my $sql;             # SQL statement
-    my $ret;             # SQL result
-    my $sth;             # Statement handle
-    my $row;             # Row returned by a statement
-    my $backendPid;      # pid du backend postgres créé par l'ouverture de la connexion
+    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the target database
+    my $backendPid;      # pid of the postgres backend created at connexion start
 
 # Try to connect
     my $p = scalar reverse $cnxRole;
     $sessions[$i]->{dbh} = DBI->connect($pgDsn, $cnxRole, $p, {AutoCommit=>0})
           or abort("Error while logging on the target database ($DBI::errstr).");
+    $sessions[$i]->{dbh}->{RaiseError} = 1;
     $sessions[$i]->{state} = 1;
 
 # For the first connection, perform some specific checks.
     if ($i == 1) {
 # Check that the data2pg schema exists.
-        $sql = qq(SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg');
-        $sth = $sessions[$i]->{dbh}->prepare($sql);
-        $ret = $sth->execute();
-        ($ret == 1) or abort("The 'data2pg' schema doesn't exist in the target database.");
+        $sql = qq(
+            SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg'
+        );
+        ($schemaFound) = $sessions[$i]->{dbh}->selectrow_array($sql)
+            or abort("The 'data2pg' schema does not exist in the target database.");
+
 # Get the maximum number of sessions that could be opened,
         $sql = qq(
             SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int AS max_cnx
         );
-        $sth = $sessions[$i]->{dbh}->prepare($sql)
-        or abort("Error while opening a session ($DBI::errstr).");
-        $ret = $sth->execute()
-        or abort("Error while opening a session ($DBI::errstr).");
-        if ($ret == 1) {
-            $row = $sth->fetchrow_hashref()
-                or abort("Error while opening a session ($DBI::errstr).");
-            $pgMaxCnx = $row->{max_cnx};
+        ($pgMaxCnx) = $sessions[$i]->{dbh}->selectrow_array($sql);
+
 # ... and check that we are not too greedy.
-            if ($maxSessions > $pgMaxCnx) {
-                abort("The requested number of sessions ($maxSessions) exceeds the maximum number of connections that the targeted database can handle ($pgMaxCnx).");
-            }
-        } else {
-            abort("Internal error while getting the configured max connections on the target database.");
+        if ($maxSessions > $pgMaxCnx) {
+            abort("The requested number of sessions ($maxSessions) exceeds the maximum number of connections that the targeted database can handle ($pgMaxCnx).");
         }
     }
 
 # Set the application name to the just opened session and get the pid of the Postgres backend.
     $sql = qq(SET application_name = 'data2pg');
-    $sth = $sessions[$i]->{dbh}->prepare($sql)
-        or abort("Error while opening a session ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while opening a session ($DBI::errstr).");
-    $backendPid = $sessions[$i]->{dbh}->{pg_pid};
+    $sessions[$i]->{dbh}->do($sql);
 
 # Register the session in the data2pg database.
+    $backendPid = $sessions[$i]->{dbh}->{pg_pid};
     $sql = qq(
         INSERT INTO data2pg.session
                 (ses_run_id, ses_id, ses_backend_pid)
@@ -600,8 +553,7 @@ sub openSession
             ON CONFLICT (ses_run_id, ses_id) DO UPDATE
               SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_stop_ts = NULL
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while opening a session ($DBI::errstr).");
+    $d2pDbh->do($sql);
 
     if ($debug) {printDebug("Session $i on the target database opened");}
 }
@@ -613,7 +565,6 @@ sub closeSession
 {
     my ($i) = @_;
     my $sql;             # SQL statement
-    my $ret;             # SQL result
 
 # Disconnect.
     $sessions[$i]->{dbh}->disconnect();
@@ -624,8 +575,7 @@ sub closeSession
         SET ses_status = 'Closed', ses_stop_ts = current_timestamp
         WHERE ses_run_id = $runId AND ses_id = $i
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while closing a session ($DBI::errstr).");
+    $d2pDbh->do($sql);
 
     if ($debug) {printDebug("Session $i to the targeted database closed.");}
 }
@@ -636,8 +586,6 @@ sub buildWorkingPlan {
 
     my $quotedBatchName; # The batch name quoted to be safely included into a SQL statement
     my $sql;             # SQL statement
-    my $ret;             # SQL result
-    my $sth;             # Statement handle
     my $row;             # Row returned by a statement
     my $rows;            # Returned rows hash
 
@@ -646,8 +594,7 @@ sub buildWorkingPlan {
         INSERT INTO data2pg.step (stp_run_id, stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents, stp_blocking)
             VALUES ($runId, ?, ?, ?, ?, ?, ?)
     );
-    $d2pSth = $d2pDbh->prepare($sql)
-        or abort("Error while building the working plan ($DBI::errstr).");
+    $d2pSth = $d2pDbh->prepare($sql);
 
 # Get the working plan from the target database (on the first connection).
     $quotedBatchName = $sessions[1]->{dbh}->quote($batchName, { pg_type => PG_VARCHAR });
@@ -655,8 +602,7 @@ sub buildWorkingPlan {
         SELECT wp_name, wp_sql_function, wp_shell_script, wp_cost, wp_parents
           FROM data2pg.get_working_plan($quotedBatchName)
     );
-    $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}})
-        or abort("Error while building the working plan ($DBI::errstr).");
+    $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}});
 # Insert returned steps into the step table of the data2pg database.
     foreach my $row (@$rows) {
         $d2pSth->bind_param(1, $row->{wp_name});
@@ -665,10 +611,11 @@ sub buildWorkingPlan {
         $d2pSth->bind_param(4, $row->{wp_cost});
         $d2pSth->bind_param(5, $row->{wp_parents});
         $d2pSth->bind_param(6, $row->{wp_parents});
-        $d2pSth->execute()
-            or abort("Error while building the working plan ($DBI::errstr).");
+        $d2pSth->execute();
         $nbSteps++;
     }
+    $d2pSth->finish();
+
 # Check that there is at least 1 step to execute.
     if ($nbSteps == 0) {
         abort("There is no step to execute.");
@@ -696,8 +643,7 @@ sub buildWorkingPlan {
             WHERE stp_run_id = $runId
               AND step.stp_name = step_cum.stp_name;
     );
-    $d2pDbh->do($sql)
-        or abort("Error while building the working plan ($DBI::errstr).");
+    $d2pDbh->do($sql);
 
 # Set the status of steps.
 # Steps are set to 'Ready' when they have no parent.
@@ -706,8 +652,7 @@ sub buildWorkingPlan {
             SET stp_status = 'Ready'
             WHERE stp_run_id = $runId AND stp_parents IS NULL
     );
-    $nbStepsReady = $d2pDbh->do($sql)
-        or abort("Error while building the working plan ($DBI::errstr).");
+    $nbStepsReady = $d2pDbh->do($sql);
     if ($nbStepsReady == 0) {
         abort("There is no 'Ready' step.");
     }
@@ -722,9 +667,6 @@ sub buildWorkingPlan {
 sub copyWorkingPlan {
 # Build the working plan for the restart run.
     my $sql;             # SQL statement
-    my $sth;             # Statement handle
-    my $ret;             # SQL result
-    my $row;             # Row returned by a statement
 
 # Copy the plan from the restarted run, after a cleanup of steps that were started but not completed.
 # For the 'In_progress' steps, reset the status to 'Ready', delete the start timestamp and the assigned session_id.
@@ -741,8 +683,7 @@ sub copyWorkingPlan {
         FROM data2pg.step
         WHERE stp_run_id = $previousRunId
     );
-    $nbSteps = $d2pDbh->do($sql)
-        or abort("Error while copying the working plan ($DBI::errstr).");
+    $nbSteps = $d2pDbh->do($sql);
     # No step to copy, because the previous run had not completed its initilization.
     if ($nbSteps == 0) {
         abort("The session to restart had not completed its initialisation. Abort the run (--action abort) and respawn (--action run).");
@@ -755,8 +696,7 @@ sub copyWorkingPlan {
         FROM data2pg.step_result
         WHERE sr_run_id = $previousRunId
     );
-    $d2pDbh->do($sql)
-        or abort("Error while copying the working plan ($DBI::errstr).");
+    $d2pDbh->do($sql);
 
 # Recompute the number of 'Ready' and already 'Completed' steps.
     $sql = qq(
@@ -765,17 +705,8 @@ sub copyWorkingPlan {
             FROM data2pg.step 
             WHERE stp_run_id = $runId
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while copying the working plan ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while copying the working plan ($DBI::errstr).");
-    if ($ret == 1) {
-        $row = $sth->fetchrow_hashref()
-            or abort("Error while copying the working plan ($DBI::errstr).");
-        $previousNbStepsOK = $row->{nb_completed_steps};
-        $nbStepsOK = $previousNbStepsOK;
-        $nbStepsReady = $row->{nb_ready_steps};
-    }
+    ($nbStepsOK, $nbStepsReady) = $d2pDbh->selectrow_array($sql);
+    $previousNbStepsOK = $nbStepsOK;
 
     if ($debug) {printDebug("Working plan registered for the restarted session, with $nbSteps steps and $nbStepsOK already completed");}
 }
@@ -860,26 +791,13 @@ sub reReadMaxSessions
 # Read the run row from the data2pg database to detect any change in the MAX_SESSIONS parameter.
 {
     my $sql;             # SQL statement
-    my $ret;             # SQL result
-    my $sth;             # Statement handle
-    my $row;             # Row returned by a statement
 
 # Reread the run table.
     $sql = qq(
         SELECT run_max_sessions FROM data2pg.run
         WHERE run_id = $runId
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while reading the run table ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while reading the run table ($DBI::errstr).");
-    if ($ret == 1) {
-        $row = $sth->fetchrow_hashref()
-        or abort("Error while reading the run table ($DBI::errstr).");
-        $maxSessions = $row->{run_max_sessions};
-    } else {
-        abort("Internal error while reading the run table.");
-    }
+    ($maxSessions) = $d2pDbh->selectrow_array($sql);
 
 # Check the new max sessions value.
     if ($maxSessions > $pgMaxCnx) {
@@ -899,9 +817,6 @@ sub startStep
     my ($session) = @_;
     my $order;           # sort order
     my $sql;             # SQL statement
-    my $ret;             # SQL result
-    my $sth;             # Statement handle
-    my $row;             # Row returned by a statement
     my $step;            # Selected step name 
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $quotedStep;      # Quoted step so that it can be used in a SQL statement
@@ -919,23 +834,12 @@ sub startStep
         SELECT stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_cum_cost
           FROM data2pg.step
           WHERE stp_run_id = $runId AND stp_status = 'Ready'
-          ORDER BY stp_cum_cost $order, stp_name LIMIT 1
+          ORDER BY stp_cum_cost $order, stp_name
+          LIMIT 1
     );
-    $sth = $d2pDbh->prepare($sql)
-        or abort("Error while starting a step ($DBI::errstr).");
-    $ret = $sth->execute()
-        or abort("Error while starting a step ($DBI::errstr).");
-
-# A step to process.
-    $row = $sth->fetchrow_hashref()
-        or abort("Error while starting a step ($DBI::errstr).");
-    $step = $row->{stp_name};
+    ($step, $sqlFunction, $shellScript, $cost, $cumCost) = $d2pDbh->selectrow_array($sql);
 	$quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
     $quotedStep = $d2pDbh->quote($step, { pg_type => PG_VARCHAR });
-    $sqlFunction = $row->{stp_sql_function};
-    $shellScript = $row->{stp_shell_script};
-    $cost = $row->{stp_cost};
-    $cumCost = $row->{stp_cum_cost};
 
 # Update the step state, the assigned session id and the start time.
     $sql = qq(
@@ -943,8 +847,7 @@ sub startStep
           SET stp_status = 'In_progress', stp_start_ts = clock_timestamp(), stp_ses_id = $session
           WHERE stp_run_id = $runId AND stp_name = $quotedStep
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while starting a step ($DBI::errstr).");
+    $d2pDbh->do($sql);
     $nbStepsReady--;
 # Commit the step start.
     $d2pDbh->commit();
@@ -959,10 +862,8 @@ sub startStep
         $sql = qq(
             SELECT * FROM $sqlFunction($quotedBatchName, $quotedStep) AS t
         );
-        $sessions[$session]->{sth} = $sessions[$session]->{dbh}->prepare($sql, {pg_async => PG_ASYNC})
-          or abort("Error while starting a step ($DBI::errstr).");
-        $sessions[$session]->{sth}->execute()
-          or abort("Error while starting a step ($DBI::errstr).");
+        $sessions[$session]->{sth} = $sessions[$session]->{dbh}->prepare($sql, {pg_async => PG_ASYNC});
+        $sessions[$session]->{sth}->execute();
     } else {
 
 # The step is a shell script. Spawn it.
@@ -986,14 +887,14 @@ sub checkStep
     my $resultsList;     # The list of the step results to display in debug mode.
     my $ret;             # SQL result
     my $i;               # Result rows counter
-    my $isMainIndicator; # Boolean indicating whether the indicators returned by the function are main indicators (to display by the monitoring clients)
     my $step;            # Selected step name 
     my $sql;             # SQL statement
     my $row;             # Row returned by a statement
-    my $quotedIndicator; # One indicator returned by the step execution, quoted to be used in a SQL statement
-    my $indicatorRank;   # The indicator rank returned by the step execution
     my $indicatorValue;  # The value associated to the indicator returned by the step execution
+    my $indicatorRank;   # The indicator rank returned by the step execution
+    my $isMainIndicator; # Boolean indicating whether the indicators returned by the function are main indicators (to display by the monitoring clients)
     my $quotedStep;      # Quoted step so that it can be used in a SQL statement
+    my $quotedIndicator; # The indicator quoted to be used in a SQL statement
 
 # Check if the statement of the session is completed.
     if ($sessions[$session]->{dbh}->pg_ready) {
@@ -1007,8 +908,7 @@ sub checkStep
             or abort("Error while processing the step $step ($DBI::errstr)");
 # Get and process each row of the step result.
         for ($i = 1; $i <= $ret; $i++) {
-            $row = $sessions[$session]->{sth}->fetchrow_hashref()
-                or abort("Error while processing the step $step ($DBI::errstr)");
+            $row = $sessions[$session]->{sth}->fetchrow_hashref();
             $quotedIndicator = $d2pDbh->quote($row->{sr_indicator}, { pg_type => PG_VARCHAR });
             $indicatorValue = $row->{sr_value};
             $indicatorRank = $row->{sr_rank};
@@ -1030,8 +930,7 @@ sub checkStep
             $sql = qq(
                 INSERT INTO data2pg.step_result VALUES $insertValues
             );
-            $d2pDbh->do($sql)
-                or abort("Error while processing the step $step ($DBI::errstr)");
+            $d2pDbh->do($sql);
         }
 
 # Update the step in the data2pg database (status and end time).
@@ -1041,8 +940,7 @@ sub checkStep
                 SET stp_status = 'Completed', stp_stop_ts = clock_timestamp()
                 WHERE stp_run_id = $runId AND stp_name = $quotedStep
         );
-        $ret = $d2pDbh->do($sql)
-            or abort("Error while processing the step $step ($DBI::errstr)");
+        $ret = $d2pDbh->do($sql);
         if ($ret != 1) {
             abort("Internal error while updating the step status for the session $i : nb rows = $ret");
         }
@@ -1055,8 +953,7 @@ sub checkStep
                 WHERE stp_run_id = $runId
                   AND $quotedStep = ANY(stp_blocking)
         );
-        $ret = $d2pDbh->do($sql)
-            or abort("Error while processing the step $step ($DBI::errstr)");
+        $ret = $d2pDbh->do($sql);
         # if some changes have been performed, infer the potential changes in the blocked steps state.
         if ($ret > 0) {
             $sql = qq(
@@ -1066,8 +963,7 @@ sub checkStep
                       AND stp_status = 'Blocked'
                       AND stp_blocking = '{}'
             );
-            $ret = $d2pDbh->do($sql)
-                or abort("Error while processing the step $step ($DBI::errstr)");
+            $ret = $d2pDbh->do($sql);
             $nbStepsReady = $nbStepsReady + $ret;
         }
 
@@ -1113,8 +1009,10 @@ sub endRun
             SET run_status = '$state', run_end_ts = current_timestamp
             WHERE run_id = $runId
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while processing the run end ($DBI::errstr)");
+    $ret = $d2pDbh->do($sql);
+    if ($ret != 1) {
+        abort("Internal error while updating the run at endRun(): nb rows = $ret");
+    }
 
 # Commit the run closing transaction.
     $d2pDbh->commit();
@@ -1142,18 +1040,9 @@ sub finalReport {
         FROM data2pg.run
         WHERE run_id = $runId
     );
-    $d2pSth = $d2pDbh->prepare($sql)
-        or abort("Error while preparing the final report ($DBI::errstr)");
-    $ret = $d2pSth->execute()
-        or abort("Error while preparing the final report ($DBI::errstr)");
-    if ($ret != 1) {
-        abort("Internal error while executing the run summary: return = $ret");
-    }
-    $rowRun = $d2pSth->fetchrow_hashref()
-        or abort("Error while preparing the final report ($DBI::errstr)");
-    $elapseTime = $rowRun->{Elapse};
+    ($elapseTime) = $d2pDbh->selectrow_array($sql);
 
-    # The aggregated step results
+    # The aggregated step results.
     $sql = qq(
         SELECT sr_indicator, sr_rank, sum(sr_value) AS "total"
         FROM data2pg.step_result
@@ -1180,7 +1069,6 @@ sub finalReport {
       print "Number of steps processed by the previous restarted run #$previousRunId : $previousNbStepsOK\n";
     }
     print "========================================================================================\n";
-    $d2pSth->finish();
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1213,8 +1101,10 @@ sub abortRun {
           SET run_status = 'Aborted', run_error_msg = 'Aborted by a "--action abort" command at ' || current_timestamp
           WHERE run_id = $previousRunId
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while aborting the run ($DBI::errstr)");
+    $ret = $d2pDbh->do($sql);
+    if ($ret != 1) {
+        abort("Internal error while updating the run at abortRun(): nb rows = $ret");
+    }
 
 # Commit the change.
     $d2pDbh->commit();
@@ -1245,15 +1135,17 @@ sub suspendRun {
           SET run_max_sessions = 0
           WHERE run_id = $previousRunId
     );
-    $ret = $d2pDbh->do($sql)
-        or abort("Error while suspending the run ($DBI::errstr)");
+    $ret = $d2pDbh->do($sql);
+    if ($ret != 1) {
+        abort("Internal error while updating the run at suspendRun(): nb rows = $ret");
+    }
 
 # Commit the change.
     $d2pDbh->commit();
 
 # Final report.
     print "========================================================================================\n";
-    print "The run #$previousRunId will be set in 'Suspended' state as sson as all the steps in execution will be completed.\n";
+    print "The run #$previousRunId will be set in 'Suspended' state as soon as all the steps in execution will be completed.\n";
     print "========================================================================================\n";
 }
 # ---------------------------------------------------------------------------------------------
