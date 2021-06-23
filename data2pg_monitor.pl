@@ -111,8 +111,7 @@ sub logonData2pg {
 # The function opens the connection on the data2pg database.
     my $d2pDsn;          # The DSN to reach the data2pg database
     my $sql;             # SQL statement
-    my $sth;             # Statement handle
-    my $ret;             # SQL result
+    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the data2pg database
 
 # Set the data2pg database connection DSN.
     $d2pDsn = "dbi:Pg:dbname=data2pg";
@@ -121,18 +120,18 @@ sub logonData2pg {
 
 # Open the connection on the data2pg database.
     my $p = scalar reverse $cnxRole;
-    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, $p)
+    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, $p, {RaiseError => 1})
         or die("Error while logging on the data2pg database ($DBI::errstr).");
 
 # Set the application_name.
-    $d2pDbh->do("SET application_name to '".$APPNAME."'")
-        or die('Set the application_name failed '.$DBI::errstr."\n");
+    $d2pDbh->do("SET application_name to '".$APPNAME."'");
 
 # Check that the data2pg schema exists.
-    $sql = qq(SELECT 0 FROM pg_namespace WHERE nspname = 'data2pg');
-    $sth = $d2pDbh->prepare($sql);
-    $ret = $sth->execute();
-    ($ret == 1) or die("The 'data2pg' schema does not exist in the data2pg database.");
+    $sql = qq(
+        SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg'
+    );
+    ($schemaFound) = $d2pDbh->selectrow_array($sql)
+        or die("The 'data2pg' schema does not exist in the data2pg database.");
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -216,13 +215,10 @@ sub showRunDetails {
                 WHERE run_id = $run
                 GROUP BY run_id
         );
-        $sth = $d2pDbh->prepare($sql);
-        $ret = $sth->execute()
-            or die('Access to the run table failed '.$DBI::errstr."\n");
-        if ($ret != 1) {
+        $row = $d2pDbh->selectrow_hashref($sql);
+        if (!defined($row)) {
             die("Run $run not found\n");
         }
-        $row = $sth->fetchrow_hashref();
         $loop = 0 if ($row->{run_status} =~ /Completed|Aborted|Suspended|Restarted/);
 # Display general information about the run.
         printf("Database: %s    Batch: %s    Type: %s    Status: '%s'    Sessions: %u ",
@@ -289,8 +285,7 @@ sub showRunDetails {
             $limit
         );
         $sth = $d2pDbh->prepare($sql);
-        $sth->execute()
-            or die('Access to the step table failed '.$DBI::errstr."\n");
+        $sth->execute();
 
 # Display results.
         $sth->{pg_expand_array} = 0;
