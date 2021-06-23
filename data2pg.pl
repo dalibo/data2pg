@@ -25,6 +25,7 @@ my %parameters = (                     # Link between the config file parameters
     'TARGET_DATABASE'          => 'targetDb',
     'BATCH_NAME'               => 'batchName',
     'MAX_SESSIONS'             => 'maxSessions',
+    'COMMENT'                  => 'comment',
     );
 
 # Global variables representing the arguments of the command line.
@@ -33,7 +34,7 @@ my $host;                              # IP host of the data2pg database
 my $port;                              # IP port of the data2pg database
 my $confFile;                          # Configuration file
 my $action;                            # Action to perform: 'run' / 'restart' / 'suspend' / 'abort'
-my $wording;                           # Wording associated to the run and registered in the run table
+our $comment;                          # Comment associated to the run and registered in the run table
 my $help;
 my $debug;
 
@@ -88,13 +89,13 @@ my @sessions;
 # Online Help.
 sub usage
 {
-    print "$0 [-help] [-action <action>] [-conf <configuration_file>] [-w <wording>]\n";
+    print "$0 [-help] [-action <action>] [-conf <configuration_file>] [-comment <comment>]\n";
     print "Data2Pg: a migration framework to load PostgreSQL databases (version $toolVersion)\n";
-    print "  -host : IP host of the data2pg database (default = PGHOST env. var.).\n";
-    print "  -port : IP port of the data2pg database (default = PGPORT env. var.).\n";
-    print "  -action : 'run' | 'restart' | 'suspend' | 'abort' (no default).\n";
-    print "  -conf : configuration file (no default).\n";
-    print "  -w    : wording describing the run (between single or double quotes to include spaces)\n";
+    print "  -host : IP host of the data2pg database (default = PGHOST env. var.)\n";
+    print "  -port : IP port of the data2pg database (default = PGPORT env. var.)\n";
+    print "  -action : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
+    print "  -conf : configuration file (no default)\n";
+    print "  -comment : comment describing the run (between single or double quotes to include spaces)\n";
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -158,7 +159,7 @@ sub parseCommandLine
         "port=s"    => \$port,
         "conf=s"    => \$confFile,
         "action=s"  => \$action,
-        "wording=s" => \$wording,
+        "comment=s" => \$comment,
         "debug"     => \$debug,
         );
 
@@ -186,6 +187,7 @@ sub parseConfigurationFile
         $line =~ /^(.*?)\s*=\s*(.*)$/
             or abort("In the configuration file ($confFile), format error on the line \n$line\n");
         my ($param, $value) = ($1, $2);
+print ("$param -> $value\n");
         no strict 'refs';          # Temporarily use variable references by name
         unless (defined $parameters{$param}) {
             abort("In the configuration file ($confFile), the parameter $param is unknown.");
@@ -195,7 +197,7 @@ sub parseConfigurationFile
         use strict 'refs';
     }
     close CONF;
-
+print ("#$comment#\n");
     if ($debug) {printDebug("Configuration file ($confFile) properly processed");}
 }
 
@@ -204,7 +206,7 @@ sub parseConfigurationFile
 sub checkParameters
 {
     # Hard coded default values.
-    $wording = ''            unless (defined ($wording));
+    $comment = ''            unless (defined ($comment));
     $maxSessions = 1         unless (defined ($maxSessions));
 
     # Check the action.
@@ -373,7 +375,7 @@ sub initRun {
     my $row;             # SQL result row
     my $quotedTargetDb;  # targetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
-    my $quotedWording;   # Wording properly quoted for the SQL
+    my $quotedComment;   # Comment properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
     my $errorMsg;        # Error message reported by the check_batch_id() function
     my $pidList;         # List the postgres backend pid of the previous run when in restart
@@ -408,15 +410,15 @@ sub initRun {
     }
 
 # Create the new run into the data2pg.run table and get its id.
-    $quotedWording = $d2pDbh->quote($wording, { pg_type => PG_VARCHAR });
+    $quotedComment = $d2pDbh->quote($comment, { pg_type => PG_VARCHAR });
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
 
     $sql = qq(
         INSERT INTO data2pg.run
-              (run_database, run_batch_name, run_init_max_ses, run_perl_pid, run_max_sessions, run_wording)
+              (run_database, run_batch_name, run_init_max_ses, run_perl_pid, run_max_sessions, run_comment)
         VALUES
-              ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $quotedWording)
+              ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $quotedComment)
         RETURNING run_id
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
@@ -510,7 +512,7 @@ sub openSession
     my ($i) = @_;
     my $sql;             # SQL statement
     my $schemaFound;     # boolean used to check the existence of the data2pg schema on the target database
-    my $backendPid;      # pid of the postgres backend created at connexion start
+    my $backendPid;      # pid of the postgres backend created at connection start
 
 # Try to connect
     my $p = scalar reverse $cnxRole;

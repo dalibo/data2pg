@@ -1601,8 +1601,8 @@ BEGIN
         EXECUTE format(
             'ANALYZE %I.%I',
             v_schema, v_table);
----- temporary slowdown
-      PERFORM pg_sleep(v_nbRows/1000);
+---- temporary slowdown (for testing purpose)
+----      PERFORM pg_sleep(v_nbRows/1000);
     END IF;
 -- Return the result records
     IF v_isLastStep THEN

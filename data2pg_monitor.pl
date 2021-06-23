@@ -205,7 +205,7 @@ sub showRunDetails {
             SELECT run_id, run_database, run_batch_name, run_batch_type, run_status, run_max_sessions, run_start_ts,
                    coalesce(run_end_ts::TEXT,'') AS run_end_ts,
                    to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS') AS run_elapse,
-                   coalesce(run_error_msg,'') AS run_error_msg, coalesce(run_wording,'') AS run_wording, run_restart_id,
+                   coalesce(run_error_msg,'') AS run_error_msg, coalesce(run_comment,'') AS run_comment, run_restart_id,
                    count(step.*) AS total_steps, sum(stp_cost) AS total_cost,
                    count(step.*) FILTER (WHERE stp_status = 'Completed') AS completed_steps,
                    sum(stp_cost) FILTER (WHERE stp_status = 'Completed') AS completed_cost,
@@ -228,8 +228,8 @@ sub showRunDetails {
         printf("Database: %s    Batch: %s    Type: %s    Status: '%s'    Sessions: %u ",
                $row->{'run_database'}, $row->{'run_batch_name'}, $row->{'run_batch_type'},
                $row->{'run_status'}, $row->{'run_max_sessions'});
-        if ($row->{'run_wording'} ne '') {
-            printf(" Wording: %s",$row->{'run_wording'});
+        if ($row->{'run_comment'} ne '') {
+            printf("   Comment: %s",$row->{'run_comment'});
         }
         print "\n"; $currLine++;
 #

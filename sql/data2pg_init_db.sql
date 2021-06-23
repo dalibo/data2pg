@@ -57,7 +57,7 @@ CREATE TABLE run (
     run_batch_type             TEXT,                    -- Batch type as specified in the batch configuration on the target database
     run_init_max_ses           INT                      -- The MAX_SESSIONS parameter from the configuration file (at least 1)
                                  CHECK (run_init_max_ses > 0),
-    run_wording                TEXT,                    -- Wording entered at run start
+    run_comment                TEXT,                    -- Comment entered at run start
     run_start_ts               TIMESTAMPTZ NOT NULL     -- Start date and time of the run
                                  DEFAULT current_timestamp,
     run_end_ts                 TIMESTAMPTZ,             -- End date and time of the run
