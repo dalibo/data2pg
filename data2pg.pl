@@ -21,27 +21,24 @@ my $sleepDurationIncr = 0.01;          # Increment of the sleep duration in the 
 my $maxSessionsRefreshDelay = 30;      # Delay in seconds between 2 accesses of the run table to detect changes in the max sessions value
 my $cnxRole = 'data2pg';               # The role name used for all connections to postgres databases
 
-my %parameters = (                     # Link between the config file parameters and the parameter variables
-    'TARGET_DATABASE'          => 'targetDb',
-    'BATCH_NAME'               => 'batchName',
-    'MAX_SESSIONS'             => 'maxSessions',
-    'COMMENT'                  => 'comment',
-    );
-
-# Global variables representing the arguments of the command line.
+# Global variables representing the arguments of the command line and the final value of the parameters.
 my $options;                           # Options from the command line
 my $host;                              # IP host of the data2pg database
 my $port;                              # IP port of the data2pg database
 my $confFile;                          # Configuration file
 my $action;                            # Action to perform: 'run' / 'restart' / 'suspend' / 'abort'
-our $comment;                          # Comment associated to the run and registered in the run table
+my $targetDb;                          # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
+my $batchName;                         # The identifier of the batch
+my $maxSessions;                       # Maximum number of sessions to open on the target database
+my $comment;                           # Comment associated to the run and registered in the run table
 my $help;
 my $debug;
 
 # Global variables representing the parameters read from the configuration file.
-our $targetDb;                         # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
-our $batchName;                        # The identifier of the batch
-our $maxSessions;                      # Maximum number of sessions to open on the target database
+our $cfTargetDb;                       # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
+our $cfBatchName;                      # The identifier of the batch
+our $cfMaxSessions;                    # Maximum number of sessions to open on the target database
+our $cfComment;                        # Comment associated to the run and registered in the run table
 
 # Global variables to manage the sessions and the statements to the databases.
 my $pgDsn;                             # DSN to reach the target database
@@ -55,7 +52,7 @@ my $nbBusySessions;                    # Number of sessions currently running a 
 my $nbStepsOK;                         # Number of steps correctly processed by the run
 my $previousNbStepsOK;                 # Number of steps correctly processed by the previous restarted run
 
-# Global variables about the previous similar run.
+# Global variables about the previous run for the same target database and batch name.
 my $previousRunExists = 0;             # Boolean indicating whether a run with the same characteristics has already been executed
 my $previousRunId;                     # The id of the previous run
 my $previousRunStartTime;              # The start time of the previous run
@@ -89,13 +86,17 @@ my @sessions;
 # Online Help.
 sub usage
 {
-    print "$0 [-help] [-action <action>] [-conf <configuration_file>] [-comment <comment>]\n";
-    print "Data2Pg: a migration framework to load PostgreSQL databases (version $toolVersion)\n";
-    print "  -host : IP host of the data2pg database (default = PGHOST env. var.)\n";
-    print "  -port : IP port of the data2pg database (default = PGPORT env. var.)\n";
-    print "  -action : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
-    print "  -conf : configuration file (no default)\n";
-    print "  -comment : comment describing the run (between single or double quotes to include spaces)\n";
+    print "Data2Pg is a migration framework to load PostgreSQL databases (version $toolVersion)\n";
+    print "Usage: $0 [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]\n\n";
+    print "  --host     : IP host of the data2pg database (default = PGHOST env. var.)\n";
+    print "  --port     : IP port of the data2pg database (default = PGPORT env. var.)\n";
+    print "  --action   : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
+    print "  --conf     : configuration file (default = no configuration file)\n";
+    print "  --target   : target database identifier (mandatory for the 'run' action) (*)\n";
+    print "  --batch    : batch name for the run (mandatory for the 'run' action) (*)\n";
+    print "  --sessions : number of parallel sessions (default = 1) (*)\n";
+    print "  --comment  : comment describing the run (between single or double quotes to include spaces) (*)\n";
+    print "(*) overides the configuration file content, if any\n";
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -154,13 +155,16 @@ sub parseCommandLine
 
 # Parse.
     $options = GetOptions(
-        "help"      => \$help,
-        "host=s"    => \$host,
-        "port=s"    => \$port,
-        "conf=s"    => \$confFile,
-        "action=s"  => \$action,
-        "comment=s" => \$comment,
-        "debug"     => \$debug,
+        "help"       => \$help,
+        "host=s"     => \$host,
+        "port=s"     => \$port,
+        "conf=s"     => \$confFile,
+        "action=s"   => \$action,
+        "target=s"   => \$targetDb,
+        "batch=s"    => \$batchName,
+        "sessions=s" => \$maxSessions,
+        "comment=s"  => \$comment,
+        "debug"      => \$debug,
         );
 
 # Help!
@@ -176,6 +180,14 @@ sub parseCommandLine
 # Read the configuration file and set the parameters.
 sub parseConfigurationFile
 {
+
+my %parameters = (                     # Link between the config file parameters and the parameter variables
+    'TARGET_DATABASE'   => 'cfTargetDb',
+    'BATCH_NAME'        => 'cfBatchName',
+    'MAX_SESSIONS'      => 'cfMaxSessions',
+    'COMMENT'           => 'cfComment',
+    );
+
     # Open the configuration file and process each line.
     open CONF, $confFile
         or abort("Error while opening the configuration file ($confFile)");
@@ -187,7 +199,6 @@ sub parseConfigurationFile
         $line =~ /^(.*?)\s*=\s*(.*)$/
             or abort("In the configuration file ($confFile), format error on the line \n$line\n");
         my ($param, $value) = ($1, $2);
-print ("$param -> $value\n");
         no strict 'refs';          # Temporarily use variable references by name
         unless (defined $parameters{$param}) {
             abort("In the configuration file ($confFile), the parameter $param is unknown.");
@@ -197,7 +208,6 @@ print ("$param -> $value\n");
         use strict 'refs';
     }
     close CONF;
-print ("#$comment#\n");
     if ($debug) {printDebug("Configuration file ($confFile) properly processed");}
 }
 
@@ -205,10 +215,6 @@ print ("#$comment#\n");
 # Check parameters read from the configuration file and assign the default values for those not already set.
 sub checkParameters
 {
-    # Hard coded default values.
-    $comment = ''            unless (defined ($comment));
-    $maxSessions = 1         unless (defined ($maxSessions));
-
     # Check the action.
     if (!defined ($action)) { abort("The --action parameter is not set."); }
 
@@ -221,12 +227,24 @@ sub checkParameters
     $actionSuspend = ($action eq 'suspend');
     $actionAbort = ($action eq 'abort');
 
-    if (!defined ($targetDb)) { abort("The 'TARGET_DATABASE' parameter is not set."); }
-    if (!defined ($batchName)) { abort("The 'BATCH_NAME' parameter is not set."); }
+    # Use the parameter values read from the configuration file when they are not set as command line options.
+    $targetDb = $cfTargetDb       if (!defined($targetDb) && defined($cfTargetDb));
+    $batchName = $cfBatchName     if (!defined($batchName) && defined($cfBatchName));
+    $maxSessions = $cfMaxSessions if (!defined($maxSessions) && defined($cfMaxSessions));
+    $comment = $cfComment         if (!defined($comment) && defined($cfComment));
 
+    # Use hard coded default values, if needed.
+    $maxSessions = 1         unless (defined ($maxSessions));
+    $comment = ''            unless (defined ($comment));
+
+    # Check mandatory parameters.
+    if (!defined ($targetDb)) { abort("Neither the 'TARGET_DATABASE' parameter nor the --target option is set."); }
+    if (!defined ($batchName)) { abort("Neither the 'BATCH_NAME' parameter nor the --batch option is set."); }
+
+    # Check numeric values.
     if ($actionRun || $actionRestart) {
         # Check the MAX_SESSIONS parameter is an integer.
-        if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter must be a positive integer."); }
+        if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
 
 #### TODO: checks directories used to manage shell scripts executions
     }
@@ -1159,13 +1177,13 @@ print "-----------------------\n";
 # Parse the command line.
 parseCommandLine();
 
-# Load and check the configuration file.
+# Load the configuration file, if specified in the command line.
 if ($confFile) {
     parseConfigurationFile();
-    checkParameters();
-} else {
-    abort("The configuration file is not specified\n");
 }
+
+# Set and check the parameter values.
+checkParameters();
 
 # Log on the data2pg database and get the status of the previous run on the same target database and for the same batch.
 logonData2pg();
