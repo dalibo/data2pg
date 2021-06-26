@@ -1290,6 +1290,7 @@ DECLARE
     v_refTable               TEXT;
     v_parentsToAdd           TEXT[];
     r_tbl                    RECORD;
+    r_function               RECORD;
     r_step                   RECORD;
 BEGIN
 -- Check that the migration exist and set it config_completed flag as true.
@@ -1307,7 +1308,7 @@ BEGIN
     IF array_ndims(v_firstBatchArray) <> 1 THEN
         RAISE EXCEPTION 'complete_migration_configuration: There must be 1 and only 1 batch in the migration set as the first one to be executed.';
     END IF;
--- Check that all tables registered into the migration must have a unique part set as the first one and a unique part as the last one.
+-- Check that all tables registered into the migration have a unique part set as the first one and a unique part as the last one.
     FOR r_tbl IN
         SELECT prt_schema, prt_table, nb_first, nb_last
             FROM (
@@ -1337,14 +1338,25 @@ BEGIN
     IF FOUND THEN
         RAISE EXCEPTION 'complete_migration_configuration: Fatal errors encountered';
     END IF;
+-- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
+    FOR r_function IN
+        SELECT DISTINCT stp_sql_function || '(TEXT, TEXT)' AS function_prototype
+            FROM data2pg.step
+            WHERE stp_batch_name = ANY (v_batchArray)
+    LOOP
+-- If the function (or the data2pg role) does not exist, trying to check the privilege will raise a standart postgres exception.
+        IF NOT has_function_privilege('data2pg', r_function.function_prototype, 'execute') THEN
+            RAISE EXCEPTION 'complete_migration_configuration: The function % will not be callable by the data2pg scheduler.', r_function.function_prototype;
+        END IF;
+    END LOOP;
 --
 -- Build the chaining constraints between steps.
 --
 -- Reset the stp_parents column for the all steps of the migration.
     UPDATE data2pg.step
-       SET stp_parents = NULL
-       WHERE stp_batch_name = ANY (v_batchArray)
-         AND stp_parents IS NOT NULL;
+        SET stp_parents = NULL
+        WHERE stp_batch_name = ANY (v_batchArray)
+          AND stp_parents IS NOT NULL;
 -- Create the links between table parts.
 -- The table parts set as the first step for their table must be the parents of all the others parts of the same batch.
     FOR r_step IN
