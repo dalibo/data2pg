@@ -1095,6 +1095,9 @@ sub finalReport {
 sub abortRun {
 # Abort the current run for the batch.
     my $sql;             # SQL statement
+    my $pgPidsToKill;    # Pids array of postgres backends to kill
+    my $pgKilledPids;    # Pids array of effectively killed postgres backends
+    my $dbh;             # A connection on the target database, to kill potential backend still in execution
     my $ret;             # SQL result
 
 # Check the previous run state, if any.
@@ -1112,8 +1115,41 @@ sub abortRun {
         if ($debug) {printDebug("Process perl $previousRunPerlPid killed.");}
     }
 
-# Kill the Postgres backend corresponding to the opened sessions.
-####TODO: code it...
+# Kill the Postgres backend corresponding to the opened sessions, if any.
+# Get the list of pids to terminate
+    $sql = qq(
+      SELECT array_agg(ses_backend_pid)::TEXT AS pg_pid_array
+          FROM data2pg.session
+          WHERE ses_run_id = $previousRunId
+            AND ses_status = 'Opened'
+    );
+    ($pgPidsToKill) = $d2pDbh->selectrow_array($sql);
+
+    if (defined($pgPidsToKill)) {
+# If there are some process to kill, open a session on the target database,
+        my $p = scalar reverse $cnxRole;
+        $dbh = DBI->connect($pgDsn, $cnxRole, $p, {AutoCommit=>0})
+              or abort("Error while logging on the target database ($DBI::errstr).");
+
+# ... ask for the backends termination,
+        $sql = qq(
+          SELECT data2pg.terminate_data2pg_backends('$pgPidsToKill')
+        );
+        ($pgKilledPids) = $dbh->selectrow_array($sql);
+        if ($debug) {printDebug("PostgreSQL backends terminated: $pgPidsToKill.");}
+
+# ... close the connection,
+        $dbh->disconnect();
+
+# ... and set the session state to 'Aborted'.
+        $sql = qq(
+          UPDATE data2pg.session
+              SET ses_status = 'Aborted', ses_stop_ts = current_timestamp
+              WHERE ses_run_id = $previousRunId
+                AND ses_status = 'Opened'
+        );
+        $d2pDbh->do($sql);
+    }
 
 # Set the run state to 'Aborted'.
     $sql = qq(

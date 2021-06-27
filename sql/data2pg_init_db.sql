@@ -30,7 +30,7 @@ SET search_path = data2pg;
 -- Create specific types.
 --
 CREATE TYPE run_status_enum AS ENUM ('Initializing', 'In_progress', 'Ending', 'Completed', 'Aborted', 'Suspended', 'Restarted');
-CREATE TYPE session_status_enum AS ENUM ('Opened', 'Closed');
+CREATE TYPE session_status_enum AS ENUM ('Opened', 'Closed', 'Aborted');
 CREATE TYPE step_status_enum AS ENUM ('Blocked', 'Ready', 'In_progress', 'Completed');
 
 --
