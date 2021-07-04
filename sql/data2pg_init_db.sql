@@ -57,6 +57,8 @@ CREATE TABLE run (
     run_batch_type             TEXT,                    -- Batch type as specified in the batch configuration on the target database
     run_init_max_ses           INT                      -- The MAX_SESSIONS parameter from the configuration file (at least 1)
                                  CHECK (run_init_max_ses > 0),
+    run_init_asc_ses           INT                      -- The ASC_SESSIONS parameter from the configuration file (at least 0)
+                                 CHECK (run_init_max_ses >= 0),
     run_comment                TEXT,                    -- Comment entered at run start
     run_start_ts               TIMESTAMPTZ NOT NULL     -- Start date and time of the run
                                  DEFAULT current_timestamp,
@@ -66,6 +68,8 @@ CREATE TABLE run (
     run_perl_pid               INT,                     -- Process ID of the data2pg.pl process
     run_max_sessions           INT                      -- The current maximum number of sessions to the target database
                                  CHECK (run_max_sessions >= 0),   -- positive, but may be 0 to smartly stop the run
+    run_asc_sessions           INT                      -- The current number of sessions for which steps are assigned in estimated cost ascending order
+                                 CHECK (run_max_sessions >= 0),
     run_error_msg              TEXT,                    -- Error message, in case of run abort
     run_restart_id             INT,                     -- Identifier of the run which restarted the current run, if aborted
     PRIMARY KEY (run_id),

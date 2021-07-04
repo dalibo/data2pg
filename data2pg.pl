@@ -30,6 +30,7 @@ my $action;                            # Action to perform: 'run' / 'restart' / 
 my $targetDb;                          # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
 my $batchName;                         # The identifier of the batch
 my $maxSessions;                       # Maximum number of sessions to open on the target database
+my $ascSessions;                       # Number of sessions for which the steps will be assigned in estimated cost ascending order
 my $comment;                           # Comment associated to the run and registered in the run table
 my $help;
 my $debug;
@@ -38,6 +39,7 @@ my $debug;
 our $cfTargetDb;                       # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
 our $cfBatchName;                      # The identifier of the batch
 our $cfMaxSessions;                    # Maximum number of sessions to open on the target database
+our $cfAscSessions;                    # Number of sessions for which the steps will be assigned in estimated cost ascending order
 our $cfComment;                        # Comment associated to the run and registered in the run table
 
 # Global variables to manage the sessions and the statements to the databases.
@@ -88,14 +90,15 @@ sub usage
 {
     print "Data2Pg is a migration framework to load PostgreSQL databases (version $toolVersion)\n";
     print "Usage: $0 [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]\n\n";
-    print "  --host     : IP host of the data2pg database (default = PGHOST env. var.)\n";
-    print "  --port     : IP port of the data2pg database (default = PGPORT env. var.)\n";
-    print "  --action   : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
-    print "  --conf     : configuration file (default = no configuration file)\n";
-    print "  --target   : target database identifier (mandatory for the 'run' action) (*)\n";
-    print "  --batch    : batch name for the run (mandatory for the 'run' action) (*)\n";
-    print "  --sessions : number of parallel sessions (default = 1) (*)\n";
-    print "  --comment  : comment describing the run (between single or double quotes to include spaces) (*)\n";
+    print "  --host         : IP host of the data2pg database (default = PGHOST env. var.)\n";
+    print "  --port         : IP port of the data2pg database (default = PGPORT env. var.)\n";
+    print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
+    print "  --conf         : configuration file (default = no configuration file)\n";
+    print "  --target       : target database identifier (mandatory for the 'run' action) (*)\n";
+    print "  --batch        : batch name for the run (mandatory for the 'run' action) (*)\n";
+    print "  --sessions     : number of parallel sessions (default = 1) (*)\n";
+    print "  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)\n";
+    print "  --comment      : comment describing the run (between single or double quotes to include spaces) (*)\n";
     print "(*) overides the configuration file content, if any\n";
 }
 
@@ -155,16 +158,17 @@ sub parseCommandLine
 
 # Parse.
     $options = GetOptions(
-        "help"       => \$help,
-        "host=s"     => \$host,
-        "port=s"     => \$port,
-        "conf=s"     => \$confFile,
-        "action=s"   => \$action,
-        "target=s"   => \$targetDb,
-        "batch=s"    => \$batchName,
-        "sessions=s" => \$maxSessions,
-        "comment=s"  => \$comment,
-        "debug"      => \$debug,
+        "help"           => \$help,
+        "host=s"         => \$host,
+        "port=s"         => \$port,
+        "conf=s"         => \$confFile,
+        "action=s"       => \$action,
+        "target=s"       => \$targetDb,
+        "batch=s"        => \$batchName,
+        "sessions=s"     => \$maxSessions,
+        "asc_sessions=s" => \$ascSessions,
+        "comment=s"      => \$comment,
+        "debug"          => \$debug,
         );
 
 # Help!
@@ -182,10 +186,11 @@ sub parseConfigurationFile
 {
 
 my %parameters = (                     # Link between the config file parameters and the parameter variables
-    'TARGET_DATABASE'   => 'cfTargetDb',
-    'BATCH_NAME'        => 'cfBatchName',
-    'MAX_SESSIONS'      => 'cfMaxSessions',
-    'COMMENT'           => 'cfComment',
+    'TARGET_DATABASE'    => 'cfTargetDb',
+    'BATCH_NAME'         => 'cfBatchName',
+    'MAX_SESSIONS'       => 'cfMaxSessions',
+    'ASC_SESSIONS'       => 'cfAscSessions',
+    'COMMENT'            => 'cfComment',
     );
 
     # Open the configuration file and process each line.
@@ -235,6 +240,7 @@ sub checkParameters
 
     # Use hard coded default values, if needed.
     $maxSessions = 1         unless (defined ($maxSessions));
+    $ascSessions = 0         unless (defined ($ascSessions));
     $comment = ''            unless (defined ($comment));
 
     # Check mandatory parameters.
@@ -243,8 +249,9 @@ sub checkParameters
 
     # Check numeric values.
     if ($actionRun || $actionRestart) {
-        # Check the MAX_SESSIONS parameter is an integer.
+        # Check that the MAX_SESSIONS and MASC_SC_SESSIONS parameters are an integer.
         if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
+        if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
 
 #### TODO: checks directories used to manage shell scripts executions
     }
@@ -434,9 +441,9 @@ sub initRun {
 
     $sql = qq(
         INSERT INTO data2pg.run
-              (run_database, run_batch_name, run_init_max_ses, run_perl_pid, run_max_sessions, run_comment)
+              (run_database, run_batch_name, run_init_max_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
         VALUES
-              ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $quotedComment)
+              ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $ascSessions, $quotedComment)
         RETURNING run_id
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
@@ -814,10 +821,10 @@ sub reReadMaxSessions
 
 # Reread the run table.
     $sql = qq(
-        SELECT run_max_sessions FROM data2pg.run
+        SELECT run_max_sessions, run_asc_sessions FROM data2pg.run
         WHERE run_id = $runId
     );
-    ($maxSessions) = $d2pDbh->selectrow_array($sql);
+    ($maxSessions, $ascSessions) = $d2pDbh->selectrow_array($sql);
 
 # Check the new max sessions value.
     if ($maxSessions > $pgMaxCnx) {
@@ -827,7 +834,7 @@ sub reReadMaxSessions
 # Set the timer for the next call.
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
-    if ($debug) {printDebug("Max_sessions parameter refreshed ($maxSessions)");}
+    if ($debug) {printDebug("Sessions parameters refreshed (Max=$maxSessions Asc=$ascSessions)");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -846,10 +853,9 @@ sub startStep
     my $cumCost;         # The cumlative cost of the selected step
 
 # Look for the next step to process.
-# Choose the step in Ready state with the highest cost.
-    $order = 'DESC';
-## On the first session, choose the lowest cost.
-#   if ($i == 1) {$order = '';}
+# Set the order the steps will be retrieved, depending on the session number and the ASC_SESSIONS parameter.
+    $order = ($session <= $ascSessions) ? 'ASC' : 'DESC';
+# Get the first step in Ready state
     $sql = qq(
         SELECT stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_cum_cost
           FROM data2pg.step
