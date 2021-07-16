@@ -1160,7 +1160,7 @@ sub abortRun {
 # Set the run state to 'Aborted'.
     $sql = qq(
       UPDATE data2pg.run
-          SET run_status = 'Aborted', run_error_msg = 'Aborted by a "--action abort" command at ' || current_timestamp
+          SET run_status = 'Aborted', run_end_ts = current_timestamp, run_error_msg = 'Aborted by a "data2pg.pl --action abort" command'
           WHERE run_id = $previousRunId
     );
     $ret = $d2pDbh->do($sql);
