@@ -450,12 +450,20 @@ sub initRun {
 
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
-# In restart mode, set the new run id as restart run id for the restarted run.
+# In restart mode ...
     if ($actionRestart) {
+# ... register the new run id as restart run id for the restarted run.
         $sql = qq(
             UPDATE data2pg.run
                 SET run_status = 'Restarted', run_restart_id = $runId
                 WHERE run_id = $previousRunId
+        );
+        $ret = $d2pDbh->do($sql);
+# ... and set the previous run id for the current run
+        $sql = qq(
+            UPDATE data2pg.run
+                SET run_restarted_id = $previousRunId
+                WHERE run_id = $runId
         );
         $ret = $d2pDbh->do($sql);
     }

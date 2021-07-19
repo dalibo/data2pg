@@ -71,7 +71,8 @@ CREATE TABLE run (
     run_asc_sessions           INT                      -- The current number of sessions for which steps are assigned in estimated cost ascending order
                                  CHECK (run_max_sessions >= 0),
     run_error_msg              TEXT,                    -- Error message, in case of run abort
-    run_restart_id             INT,                     -- Identifier of the run which restarted the current run, if aborted
+    run_restart_id             INT,                     -- Identifier of the run which has restarted the current run, if aborted/suspended
+    run_restarted_id           INT,                     -- Identifier of the run which has been restarted by the current run
     PRIMARY KEY (run_id),
     FOREIGN KEY (run_database) REFERENCES target_database(tdb_id)
 );

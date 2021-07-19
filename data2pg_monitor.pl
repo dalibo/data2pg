@@ -11,6 +11,7 @@ use Getopt::Long;
 use DBI;
 use POSIX qw(strftime floor);
 use vars qw($VERSION $PROGRAM $APPNAME);
+use Data::Dumper;
 
 $VERSION = '0.1';
 $PROGRAM = 'data2pg_monitor.pl';
@@ -199,12 +200,11 @@ sub showRunDetails {
 # Header line.
         print ("$APPNAME (version $VERSION)          Run: $run          " . strftime('%d/%m/%Y - %H:%M:%S',localtime) . "\n");
         $currLine++;
-# Get global statistics for the run.
+# Get global information and statistics for the run.
         $sql = qq(
             SELECT run_id, run_database, run_batch_name, run_batch_type, run_status, run_max_sessions, run_start_ts,
-                   coalesce(run_end_ts::TEXT,'') AS run_end_ts,
-                   to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS') AS run_elapse,
-                   coalesce(run_error_msg,'') AS run_error_msg, coalesce(run_comment,'') AS run_comment, run_restart_id,
+                   run_end_ts, to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS') AS run_elapse,
+                   run_error_msg, run_comment, run_restart_id, run_restarted_id,
                    count(step.*) AS total_steps, sum(stp_cost) AS total_cost,
                    count(step.*) FILTER (WHERE stp_status = 'Completed') AS completed_steps,
                    sum(stp_cost) FILTER (WHERE stp_status = 'Completed') AS completed_cost,
@@ -221,24 +221,32 @@ sub showRunDetails {
         }
         $loop = 0 if ($row->{run_status} =~ /Completed|Aborted|Suspended|Restarted/);
 # Display general information about the run.
-        printf("Database: %s    Batch: %s    Type: %s    Status: '%s'    Sessions: %u ",
-               $row->{'run_database'}, $row->{'run_batch_name'}, $row->{'run_batch_type'},
-               $row->{'run_status'}, $row->{'run_max_sessions'});
-        if ($row->{'run_comment'} ne '') {
-            printf("   Comment: %s",$row->{'run_comment'});
-        }
+        printf("Database: %s    Batch: %s    Type: %s    Sessions: %u",
+               $row->{'run_database'}, $row->{'run_batch_name'}, $row->{'run_batch_type'}, $row->{'run_max_sessions'});
+        if (defined($row->{'run_restarted_id'})) {
+			printf("    Restarted run #%u", $row->{'run_restarted_id'});
+		}
+        printf("    Status: '%s'", $row->{'run_status'});
+        if (defined($row->{'run_restart_id'})) {
+			printf(" by run #%u", $row->{'run_restart_id'});
+		}
         print "\n"; $currLine++;
 #
-        if ($row->{'run_error_msg'} ne '') {
+        if (defined($row->{'run_comment'}) && $row->{'run_comment'} ne '') {
+            printf("Comment: %s\n",$row->{'run_comment'});
+            $currLine++;
+        }
+#
+        if (defined($row->{'run_error_msg'})) {
             printf("Abort: %s\n",$row->{'run_error_msg'});
             $currLine++;
 #### TODO: count newlines from the error message.
         }
 # 
-        printf("Started: %-19.19s",
+        printf("Start: %-19.19s",
                $row->{'run_start_ts'});
-        if ($row->{'run_end_ts'} ne '') {
-            printf("   Ended:%-19.19s", $row->{'run_end_ts'});
+        if (defined($row->{'run_end_ts'})) {
+            printf("   End:%-19.19s", $row->{'run_end_ts'});
         }
         if ($row->{run_status} ne 'Aborted') {
             printf("   Elapse:%-19.19s", $row->{'run_elapse'});
