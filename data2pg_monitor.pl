@@ -270,8 +270,8 @@ sub showRunDetails {
         }
         $sql = qq(
             SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking,
-                   stp_ses_id, stp_start_ts, stp_stop_ts,
-                   CASE WHEN stp_status = 'Completed' THEN to_char(stp_stop_ts - stp_start_ts, 'HH24:MI:SS.US')
+                   stp_ses_id, stp_start_ts, stp_end_ts,
+                   CASE WHEN stp_status = 'Completed' THEN to_char(stp_end_ts - stp_start_ts, 'HH24:MI:SS.US')
                         WHEN stp_status = 'In_progress' THEN to_char(current_timestamp - stp_start_ts, 'HH24:MI:SS')
                         ELSE NULL
                    END AS stp_elapse,
@@ -299,7 +299,7 @@ sub showRunDetails {
                 } elsif ($row->{'stp_status'} eq 'Blocked') {
                     print "    'Blocked' steps                   Estim.Cost Blocking";
                 } elsif ($row->{'stp_status'} eq 'Completed') {
-                    print "    'Completed' steps                 Estim.Cost Sess.       Start               Stop            Elapse      Main indicator";
+                    print "    'Completed' steps                 Estim.Cost Sess.       Start               End             Elapse      Main indicator";
                 }
                 print "\n"; $currLine++;
             }
@@ -316,11 +316,11 @@ sub showRunDetails {
                 if (defined($row->{'sr_value'})) {
                     printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s %14u",
                         $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
-                        $row->{'stp_start_ts'}, $row->{'stp_stop_ts'}, $row->{'stp_elapse'}, $row->{'sr_value'});
+                        $row->{'stp_start_ts'}, $row->{'stp_end_ts'}, $row->{'stp_elapse'}, $row->{'sr_value'});
                 } else {
                     printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s",
                         $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
-                        $row->{'stp_start_ts'}, $row->{'stp_stop_ts'}, $row->{'stp_elapse'});
+                        $row->{'stp_start_ts'}, $row->{'stp_end_ts'}, $row->{'stp_elapse'});
                 }
             }
             print "\n"; $currLine++;

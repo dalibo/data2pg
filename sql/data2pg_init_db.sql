@@ -85,7 +85,7 @@ CREATE TABLE session (
     ses_backend_pid            INT,                     -- Current Pid of the Postgres backend that handles the session
     ses_start_ts               TIMESTAMPTZ NOT NULL     -- Session start date and time (the first start time if the session is re-opened)
                                  DEFAULT current_timestamp,
-    ses_stop_ts                TIMESTAMPTZ,             -- Session end date and time (remains NULL in case of abort)
+    ses_end_ts                 TIMESTAMPTZ,             -- Session end date and time (remains NULL in case of abort)
     PRIMARY KEY (ses_run_id, ses_id),
     FOREIGN KEY (ses_run_id) REFERENCES run(run_id)
 );
@@ -104,7 +104,7 @@ CREATE TABLE step (
     stp_blocking               TEXT[],                  -- The set of parent steps that currently block the step execution
     stp_ses_id                 INT,                     -- Session identifier used to execute the step
     stp_start_ts               TIMESTAMPTZ,             -- Session start date and time
-    stp_stop_ts                TIMESTAMPTZ,             -- Session end date and time (remains NULL in case of abort)
+    stp_end_ts                 TIMESTAMPTZ,             -- Session end date and time (remains NULL in case of abort)
     CHECK ((stp_sql_function IS NULL AND stp_shell_script IS NOT NULL) OR (stp_sql_function IS NOT NULL AND stp_shell_script IS NULL)),
     PRIMARY KEY (stp_run_id, stp_name),
     FOREIGN KEY (stp_run_id) REFERENCES run(run_id)

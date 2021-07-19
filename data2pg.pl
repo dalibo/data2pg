@@ -578,7 +578,7 @@ sub openSession
                 (ses_run_id, ses_id, ses_backend_pid)
             VALUES ($runId, $i, $backendPid)
             ON CONFLICT (ses_run_id, ses_id) DO UPDATE
-              SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_stop_ts = NULL
+              SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_end_ts = NULL
     );
     $d2pDbh->do($sql);
 
@@ -599,7 +599,7 @@ sub closeSession
 # Record the status and the end timestamp of the session on the target database.
     $sql = qq(
         UPDATE data2pg.session
-        SET ses_status = 'Closed', ses_stop_ts = current_timestamp
+        SET ses_status = 'Closed', ses_end_ts = current_timestamp
         WHERE ses_run_id = $runId AND ses_id = $i
     );
     $d2pDbh->do($sql);
@@ -700,13 +700,13 @@ sub copyWorkingPlan {
     $sql = qq(
         INSERT INTO data2pg.step
                   (stp_run_id, stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents, stp_cum_cost,
-                   stp_status, stp_blocking, stp_ses_id, stp_start_ts, stp_stop_ts)
+                   stp_status, stp_blocking, stp_ses_id, stp_start_ts, stp_end_ts)
             SELECT $runId, stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents, stp_cum_cost,
                    CASE WHEN stp_status = 'In_progress' THEN 'Ready' ELSE stp_status END,           -- stp_status column
                    stp_blocking,
                    CASE WHEN stp_status = 'In_progress' THEN NULL ELSE stp_ses_id END,              -- stp_ses_id column
                    CASE WHEN stp_status = 'In_progress' THEN NULL ELSE stp_start_ts END,            -- stp_start_ts column
-                   stp_stop_ts
+                   stp_end_ts
         FROM data2pg.step
         WHERE stp_run_id = $previousRunId
     );
@@ -963,7 +963,7 @@ sub checkStep
         $quotedStep = $d2pDbh->quote($step, { pg_type => PG_VARCHAR });
         $sql = qq(
             UPDATE data2pg.step
-                SET stp_status = 'Completed', stp_stop_ts = clock_timestamp()
+                SET stp_status = 'Completed', stp_end_ts = clock_timestamp()
                 WHERE stp_run_id = $runId AND stp_name = $quotedStep
         );
         $ret = $d2pDbh->do($sql);
@@ -1150,7 +1150,7 @@ sub abortRun {
 # ... and set the session state to 'Aborted'.
         $sql = qq(
           UPDATE data2pg.session
-              SET ses_status = 'Aborted', ses_stop_ts = current_timestamp
+              SET ses_status = 'Aborted', ses_end_ts = current_timestamp
               WHERE ses_run_id = $previousRunId
                 AND ses_status = 'Opened'
         );
