@@ -44,7 +44,7 @@ CREATE TABLE target_database (
     tdb_port                   SMALLINT,                -- The ip port of the database
     tdb_dbname                 TEXT,                    -- The database name inside the target instance
     tdb_description            TEXT,                    -- A free description
-    tdb_migration_locked       BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the Data2Pg scheduler is allowed to run a batch for this database
+    tdb_locked                 BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the Data2Pg scheduler is allowed to run a batch for this database
     PRIMARY KEY (tdb_id)
 );
 

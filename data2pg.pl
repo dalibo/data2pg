@@ -301,15 +301,15 @@ sub logonData2pg {
 # Get the connection parameters for the target database.
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $sql = qq(
-        SELECT tdb_host, tdb_port, tdb_dbname, tdb_migration_locked
+        SELECT tdb_host, tdb_port, tdb_dbname, tdb_locked
             FROM data2pg.target_database
             WHERE tdb_id = $quotedTargetDb
     );
     $row = $d2pDbh->selectrow_hashref($sql)
         or abort("The target database '$targetDb' from the configuration file has not been found in the target_database table.");
 # Check that the migration lock is not set on the database
-    if ($row->{'tdb_migration_locked'}) {
-        abort("The target database '$targetDb' is locked for migration.");
+    if ($row->{'tdb_locked'}) {
+        abort("The target database '$targetDb' is locked. No batch can be run for it.");
     }
 
 # Build the DSN of the target database.
