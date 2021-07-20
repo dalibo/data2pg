@@ -445,9 +445,9 @@ sub initRun {
 
     $sql = qq(
         INSERT INTO data2pg.run
-              (run_database, run_batch_name, run_init_max_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
+              (run_database, run_batch_name, run_init_max_ses, run_init_asc_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
         VALUES
-              ($quotedTargetDb, $quotedBatchName, $maxSessions, $$, $maxSessions, $ascSessions, $quotedComment)
+              ($quotedTargetDb, $quotedBatchName, $maxSessions, $ascSessions, $$, $maxSessions, $ascSessions, $quotedComment)
         RETURNING run_id
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
