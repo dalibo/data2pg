@@ -404,6 +404,9 @@ sub initRun {
     my $row;             # SQL result row
     my $quotedTargetDb;  # targetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
+    my $batchType;       # Batch type returned by the get_batch_ids() function call
+    my $migrationName;   # Migration name returned by the get_batch_ids() function call
+    my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
     my $quotedComment;   # Comment properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
     my $errorMsg;        # Error message reported by the check_batch_id() function
@@ -483,12 +486,16 @@ sub initRun {
 
 # Check that the batch name exists on the target database and that its "migration" is in a correct state.
     $sql = qq(
-        SELECT p_batchType, p_errorMsg
-          FROM data2pg.check_batch_id($quotedBatchName)
+        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed
+            FROM data2pg.get_batch_ids()
+            WHERE bi_batch_name = $quotedBatchName
     );
-    ($batchType, $errorMsg) = $sessions[1]->{dbh}->selectrow_array($sql);
-    if ($errorMsg ne '') {
-        abort("The target database reports an error for the batch $batchName: $errorMsg.");
+    ($batchType, $migrationName, $isMigCompleted) = $sessions[1]->{dbh}->selectrow_array($sql);
+    if (!defined($batchType)) {
+        abort("The batch name '$batchName' doesn't exist inside the target database.");
+    }
+    if (!$isMigCompleted) {
+        abort("The batch name '$batchName' exists inside the target database. But the configuration of its migration '$migrationName' is not completed.");
     }
 
 # Build the working plan, depending on the action.

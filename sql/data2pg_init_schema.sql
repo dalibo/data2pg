@@ -47,6 +47,14 @@ SET search_path = data2pg;
 --
 -- Create specific types.
 --
+-- The batch_id_type coposite type is used as output record for the get_batch_ids() function called by the data2pg.pl scheduler.
+CREATE TYPE batch_id_type AS (
+    bi_batch_name              TEXT,                    -- The name of the batch
+    bi_batch_type              TEXT,                    -- The batch type
+    bi_mgr_name                TEXT,                    -- A name of the migration the batch belongs to
+    bi_mgr_config_completed    BOOLEAN                  -- Boolean indicating whether the migration configuration is completed or not
+);
+
 -- The working_plan_type composite type is used as output record for the get_working_plan() function called by the data2pg.pl scheduler.
 CREATE TYPE working_plan_type AS (
     wp_name                    TEXT,                    -- The name of the step
@@ -1901,37 +1909,15 @@ BEGIN
 END;
 $check_fkey$;
 
--- The check_batch_id() function is called by the data2pg scheduler to check that the requested batch name exists and is in a correct state.
--- It returns either the batch type or an error message.
-CREATE FUNCTION check_batch_id(
-    p_batchName                TEXT,
-OUT p_batchType                TEXT,
-OUT p_errorMsg                 TEXT
-    )
-    LANGUAGE plpgsql AS
-$check_batch_id$
-DECLARE
-    v_migration              TEXT;
-    v_isConfigCompleted      BOOLEAN;
-BEGIN
-    p_batchType = NULL;
-    p_errorMsg = '';
--- Get information about the requested batch.
-    SELECT coalesce(bat_type, ''), bat_migration, mgr_config_completed
-        INTO p_batchType, v_migration, v_isConfigCompleted
-        FROM data2pg.batch
-             JOIN data2pg.migration ON (bat_migration = mgr_name)
-        WHERE bat_name = p_batchName;
--- Perform the checks.
-    IF NOT FOUND THEN
-        p_errorMsg = 'Batch not found.';
-    ELSIF NOT v_isConfigCompleted THEN
-        p_errorMsg = 'The migration (' || v_migration || ') configuration is not marked as completed.';
-    END IF;
---
-    RETURN;
-END;
-$check_batch_id$;
+-- The get_batch_ids() function is called by the data2pg scheduler to get the list of all configured batches.
+CREATE FUNCTION get_batch_ids()
+    RETURNS SETOF batch_id_type LANGUAGE sql AS
+$get_batch_ids$
+SELECT bat_name, bat_type, bat_migration, mgr_config_completed
+    FROM data2pg.batch
+         JOIN data2pg.migration ON (bat_migration = mgr_name)
+    ORDER BY bat_migration, bat_name;
+$get_batch_ids$;
 
 -- The get_working_plan() function is called by the data2pg scheduler to build its working plan.
 -- Only the data useful for its purpose are returned, through the working_plan_type structure.
