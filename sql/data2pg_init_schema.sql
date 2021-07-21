@@ -1915,8 +1915,7 @@ CREATE FUNCTION get_batch_ids()
 $get_batch_ids$
 SELECT bat_name, bat_type, bat_migration, mgr_config_completed
     FROM data2pg.batch
-         JOIN data2pg.migration ON (bat_migration = mgr_name)
-    ORDER BY bat_migration, bat_name;
+         JOIN data2pg.migration ON (bat_migration = mgr_name);
 $get_batch_ids$;
 
 -- The get_working_plan() function is called by the data2pg scheduler to build its working plan.

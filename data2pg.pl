@@ -75,6 +75,7 @@ my $actionRun;
 my $actionRestart;
 my $actionSuspend;
 my $actionAbort;
+my $actionCheck;
 
 # Hash structures to manage the steps processing.
 my @sessions;
@@ -92,14 +93,14 @@ sub usage
     print "Usage: $0 [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]\n\n";
     print "  --host         : IP host of the data2pg database (default = PGHOST env. var.)\n";
     print "  --port         : IP port of the data2pg database (default = PGPORT env. var.)\n";
-    print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' (no default)\n";
+    print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)\n";
     print "  --conf         : configuration file (default = no configuration file)\n";
-    print "  --target       : target database identifier (mandatory for the 'run' action) (*)\n";
-    print "  --batch        : batch name for the run (mandatory for the 'run' action) (*)\n";
+    print "  --target       : target database identifier (mandatory) (*)\n";
+    print "  --batch        : batch name for the run (mandatory, except for the 'check' action) (*)\n";
     print "  --sessions     : number of parallel sessions (default = 1) (*)\n";
     print "  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)\n";
     print "  --comment      : comment describing the run (between single or double quotes to include spaces) (*)\n";
-    print "(*) overides the configuration file content, if any\n";
+    print "(*) the option may also be set in the configuration file. The command line parameters overide the configuration file content, if any\n";
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -223,14 +224,15 @@ sub checkParameters
     # Check the action.
     if (!defined ($action)) { abort("The --action parameter is not set."); }
 
-    if ($action ne 'run' && $action ne 'restart' && $action ne 'suspend' && $action ne 'abort') {
-        abort("The action '$action' is invalid. Possible values are 'run', 'restart', 'suspend' or 'abort'.");
+    if ($action ne 'run' && $action ne 'restart' && $action ne 'suspend' && $action ne 'abort' && $action ne 'check') {
+        abort("The action '$action' is invalid. Possible values are 'run', 'restart', 'suspend', 'abort' or 'check'.");
     }
 
     $actionRun = ($action eq 'run');
     $actionRestart = ($action eq 'restart');
     $actionSuspend = ($action eq 'suspend');
     $actionAbort = ($action eq 'abort');
+    $actionCheck = ($action eq 'check');
 
     # Use the parameter values read from the configuration file when they are not set as command line options.
     $targetDb = $cfTargetDb       if (!defined($targetDb) && defined($cfTargetDb));
@@ -245,7 +247,7 @@ sub checkParameters
 
     # Check mandatory parameters.
     if (!defined ($targetDb)) { abort("Neither the 'TARGET_DATABASE' parameter nor the --target option is set."); }
-    if (!defined ($batchName)) { abort("Neither the 'BATCH_NAME' parameter nor the --batch option is set."); }
+    if (!defined ($batchName) && !$actionCheck) { abort("Neither the 'BATCH_NAME' parameter nor the --batch option is set."); }
 
     # Check numeric values.
     if ($actionRun || $actionRestart) {
@@ -495,7 +497,7 @@ sub initRun {
         abort("The batch name '$batchName' doesn't exist inside the target database.");
     }
     if (!$isMigCompleted) {
-        abort("The batch name '$batchName' exists inside the target database. But the configuration of its migration '$migrationName' is not completed.");
+        abort("The batch name '$batchName' exists inside the target database. But the configuration of its migration ($migrationName) is not completed.");
     }
 
 # Build the working plan, depending on the action.
@@ -519,10 +521,10 @@ sub initRun {
 }
 
 # ---------------------------------------------------------------------------------------------
-sub adjustSessions
+sub adjustSessions {
 # Prepare the session structure to match the current requested maxSessions.
 # If the max_sessions parameter has decreased, close the idle sessions.
-{
+
     my $firstSession;    # First session to initialize
 
 # Prepare the needed sessions.
@@ -574,32 +576,36 @@ sub openSession
         ($schemaFound) = $sessions[$i]->{dbh}->selectrow_array($sql)
             or abort("The 'data2pg' schema does not exist in the target database.");
 
+        if (!$actionCheck) {
 # Get the maximum number of sessions that could be opened,
-        $sql = qq(
-            SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int AS max_cnx
-        );
-        ($pgMaxCnx) = $sessions[$i]->{dbh}->selectrow_array($sql);
+            $sql = qq(
+                SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int AS max_cnx
+            );
+            ($pgMaxCnx) = $sessions[$i]->{dbh}->selectrow_array($sql);
 
 # ... and check that we are not too greedy.
-        if ($maxSessions > $pgMaxCnx) {
-            abort("The requested number of sessions ($maxSessions) exceeds the maximum number of connections that the targeted database can handle ($pgMaxCnx).");
+            if ($maxSessions > $pgMaxCnx) {
+                abort("The requested number of sessions ($maxSessions) exceeds the maximum number of connections that the targeted database can handle ($pgMaxCnx).");
+            }
         }
     }
 
+    if (!$actionCheck) {
 # Set the application name to the just opened session and get the pid of the Postgres backend.
-    $sql = qq(SET application_name = 'data2pg');
-    $sessions[$i]->{dbh}->do($sql);
+        $sql = qq(SET application_name = 'data2pg');
+        $sessions[$i]->{dbh}->do($sql);
 
 # Register the session in the data2pg database.
-    $backendPid = $sessions[$i]->{dbh}->{pg_pid};
-    $sql = qq(
-        INSERT INTO data2pg.session
-                (ses_run_id, ses_id, ses_backend_pid)
-            VALUES ($runId, $i, $backendPid)
-            ON CONFLICT (ses_run_id, ses_id) DO UPDATE
-              SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_end_ts = NULL
-    );
-    $d2pDbh->do($sql);
+        $backendPid = $sessions[$i]->{dbh}->{pg_pid};
+        $sql = qq(
+            INSERT INTO data2pg.session
+                    (ses_run_id, ses_id, ses_backend_pid)
+                VALUES ($runId, $i, $backendPid)
+                ON CONFLICT (ses_run_id, ses_id) DO UPDATE
+                  SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_end_ts = NULL
+        );
+        $d2pDbh->do($sql);
+    }
 
     if ($debug) {printDebug("Session $i on the target database opened");}
 }
@@ -1230,6 +1236,57 @@ sub suspendRun {
     print "========================================================================================\n";
 }
 # ---------------------------------------------------------------------------------------------
+sub checkDb {
+# Check the target database et return the configured batches.
+    my $sql;             # SQL statement
+    my $rows;            # SQL rows
+    my $mgrNameLen;      # Largest migration name length
+    my $batchNameLen;    # Largest batch name length
+    my $batchTypeLen;    # Largest batch type length
+
+# Open a connection to the target database.
+	openSession(1);
+    print "The target database $targetDb is accessible with DSN $pgDsn.\n";
+
+# Get the configured batches.
+    $sql = qq(
+        SELECT bi_mgr_name, bi_batch_name, bi_batch_type, CASE bi_mgr_config_completed WHEN TRUE THEN 'Yes' ELSE 'No' END AS mgr_is_ready
+            FROM data2pg.get_batch_ids()
+            ORDER BY bi_mgr_name, bi_batch_name
+    );
+    $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}});
+
+# Compute the columns size by looking at each cell.
+# Initialize the length to hold the column titles.
+    $mgrNameLen = 9; $batchNameLen = 10; $batchTypeLen = 10;
+
+    foreach my $row (@$rows) {
+        $mgrNameLen = length($row->{bi_mgr_name}) if (length($row->{bi_mgr_name}) > $mgrNameLen);
+        $batchNameLen = length($row->{bi_batch_name}) if (length($row->{bi_batch_name}) > $batchNameLen);
+        $batchTypeLen = length($row->{bi_batch_type}) if (length($row->{bi_batch_type}) > $batchTypeLen);
+    }
+    print "Configured batches:\n";
+# Print the title line (with spaces to fit the column's lengths).
+    print " Migration" . (' ' x ($mgrNameLen - 9));
+    print " | Batch name" . (' ' x ($batchNameLen - 10));
+    print " | Batch type" . (' ' x ($batchTypeLen - 10));
+    print " | Is Ready\n";
+# Print the separator line.
+    print       ('-' x ($mgrNameLen + 2));
+    print "+" . ('-' x ($batchNameLen + 2));
+    print "+" . ('-' x ($batchTypeLen + 2));
+    print "+----------\n";
+# Display each batch.
+    foreach my $row (@$rows) {
+        print   " " . $row->{'bi_mgr_name'} . (' ' x ($mgrNameLen - length($row->{'bi_mgr_name'})));
+        print " | " . $row->{'bi_batch_name'} . (' ' x ($batchNameLen - length($row->{'bi_batch_name'})));
+        print " | " . $row->{'bi_batch_type'} . (' ' x ($batchTypeLen - length($row->{'bi_batch_type'})));
+        print " | " . $row->{mgr_is_ready} . "\n";
+    }
+
+    print "\n";
+}
+# ---------------------------------------------------------------------------------------------
 # The main function.
 
 print " Data2Pg - version $toolVersion\n";
@@ -1246,15 +1303,20 @@ if ($confFile) {
 # Set and check the parameter values.
 checkParameters();
 
-# Log on the data2pg database and get the status of the previous run on the same target database and for the same batch.
+# Log on the data2pg database.
 logonData2pg();
-getPreviousRunStatus();
+if (!$actionCheck) {
+# Get the status of the previous run on the same target database and for the same batch.
+    getPreviousRunStatus();
+}
 
 # Execute the requested action.
 if ($actionAbort) {
     abortRun();
 } elsif ($actionSuspend) {
     suspendRun();
+} elsif ($actionCheck) {
+    checkDb();
 } else {              # $actionRun or $actionRestart
 # Initialize the run.
     initRun();
