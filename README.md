@@ -8,7 +8,7 @@ Version: 0.1
 License
 -------
 
-<TO BE DEFINED.>
+Data2Pg is distributed under the GNU General Public License.
 
 Objectives
 ----------
@@ -20,11 +20,6 @@ The main goal of Data2Pg is to help in database migration projects moving data f
  * compare non PostgreSQL databases and their equivalent Postgres one to help non regression test campaigns.
 
 These 3 functions use the same infrastructure. The source database is directly accessed from PostgreSQL using a Foreign Data Wrapper.
-
-Distribution
-------------
-
-Data2Pg is available on <TO BE DEFINED> repository.
 
 Architecture
 ------------
