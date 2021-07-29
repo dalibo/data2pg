@@ -36,6 +36,8 @@ How to install and use Data2Pg
 
 The scheduler and the monitor clients are written in perl and use the DBI and DBD::Postgres modules. These components may need to be installed on your machine.
 
+If you want to use the web client (it is optional), the data2pg/www subdirectory must be accessible for a web server with php activated. A data2pg/www/conf/config.inc.php must be created using the config.inc.php-dist template.
+
 How to test Data2Pg
 -------------------
 

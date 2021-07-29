@@ -1,0 +1,238 @@
+/*
+   data2pg.css
+   This file belongs to the Data2Pg web client.
+   It contains all the style properties.
+ */
+
+/*
+	Global styles.
+ */
+body {
+	margin: 0px; padding: 0px;
+	background-color: #ECECEC;
+	color: #000000;
+	font-family: Arial;
+	text-align: center;
+}
+a.button {
+	background-color: white;
+	border: none;
+	color: black;
+	text-align: center;
+	text-decoration: none;
+	display: inline-block;
+	cursor: pointer;
+}
+a.button:hover {
+	background-color: #F5AE7F;
+	color: white;
+}
+span.bold {
+	font-weight: bold;
+}
+.alignLeft {
+	text-align: left;
+	padding-left: 5px;
+}
+.hidden {
+	visibility: hidden;
+}
+p.errMsg {
+	color: red;
+	font-weight: bold;
+}
+p.msg {
+	color: blue;
+	font-weight: bold;
+}
+
+/*
+	Header styles.
+ */
+header {
+	position: fixed;
+	top: 0;
+	left: 0;
+	width: 100%;
+	min-height: 3.2em;
+	padding: 5px;
+	display: flex;
+	justify-content: space-between;
+	background-color: #294194;
+	color: white;
+	box-shadow: 0px 2px 5px rgba(0,0,0,.25);
+	text-align: center;
+	z-index: 100;
+}
+div.headerLogo {
+	width: 25%;
+	font-size: 1.6em;
+	margin-top: 10px;
+	text-align: center;
+}
+span.headerVersion {
+	margin-left: 1em;
+	font-size: 0.7em;
+}
+div.headerButtons {
+	width: 50%;
+	text-align: center;
+	margin-top:2px;
+}
+a.headerbutton {
+	padding: 10px 20px;
+	font-size: 1em;
+	margin: 4px 2px;
+	border-radius: 5px;
+}
+div.headerTime {
+	width: 25%;
+	font-size: 1em;
+	margin-top: 15px;
+	text-align: center;
+}
+
+/*
+	Main section styles.
+ */
+main {
+	margin-top: 4.5em;
+	margin-bottom: 1.5em;
+}
+#mainTitle {
+	width: 100%;
+	min-height: 2.1em;
+	display: grid;
+	grid-template-columns: 30% 40% 30%;
+	justify-content: space-between;
+	align-items: center;
+	text-align: center;
+	font-size: 1.25em;
+	font-weight: bold;
+	margin-bottom: 0.4em;
+}
+#mainTitleL {
+	text-align: right;
+}
+#mainTitleC {
+	text-align: center;
+}
+#mainTitleR {
+	text-align: left;
+}
+
+a.mainbutton {
+	padding: 5px 8px;
+	font-size: 0.9em;
+	margin: 5px 8px;
+	border-radius: 5px;
+	box-shadow: 4px 4px 7px rgba(0,0,0,.25);
+	text-decoration: none;
+	font-weight: normal;
+}
+td.action:hover {
+	background-color: #F5AE7F;
+}
+td.action > a > img {
+	width: 20px;
+	height: 20px;
+}
+#runDetails {
+	width: 70%;
+	float: left;
+	margin: 0px 7px 0px 20px;
+	font-size: 0.95em;
+	text-align: left;
+}
+#resultsSummary {
+	width: 26%;
+	float: left;
+	margin: 15px 10px 0px 7px;
+	text-align: center;
+}
+#newRun {
+	text-align: center;
+}
+
+table.tbl {
+	border: 0;
+	border-collapse: collapse;
+	box-shadow: 4px 4px 8px rgba(0,0,0,.25);
+	background-color: #FFFFFF;
+	margin: 0 auto;
+	width: 97%;
+}
+tr {
+	color: #000000;
+	font-size: 0.85em;
+	text-align: center;
+}
+th {
+	background-color: #294194;
+	color: #FFFFFF;
+	font-size: 1em;
+	text-align: center;
+	padding: 4px 0px 4px 0px;
+	border-left: 1px solid #DDDDDD;
+	border-right: 1px solid #DDDDDD;
+}
+tr.odd {
+	background-color: white;
+}
+tr.even {
+	background-color: #E0E3F1;
+}
+tr.fromPreviousRun {
+	color: red;
+}
+td {
+	padding: 4px 0px 4px 0px;
+	border-left: 1px solid #DDDDDD;
+	border-right: 1px solid #DDDDDD;
+}
+td > a {
+	display: block;
+	text-decoration: none;
+}
+
+/*
+	Grid div for forms
+ */
+div.form-container {
+	display: grid;
+	grid-template-columns: 50% 50%;
+	grid-gap: 7px;
+	margin-top: 5px;
+	margin-bottom: 5px;
+}
+div.form-label {
+	display: flex;
+	align-items: center;
+	justify-content: right;
+	padding-right: 5px;
+	padding-left: 10px;
+}
+div.form-input {
+	display: flex;
+	align-items: center;
+	justify-content: left;
+	padding-right: 10px;
+	padding-left: 5px;
+}
+input[type=submit], input[type=reset], input[type=button] {
+	width: 70px;
+	margin: 5px 3px;
+	padding: 5px 8px;
+	background-color: white;
+	border: none;
+	box-shadow: 4px 4px 7px rgba(0,0,0,.25);
+	cursor: pointer;
+}
+input[type=submit]:hover, input[type=reset]:hover, input[type=button]:hover {
+	background-color: #F5AE7F;
+}
+/*
+	Footer styles.
+ */
+footer {
+}
