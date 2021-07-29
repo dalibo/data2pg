@@ -120,8 +120,8 @@ sub logonData2pg {
     $d2pDsn .= ";port=$port" if defined $port;
 
 # Open the connection on the data2pg database.
-    my $p = scalar reverse $cnxRole;
-    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, $p, {RaiseError => 1})
+# The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
+    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, undef, {RaiseError => 1})
         or die("Error while logging on the data2pg database ($DBI::errstr).");
 
 # Set the application_name.

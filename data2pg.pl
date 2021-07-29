@@ -287,9 +287,9 @@ sub logonData2pg {
     $d2pDsn .= ";port=$port" if defined $port;
 
 # Open the connection on the data2pg database.
-    my $p = scalar reverse $cnxRole;
+# The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
     if ($debug) {printDebug("Trying to connect on the data2pg database");}
-    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, $p, {AutoCommit=>0})
+    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, undef, {AutoCommit=>0})
           or abort("Error while logging on the data2pg database ($DBI::errstr).");
     $d2pDbh->{RaiseError} = 1;
 
@@ -561,8 +561,8 @@ sub openSession
     my $backendPid;      # pid of the postgres backend created at connection start
 
 # Try to connect
-    my $p = scalar reverse $cnxRole;
-    $sessions[$i]->{dbh} = DBI->connect($pgDsn, $cnxRole, $p, {AutoCommit=>0})
+# The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
+    $sessions[$i]->{dbh} = DBI->connect($pgDsn, $cnxRole, undef, {AutoCommit=>0})
           or abort("Error while logging on the target database ($DBI::errstr).");
     $sessions[$i]->{dbh}->{RaiseError} = 1;
     $sessions[$i]->{state} = 1;
