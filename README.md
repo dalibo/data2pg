@@ -33,7 +33,7 @@ The Data2Pg framework has several components:
 
   * an extension installed into the target Postgres database
   * a dedicated data2pg database that is generaly installed in a central point of the migration project
-  * a scheduler that performs the requested actions 
+  * a scheduler that performs the requested actions
   * a monitor tool that allows to report the migration progress in real time or display detailed information of past migrations.
 
 How to install and use Data2Pg
@@ -47,15 +47,35 @@ How to test Data2Pg
 The following steps must be executed:
 
   * Download the repository and set the project main directory as current directory
-  * Initialize the central data2pg database by executing the //data2pg_init_db.sh// shell script (once the environment variables adjusted)
-  * Initialize both postgres source and target databases by executing the //test_pg/1-init.sh// shell script (once the environment variables adjusted)
-  * Initialize the data2pg extension into the target database by executing the //data2pg_init_schema.sh// shell script (once the environment variables adjusted)
-  * Configure the //migration// by executing the //test_pg/3-configure.sh// shell script (once the environment variables adjusted)
+  ```
+  cd /opt
+  git clone git@gitlab.dalibo.info:philippe/data2pg.git
+  ```
+  * Initialize the central data2pg database by executing the `data2pg_init_db.sh` shell script (once the environment variables adjusted)
+  ```
+  cd /opt/data2pg
+  bash data2pg_init_db.sh
+  ```
+  * Initialize both postgres source and target databases by executing the `test_pg/1-init.sh` shell script (once the environment variables adjusted)
+  ```
+  cd /opt/data2pg
+  bash test_pg/1-init.sh
+  ```
+  * Initialize the data2pg extension into the target database by executing the `data2pg_init_schema.sh` shell script (once the environment variables adjusted)
+  ```
+  cd /opt/data2pg
+  bash data2pg_init_schema.sh
+  ```
+  * Configure the `migration` by executing the `test_pg/3-configure.sh` shell script (once the environment variables adjusted)
+  ```
+  cd /opt/data2pg
+  bash test_pg/3-configure.sh
+  ```
   * Run the scheduler with commands like
-    * perl data2pg.pl -c test_pg/batch0.conf <parameters for the connection to the data2pg database> -a run 
-    * perl data2pg.pl -c test_pg/batch1.conf <parameters for the connection to the data2pg database> -a run
-    * perl data2pg.pl -c test_pg/batch_compare.conf <parameters for the connection to the data2pg database> -a run 
-  * Run the monitor with commands like 
+    * perl data2pg.pl --conf test_pg/batch0.conf <parameters for the connection to the data2pg database> --action run
+    * perl data2pg.pl --conf test_pg/batch1.conf <parameters for the connection to the data2pg database> -action run
+    * perl data2pg.pl --conf test_pg/batch_compare.conf <parameters for the connection to the data2pg database> -action run
+  * Run the monitor with commands like
     * perl data2pg_monitor.pl <parameters for the connection to the data2pg database> -r <run_id> ...
 
 Contributing
