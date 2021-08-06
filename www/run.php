@@ -70,6 +70,9 @@ function runDetails($runId, $msg = '') {
 	$res = sql_getRun($runId);
 	$run = pg_fetch_assoc($res);
 
+// Determine whether an auto refresh button has to be generated
+	$autoRefresh = ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress');
+
 // Display the page title.
 	$centerTitle = '';
 	$class = ($runId > 1) ? "" : " hidden";
@@ -84,13 +87,32 @@ function runDetails($runId, $msg = '') {
 	$centerTitle .= "<a href=run.php?a=runDetails&runId=$nextRun class=\"button mainButton $class\">&nbsp;&gt;&nbsp;</a>";
 	$centerTitle .= "<a href=run.php?a=runDetails&runId=$maxRun class=\"button mainButton $class\">&nbsp;&gt;&gt;&nbsp;</a>";
 
-// Display additional buttons on the left div title, depending on the run status
-	$leftTitle = '';
-	if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
-		$leftTitle .= "\t\t<a href=\"run.php?a=runDetails&runId=$runId\" class=\"button mainButton\">Refresh</a>\n";
+// Add some javascript code for the automatic page reload, if needed.
+	if ($autoRefresh) {
+		echo "<script language='Javascript'>\n";
+		echo "\tautoRefresh=1;\n";
+		echo "\tfunction reload() {window.location.href=\"run.php?a=runDetails&runId=$runId\";}\n";
+		echo "\tfunction switchRefresh() { \n";
+		echo "\t  if (autoRefresh) {\n";
+		echo "\t    autoRefresh=0;\n";
+		echo "\t    clearTimeout(refreshTimer);\n";
+		echo "\t    document.getElementById('refreshButton').innerHTML= 'Start Refresh';\n";
+		echo "\t  }else{\n";
+		echo "\t    reload();\n";
+		echo "\t  }\n";
+		echo "\t}\n";
+		$delay = $conf['refresh_delay'] * 1000;
+		echo "\trefreshTimer=window.setInterval(\"reload();\", $delay);\n";
+		echo "</script>\n";
 	}
 
-// Display additional buttons on the right div title, depending on the run status
+// Display additional buttons on the left div title, depending on the run status.
+	$leftTitle = '';
+	if ($autoRefresh) {
+		$leftTitle .= "\t\t<a id=\"refreshButton\" onclick=\"switchRefresh();\" class=\"button mainButton\">Stop Refresh</a>\n";
+	}
+	
+// Display additional buttons on the right div title, depending on the run status.
 	$rightTitle = '';
 	if ($conf['read_only'] == 0) {
 		if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
