@@ -62,208 +62,219 @@ function runDetails($runId, $msg = '') {
 		echo "\t\t\t<p class=\"$class\">$msg</p>\n";
 	}
 
-// Get the highest run id to prepare links towards neighbour run ids.
-	$res = sql_getMaxRun();
-	$maxRun = pg_fetch_result($res, 0, 0);
-
 // Get general information about the run
 	$res = sql_getRun($runId);
-	$run = pg_fetch_assoc($res);
-
-// Determine whether an auto refresh button has to be generated
-	$autoRefresh = ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress');
-
-// Display the page title.
-	$centerTitle = '';
-	$class = ($runId > 1) ? "" : " hidden";
-	$prevRun = $runId - 1;
-	$centerTitle .= "<a href=run.php?a=runDetails&runId=1 class=\"button mainButton $class\">&nbsp;&lt;&lt;&nbsp;</a>";
-	$centerTitle .= "<a href=run.php?a=runDetails&runId=$prevRun class=\"button mainButton $class\">&nbsp;&lt;&nbsp;</a>";
-
-	$centerTitle .= "&nbsp;&nbsp;Run #$runId&nbsp;&nbsp;";
-
-	$class = ($runId < $maxRun) ? "" : " hidden";
-	$nextRun = $runId + 1;
-	$centerTitle .= "<a href=run.php?a=runDetails&runId=$nextRun class=\"button mainButton $class\">&nbsp;&gt;&nbsp;</a>";
-	$centerTitle .= "<a href=run.php?a=runDetails&runId=$maxRun class=\"button mainButton $class\">&nbsp;&gt;&gt;&nbsp;</a>";
-
-// Add some javascript code for the automatic page reload, if needed.
-	if ($autoRefresh) {
-		echo "<script language='Javascript'>\n";
-		echo "\tautoRefresh=1;\n";
-		echo "\tfunction reload() {window.location.href=\"run.php?a=runDetails&runId=$runId\";}\n";
-		echo "\tfunction switchRefresh() { \n";
-		echo "\t  if (autoRefresh) {\n";
-		echo "\t    autoRefresh=0;\n";
-		echo "\t    clearTimeout(refreshTimer);\n";
-		echo "\t    document.getElementById('refreshButton').innerHTML= 'Start Refresh';\n";
-		echo "\t  }else{\n";
-		echo "\t    reload();\n";
-		echo "\t  }\n";
-		echo "\t}\n";
-		$delay = $conf['refresh_delay'] * 1000;
-		echo "\trefreshTimer=window.setInterval(\"reload();\", $delay);\n";
-		echo "</script>\n";
-	}
-
-// Display additional buttons on the left div title, depending on the run status.
-	$leftTitle = '';
-	if ($autoRefresh) {
-		$leftTitle .= "\t\t<a id=\"refreshButton\" onclick=\"switchRefresh();\" class=\"button mainButton\">Stop Refresh</a>\n";
-	}
-	
-// Display additional buttons on the right div title, depending on the run status.
-	$rightTitle = '';
-	if ($conf['read_only'] == 0) {
-		if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
-			if ($conf['exec_command'] <> 0) {
-				$rightTitle .= "\t\t<a href=\"run.php?a=checkRun&runId=$runId\" class=\"button mainButton\">Check</a>\n";
-			}
-			$rightTitle .= "\t\t<a href=\"run.php?a=alterRun&runId=$runId\" class=\"button mainButton\">Alter</a>\n";
-			if ($conf['exec_command'] <> 0) {
-				$rightTitle .= "\t\t<a href=\"run.php?a=abortRun&runId=$runId\" class=\"button mainButton\">Abort</a>\n";
-			}
-		}
-		if ($run['run_status'] == 'Suspended' || ($run['run_status'] == 'Aborted' && $run['run_restart_id'] == '' )) {
-			if ($conf['exec_command'] <> 0) {
-				$rightTitle .= "\t\t<a href=\"run.php?a=restartRun&runId=$runId\" class=\"button mainButton\">Restart</a>\n";
-			}
-		}
-	}
-
-	mainTitle($leftTitle, $centerTitle , $rightTitle);
-
-// Display the global information about the run.
-	echo "<div id=\"runDetails\">\n";
-
-	echo "\t<p>Target database = <span class=\"bold\">" . htmlspecialchars($run['run_database']) . "</span>&nbsp;";
-	echo "(" . htmlspecialchars($run['tdb_dbname']) . "&nbsp;on&nbsp;" . htmlspecialchars($run['tdb_host']) . ":" . htmlspecialchars($run['tdb_port']) . ")\n";
-	if ($run['tdb_description'] != '') {
-		echo "<img src=\"img/comment.png\" alt=\"comment\" width=\"24\" height=\"24\" title=\"" . htmlspecialchars($run['tdb_description']) . "\">";
-	}
-
-	echo "\t</p>\n";
-	echo "\t<p>Batch = <span class=\"bold\">" . htmlspecialchars($run['run_batch_name']) . "</span>" .
-		 "&nbsp;(type " . htmlspecialchars($run['run_batch_type']) . ")</p>\n";
-
-	if ($run['run_comment'] != '') {
-		echo "\t<p>Comment = " . htmlspecialchars($run['run_comment']) . "</p>\n";
-	}
-
-	echo "\t<p>Status = <span class=\"bold\">" . htmlspecialchars($run['run_status']) . "</span>";
-	if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
-		echo " - Scheduler pid = ${run['run_perl_pid']}";
-	}
-	if (isset($run['run_restart_id'])) {
-		echo " - Restarted by the run <a href=\"run.php?a=runDetails&runId=${run['run_restart_id']}\">" .
-			 htmlspecialchars($run['run_restart_id']) . "</a>";
-	}
-	if (isset($run['run_restarted_id'])) {
-		echo " - Has restarted the run <a href=\"run.php?a=runDetails&runId=${run['run_restarted_id']}\">" .
-			 htmlspecialchars($run['run_restarted_id']) . "</a>";
-	}
-	echo "\t</p>\n";
-
-	echo "\t<p>Max sessions = ${run['run_max_sessions']} (initialy ${run['run_init_max_ses']})&nbsp;-&nbsp;";
-	echo "Sessions in cost ascending order = ${run['run_asc_sessions']} (initialy ${run['run_init_asc_ses']})</p>\n";
-
-	if ($run['run_error_msg'] != '') {
-		echo "\t<p>Error = " . htmlspecialchars($run['run_error_msg']) . "</p>\n";
-	}
-	echo "\t<p>Start = ${run['run_start_ts']}";
-	if ($run['run_end_ts'] != '') {
-		echo " - End = ${run['run_end_ts']} ";
-	}
-	echo " - Elapse = ${run['elapse']}</p>\n";
-	echo "\t<p>Steps: " . htmlspecialchars($run['total_steps']) .
-		 " - Completed: "  . htmlspecialchars($run['completed_steps']) .
-		 " (" . htmlspecialchars(number_format(($run['completed_steps'] * 100 / $run['total_steps']), 1)) . "% / " .
-				htmlspecialchars(number_format($run['completed_cost'] * 100 / $run['total_cost']), 1) ."%)";
-	if ($run['run_status'] == 'In_progress') {
-		echo " - In-progress: "  . htmlspecialchars($run['in_progress_steps']) .
-			 " (" . htmlspecialchars(number_format($run['in_progress_steps'] * 100 / $run['total_steps'], 1)) . "% / " .
-					htmlspecialchars(number_format($run['in_progress_cost'] * 100 / $run['total_cost'], 1)) ."%)";
-		echo " - Others: "  . htmlspecialchars($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) .
-			 " (" . htmlspecialchars(number_format((($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) * 100) / $run['total_steps'], 1)) . "% / " .
-					htmlspecialchars(number_format((($run['total_cost'] - $run['completed_cost'] - $run['in_progress_cost']) * 100) / $run['total_cost'], 1)) ."%)";
-	}
-
-	echo "</p>\n";
-	echo "</div>\n";
-
-// Get the step results summary
-	$res = sql_getStepResultsSummary($runId);
 	$nbRows = pg_num_rows($res);
 
 	if ($nbRows > 0) {
-// Display the step results summary
-		echo "<div id=\"resultsSummary\">\n";
-// Header.
-		echo "<table class='tbl'>\n";
-		echo "\t<tr>\n";
-		echo "\t\t<th>Indicator</th>\n";
-		echo "\t\t<th>Sum values</th>\n";
-		echo "\t</tr>\n";
-// Display each line of the sheet.
-		for ($i = 0; $i < $nbRows; $i++)
-		{
-			$row = pg_fetch_assoc($res);
-			$style = "even"; if ($i % 2 != 0) {$style = "odd";}
+		$run = pg_fetch_assoc($res);
 
-			echo "\t<tr class='${style}'>\n";
-			echo "\t\t<td>" . htmlspecialchars($row['sr_indicator']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($row['sum_value']) . "</td>\n";
-			echo "\t</tr>\n";
+// Get the min, max and adjacent run ids to prepare links.
+		$res = sql_getAdjacentRuns($runId);
+		$runIds = pg_fetch_assoc($res);
+		$firstRun = $runIds['first_run'];
+		$previousRun = $runIds['previous_run'];
+		$nextRun = $runIds['next_run'];
+		$lastRun = $runIds['last_run'];
+
+// Determine whether an auto refresh button has to be generated
+		$autoRefresh = ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress');
+
+// Display the page title.
+		$centerTitle = '';
+		$class = ($runId > $firstRun) ? "" : " hidden";
+		$centerTitle .= "<a href=run.php?a=runDetails&runId=$firstRun class=\"button mainButton $class\">&nbsp;&lt;&lt;&nbsp;</a>";
+		$centerTitle .= "<a href=run.php?a=runDetails&runId=$previousRun class=\"button mainButton $class\">&nbsp;&lt;&nbsp;</a>";
+
+		$centerTitle .= "&nbsp;&nbsp;Run #$runId&nbsp;&nbsp;";
+
+		$class = ($runId < $lastRun) ? "" : " hidden";
+		$centerTitle .= "<a href=run.php?a=runDetails&runId=$nextRun class=\"button mainButton $class\">&nbsp;&gt;&nbsp;</a>";
+		$centerTitle .= "<a href=run.php?a=runDetails&runId=$lastRun class=\"button mainButton $class\">&nbsp;&gt;&gt;&nbsp;</a>";
+
+// Add some javascript code for the automatic page reload, if needed.
+		if ($autoRefresh) {
+			echo "<script language='Javascript'>\n";
+			echo "\tautoRefresh=1;\n";
+			echo "\tfunction reload() {window.location.href=\"run.php?a=runDetails&runId=$runId\";}\n";
+			echo "\tfunction switchRefresh() { \n";
+			echo "\t  if (autoRefresh) {\n";
+			echo "\t    autoRefresh=0;\n";
+			echo "\t    clearTimeout(refreshTimer);\n";
+			echo "\t    document.getElementById('refreshButton').innerHTML= 'Start Refresh';\n";
+			echo "\t  }else{\n";
+			echo "\t    reload();\n";
+			echo "\t  }\n";
+			echo "\t}\n";
+			$delay = $conf['refresh_delay'] * 1000;
+			echo "\trefreshTimer=window.setInterval(\"reload();\", $delay);\n";
+			echo "</script>\n";
 		}
-		echo "</table></div>\n";
-	}
+
+// Display additional buttons on the left div title, depending on the run status.
+		$leftTitle = '';
+		if ($autoRefresh) {
+			$leftTitle .= "\t\t<a id=\"refreshButton\" onclick=\"switchRefresh();\" class=\"button mainButton\">Stop Refresh</a>\n";
+		}
+	
+// Display additional buttons on the right div title, depending on the run status.
+		$rightTitle = '';
+		if ($conf['read_only'] == 0) {
+			if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
+				if ($conf['exec_command'] <> 0) {
+					$rightTitle .= "\t\t<a href=\"run.php?a=checkRun&runId=$runId\" class=\"button mainButton\">Check</a>\n";
+				}
+				$rightTitle .= "\t\t<a href=\"run.php?a=alterRun&runId=$runId\" class=\"button mainButton\">Alter</a>\n";
+				if ($conf['exec_command'] <> 0) {
+					$rightTitle .= "\t\t<a href=\"run.php?a=abortRun&runId=$runId\" class=\"button mainButton\">Abort</a>\n";
+				}
+			}
+			if ($run['run_status'] == 'Suspended' || ($run['run_status'] == 'Aborted' && $run['run_restart_id'] == '' )) {
+				if ($conf['exec_command'] <> 0) {
+					$rightTitle .= "\t\t<a href=\"run.php?a=restartRun&runId=$runId\" class=\"button mainButton\">Restart</a>\n";
+				}
+			}
+		}
+
+		mainTitle($leftTitle, $centerTitle , $rightTitle);
+
+// Display the global information about the run.
+		echo "<div id=\"runDetails\">\n";
+
+		echo "\t<p>Target database = <span class=\"bold\">" . htmlspecialchars($run['run_database']) . "</span>&nbsp;";
+		echo "(" . htmlspecialchars($run['tdb_dbname']) . "&nbsp;on&nbsp;" . htmlspecialchars($run['tdb_host']) . ":" . htmlspecialchars($run['tdb_port']) . ")\n";
+		if ($run['tdb_description'] != '') {
+			echo "<img src=\"img/comment.png\" alt=\"comment\" width=\"24\" height=\"24\" title=\"" . htmlspecialchars($run['tdb_description']) . "\">";
+		}
+
+		echo "\t</p>\n";
+		echo "\t<p>Batch = <span class=\"bold\">" . htmlspecialchars($run['run_batch_name']) . "</span>" .
+			"&nbsp;(type " . htmlspecialchars($run['run_batch_type']) . ")</p>\n";
+
+		if ($run['run_comment'] != '') {
+			echo "\t<p>Comment = " . htmlspecialchars($run['run_comment']) . "</p>\n";
+		}
+
+		echo "\t<p>Status = <span class=\"bold\">" . htmlspecialchars($run['run_status']) . "</span>";
+		if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
+			echo " - Scheduler pid = ${run['run_perl_pid']}";
+		}
+		if (isset($run['run_restart_id'])) {
+			echo " - Restarted by the run <a href=\"run.php?a=runDetails&runId=${run['run_restart_id']}\">" .
+				htmlspecialchars($run['run_restart_id']) . "</a>";
+		}
+		if (isset($run['run_restarted_id'])) {
+			echo " - Has restarted the run <a href=\"run.php?a=runDetails&runId=${run['run_restarted_id']}\">" .
+				htmlspecialchars($run['run_restarted_id']) . "</a>";
+		}
+		echo "\t</p>\n";
+
+		echo "\t<p>Max sessions = ${run['run_max_sessions']} (initialy ${run['run_init_max_ses']})&nbsp;-&nbsp;";
+		echo "Sessions in cost ascending order = ${run['run_asc_sessions']} (initialy ${run['run_init_asc_ses']})</p>\n";
+
+		if ($run['run_error_msg'] != '') {
+			echo "\t<p>Error = " . htmlspecialchars($run['run_error_msg']) . "</p>\n";
+		}
+		echo "\t<p>Start = ${run['run_start_ts']}";
+		if ($run['run_end_ts'] != '') {
+			echo " - End = ${run['run_end_ts']} ";
+		}
+		echo " - Elapse = ${run['elapse']}</p>\n";
+		echo "\t<p>Steps: " . htmlspecialchars($run['total_steps']) .
+			" - Completed: "  . htmlspecialchars($run['completed_steps']) .
+			" (" . htmlspecialchars(number_format(($run['completed_steps'] * 100 / $run['total_steps']), 1)) . "% / " .
+					htmlspecialchars(number_format($run['completed_cost'] * 100 / $run['total_cost']), 1) ."%)";
+		if ($run['run_status'] == 'In_progress') {
+			echo " - In-progress: "  . htmlspecialchars($run['in_progress_steps']) .
+				" (" . htmlspecialchars(number_format($run['in_progress_steps'] * 100 / $run['total_steps'], 1)) . "% / " .
+						htmlspecialchars(number_format($run['in_progress_cost'] * 100 / $run['total_cost'], 1)) ."%)";
+			echo " - Others: "  . htmlspecialchars($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) .
+				" (" . htmlspecialchars(number_format((($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) * 100) / $run['total_steps'], 1)) . "% / " .
+						htmlspecialchars(number_format((($run['total_cost'] - $run['completed_cost'] - $run['in_progress_cost']) * 100) / $run['total_cost'], 1)) ."%)";
+		}
+
+		echo "</p>\n";
+		echo "</div>\n";
+
+// Get the step results summary
+		$res = sql_getStepResultsSummary($runId);
+		$nbRows = pg_num_rows($res);
+
+		if ($nbRows > 0) {
+// Display the step results summary
+			echo "<div id=\"resultsSummary\">\n";
+// Header.
+			echo "<table class='tbl'>\n";
+			echo "\t<tr>\n";
+			echo "\t\t<th>Indicator</th>\n";
+			echo "\t\t<th>Sum values</th>\n";
+			echo "\t</tr>\n";
+// Display each line of the sheet.
+			for ($i = 0; $i < $nbRows; $i++)
+			{
+				$row = pg_fetch_assoc($res);
+				$style = "even"; if ($i % 2 != 0) {$style = "odd";}
+
+				echo "\t<tr class='${style}'>\n";
+				echo "\t\t<td>" . htmlspecialchars($row['sr_indicator']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($row['sum_value']) . "</td>\n";
+				echo "\t</tr>\n";
+			}
+			echo "</table></div>\n";
+		}
 
 // Get the elementary steps.
-	$res = sql_getSteps($runId, $run['run_status']);
-	$nbRows = pg_num_rows($res);
+		$res = sql_getSteps($runId, $run['run_status']);
+		$nbRows = pg_num_rows($res);
 
-	if ($nbRows == 0) {
+		if ($nbRows == 0) {
 // No step to display.
-		echo "<p align=center>There is no step to display for this run.</p>\n";
-	} else {
+			echo "<p align=center>There is no step to display for this run.</p>\n";
+		} else {
 
 // Display the step sheet.
 // Header.
-		echo "<table class='tbl'>\n";
-		echo "\t<tr>\n";
-		echo "\t\t<th>Step name</th>\n";
-		echo "\t\t<th>Estim. cost</th>\n";
-		echo "\t\t<th>Status</th>\n";
-		echo "\t\t<th>Session</th>\n";
-		echo "\t\t<th>#blocking</th>\n";
-		echo "\t\t<th>Start</th>\n";
-		echo "\t\t<th>End</th>\n";
-		echo "\t\t<th>Elapse</th>\n";
-		echo "\t\t<th>Main return</th>\n";
-		echo "\t</tr>\n";
+			echo "<table class='tbl'>\n";
+			echo "\t<tr>\n";
+			echo "\t\t<th>Step name</th>\n";
+			echo "\t\t<th>Estim. cost</th>\n";
+			echo "\t\t<th>Status</th>\n";
+			echo "\t\t<th>Session</th>\n";
+			echo "\t\t<th>#blocking</th>\n";
+			echo "\t\t<th>Start</th>\n";
+			echo "\t\t<th>End</th>\n";
+			echo "\t\t<th>Elapse</th>\n";
+			echo "\t\t<th>Main return</th>\n";
+			echo "\t</tr>\n";
 
 // Display each line of the sheet.
-		for ($i = 0; $i < $nbRows; $i++)
-		{
-			$step = pg_fetch_assoc($res);
-			$style = "even"; if ($i % 2 != 0) {$style = "odd";}
-			if ($step['stp_status'] == 'Completed' && $step['stp_start_ts'] < $run['run_start_ts']) $style .= " fromPreviousRun";
+			for ($i = 0; $i < $nbRows; $i++)
+			{
+				$step = pg_fetch_assoc($res);
+				$style = "even"; if ($i % 2 != 0) {$style = "odd";}
+				if ($step['stp_status'] == 'Completed' && $step['stp_start_ts'] < $run['run_start_ts']) $style .= " fromPreviousRun";
 
-			echo "\t<tr class=\"$style\">\n";
-			echo "\t\t<td class='alignLeft'>" . htmlspecialchars($step['stp_name']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_cost']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_status']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_ses_id']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['nb_blocking']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_start_ts']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_end_ts']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['stp_elapse']) . "</td>\n";
-			echo "\t\t<td>" . htmlspecialchars($step['sr_value']) . "</td>\n";
-			echo "\t</tr>\n";
+				echo "\t<tr class=\"$style\">\n";
+				echo "\t\t<td class='alignLeft'>" . htmlspecialchars($step['stp_name']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_cost']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_status']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_ses_id']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['nb_blocking']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_start_ts']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_end_ts']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_elapse']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['sr_value']) . "</td>\n";
+				echo "\t</tr>\n";
+			}
+			echo "</table>\n";
 		}
-		echo "</table>\n";
+	} else {
+
+// The requested run id does not exist !
+		echo "<p class=\"errMsg\">The run id $runId does not exist.</p>\n";
 	}
 }
+
 // The checkRun() function checks the state of a given run.
 // If the data2pg.pl pid associated to the run is not executing anymore, it marks the run as aborted.
 function checkRun($runId) {

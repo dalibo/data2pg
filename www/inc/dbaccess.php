@@ -190,11 +190,15 @@ function sql_getInProgressRuns(){
 	return $res;
 }
 
-// The sql_getMaxRun() function returns the highest run id.
-function sql_getMaxRun() {
+// The sql_getAdjacentRuns() function returns the first, previous, next and last run id for a given run id.
+function sql_getAdjacentRuns($runId) {
 	global $conn;
 
-	$sql = "SELECT last_value FROM data2pg.run_run_id_seq";
+	$sql = "SELECT min(run_id) AS first_run,
+				   max(run_id) FILTER (WHERE run_id < $runId) AS previous_run,
+				   min(run_id) FILTER (WHERE run_id > $runId) AS next_run,
+				   max(run_id) AS last_run
+				FROM data2pg.run";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
 	return $res;
 }
