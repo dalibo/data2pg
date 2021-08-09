@@ -72,7 +72,11 @@ div.headerLogo {
 }
 span.headerVersion {
 	margin-left: 1em;
-	font-size: 0.7em;
+	font-size: 0.67em;
+}
+span.headerEnvir {
+	margin-left: 1em;
+	font-size: 0.67em;
 }
 div.headerButtons {
 	width: 50%;

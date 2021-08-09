@@ -13,6 +13,11 @@
 	$conf['data2pg_port']			= 5432;
 	$conf['data2pg_pwd']			= 'secret';
 
+	// If not empty, the environment and environment_desc parameters are displayed in the page header
+	// They tell the user on which Data2Pg environment he is currently working
+	$conf['environment']			= '';				// Displayed in the page header
+	$conf['environment_desc']		= '';				// Displayed as additional comment
+
 	// The refresh delay when displaying the details of an in-progress run.
 	$conf['refresh_delay']	    	= 3;				// In seconds
 

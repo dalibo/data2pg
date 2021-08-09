@@ -17,7 +17,16 @@ function PageHeader() {
 	// body
 	echo "<body>\n";
 	echo "\t\t<header>\n";
-	echo "\t\t\t<div class=\"headerLogo\">Data2Pg<span class=\"headerVersion\">" . $conf['version'] . "</span></div>\n";
+	echo "\t\t\t<div class=\"headerLogo\">Data2Pg<span class=\"headerVersion\">" . $conf['version'] . "</span>";
+	if ($conf['environment'] <> '') {
+		echo "<span class=\"headerEnvir\">" . htmlspecialchars($conf['environment']);
+		if ($conf['environment_desc'] != '') {
+			echo "&nbsp;&nbsp;<img src=\"img/whiteComment.png\" alt=\"comment\" width=\"16\" height=\"16\" title=\"" . htmlspecialchars($conf['environment_desc']) . "\">";
+		}
+		echo "</span>\n";
+	}
+
+	echo "</span></div>\n";
 
 	// Navigation links
 	echo "\t\t\t<div class=\"headerButtons\">";
