@@ -32,6 +32,7 @@ my $batchName;                         # The identifier of the batch
 my $maxSessions;                       # Maximum number of sessions to open on the target database
 my $ascSessions;                       # Number of sessions for which the steps will be assigned in estimated cost ascending order
 my $comment;                           # Comment associated to the run and registered in the run table
+my $runId;                             # Run identifier
 my $help;
 my $debug;
 
@@ -44,8 +45,9 @@ our $cfComment;                        # Comment associated to the run and regis
 
 # Global variables to manage the sessions and the statements to the databases.
 my $pgDsn;                             # DSN to reach the target database
-my $d2pDbh;                            # handle for the connection on the data2pg database
-my $d2pSth;                            # handle for the statements to submit on the data2pg database connection
+my $d2pDbh;                            # Handle for the connection on the data2pg database
+my $d2pSth;                            # Handle for the statements to submit on the data2pg database connection
+my $newRunCreated = 0;                 # Boolean set to true when a run record has been created. Used to properly handle the run status change at abort time.
 
 # Counters.
 my $nbSteps = 0;                       # Number of steps to process by the run
@@ -65,7 +67,6 @@ my $previousRunPerlIsExecuting;        # A boolean indicating whether the previo
                                        #   (when the state is not 'Completed' or 'Aborted' or 'Suspended')
 
 # Other global variables.
-my $runId;                             # Run identifier
 my $pgMaxCnx;                          # The maximum nomber of connections configured on the target database
 my $batchType;                         # The type of the batch as defined on the target database
 my $nextMaxSessionsRefreshTime;        # The next time the maxSessions parameter stored into the run table must be read
@@ -100,6 +101,7 @@ sub usage
     print "  --sessions     : number of parallel sessions (default = 1) (*)\n";
     print "  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)\n";
     print "  --comment      : comment describing the run (between single or double quotes to include spaces) (*)\n";
+    print "  --run          : run_id supplied by external tools (should not be used for manual run start)\n";
     print "(*) the option may also be set in the configuration file. The command line parameters overide the configuration file content, if any\n";
 }
 
@@ -125,7 +127,7 @@ sub abort
     my $quotedMsg;       # Error message properly quoted to be included into a SQL statement
 
 # If a run record has been created, change its state and record the end timestamp and the error message.
-    if (defined $runId) {
+    if ($newRunCreated) {
         # Rollback any uncommited changes, if any.
         $d2pDbh->rollback()
             or die "Error while rollbacking the current transaction at abort time ($DBI::errstr)\n";
@@ -169,6 +171,7 @@ sub parseCommandLine
         "sessions=s"     => \$maxSessions,
         "asc_sessions=s" => \$ascSessions,
         "comment=s"      => \$comment,
+        "run=s"          => \$runId,
         "debug"          => \$debug,
         );
 
@@ -249,11 +252,15 @@ sub checkParameters
     if (!defined ($targetDb)) { abort("Neither the 'TARGET_DATABASE' parameter nor the --target option is set."); }
     if (!defined ($batchName) && !$actionCheck) { abort("Neither the 'BATCH_NAME' parameter nor the --batch option is set."); }
 
+	# Check invalid parameters depending on the action
+    if (defined ($runId) && !$actionRun && !$actionRestart) { abort("The --run option is not valid for this action."); }
+
     # Check numeric values.
     if ($actionRun || $actionRestart) {
         # Check that the MAX_SESSIONS and MASC_SC_SESSIONS parameters are an integer.
         if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
         if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
+        if (defined($runId) && $runId !~ /^\d+$/) { abort("The --run option must be an integer."); }
 
 #### TODO: checks directories used to manage shell scripts executions
     }
@@ -277,9 +284,9 @@ sub logonData2pg {
 # The function opens the connection on the data2pg database.
     my $d2pDsn;          # The DSN to reach the data2pg database
     my $sql;             # SQL statement
-    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the data2pg database
-    my $quotedTargetDb;  # target database quoted to be included into a SQL statement
-    my $row;             # returned row
+    my $schemaFound;     # Boolean used to check the existence of the data2pg schema on the data2pg database
+    my $quotedTargetDb;  # Target database quoted to be included into a SQL statement
+    my $row;             # Returned row
 
 # Set the data2pg database connection DSN.
     $d2pDsn = "dbi:Pg:dbname=data2pg";
@@ -409,6 +416,7 @@ sub initRun {
     my $batchType;       # Batch type returned by the get_batch_ids() function call
     my $migrationName;   # Migration name returned by the get_batch_ids() function call
     my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
+	my $runFound;        # Boolean used to check the non existence of a supplied run id
     my $quotedComment;   # Comment properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
     my $errorMsg;        # Error message reported by the check_batch_id() function
@@ -443,20 +451,32 @@ sub initRun {
         }
     }
 
-# Create the new run into the data2pg.run table and get its id.
+# If the run_id is supplied, check that the id does not already exist.
+	if (defined($runId)) {
+		$sql = qq(
+			SELECT 1 FROM data2pg.run WHERE run_id = $runId
+		);
+		($runFound) = $d2pDbh->selectrow_array($sql)
+			and abort("The new run to start ($runId) already exists.");
+	} else {
+		$runId = 'DEFAULT';
+	}
+
+# Create the new run into the data2pg.run table and get its id, if not already known.
     $quotedComment = $d2pDbh->quote($comment, { pg_type => PG_VARCHAR });
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
 
     $sql = qq(
         INSERT INTO data2pg.run
-              (run_database, run_batch_name, run_init_max_ses, run_init_asc_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
+              (run_id, run_database, run_batch_name, run_init_max_ses, run_init_asc_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
         VALUES
-              ($quotedTargetDb, $quotedBatchName, $maxSessions, $ascSessions, $$, $maxSessions, $ascSessions, $quotedComment)
+              ($runId, $quotedTargetDb, $quotedBatchName, $maxSessions, $ascSessions, $$, $maxSessions, $ascSessions, $quotedComment)
         RETURNING run_id
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
 
+	$newRunCreated = 1;
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
 # In restart mode ...
