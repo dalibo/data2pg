@@ -387,7 +387,7 @@ function spawnNewRun() {
 	$ascSession = @$_GET["ascSession"];
 	$verbose = @$_GET["verbose"];
 
-// Check the state of a potential previous run for this same database and batch
+// Check the state of a potential previous run for this same database and batch.
 	$res = sql_getPreviousRun($tdbId, $batch);
 	if (pg_num_rows($res) > 0) {
 		$prevRun = pg_fetch_assoc($res);
@@ -401,7 +401,7 @@ function spawnNewRun() {
 	$logFile = $conf['scheduler_log_dir'] . '/' . date('Ymd_His');
 
 // Create the log file on the scheduler server.
-// The directory tree is previously created, if needed
+// The directory tree is previously created, if needed.
 	$shellConn = shellOpen();
 	$cmd = "mkdir -p ${conf['scheduler_log_dir']}; touch $logFile; chmod 666 $logFile 2>&1";
 	$outputTouch = shellExec($shellConn, $cmd);
@@ -412,9 +412,14 @@ function spawnNewRun() {
 	
 	} else {
 
-// OK, spawn the scheduler
-		$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] . ' --action run ' .
-				   '--target ' . $tdbId . ' --batch ' . $batch . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+// OK, get the next run id from the run_run_id_seq sequence,
+		$res = sql_getNextRunId();
+		$newRunId = pg_fetch_result($res, 0, 0);
+
+// ... and spawn the scheduler.
+		$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
+				   ' --action run ' . ' --run ' . $newRunId . ' --target ' . $tdbId .
+				   ' --batch ' . $batch . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
 		if ($comment <> '') {
 			$bashCmd .= ' --comment "' . $comment . '"';
 		}
@@ -425,8 +430,8 @@ function spawnNewRun() {
 		$outputRun = shellExec($shellConn, $cmd);
 
 		shellClose($shellConn);
-// Display the log file name so that the user can get the run results
-		displayDb("A scheduler run has been spawned. Its output file is located at $logFile.");
+// Display the log file name so that the user can get the run results.
+		displayDb("A scheduler run has been spawned (id = $newRunId). Its output file is located at $logFile.");
 	}
 }
 

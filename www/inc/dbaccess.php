@@ -278,6 +278,15 @@ function sql_getSteps($runId, $runStatus) {
 	return $res;
 }
 
+// the sql_getNextRunId() function increments the run_run_id_seq sequence and returns the new value.
+function sql_getNextRunId() {
+	global $conn;
+
+	$sql = "SELECT nextval('run_run_id_seq')";
+	$res = pg_query($conn, $sql) or die(pg_last_error());
+	return $res;
+}
+
 // The sql_updateRun() sets the modified run properties.
 function sql_updateRun($runId, $maxSession, $ascSessions, $comment){
 	global $conn;

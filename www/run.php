@@ -475,7 +475,7 @@ function restartRun($runId) {
 function doRestartRun($runId) {
 	global $conf;
 
-// Get the run characteristics
+// Get the run characteristics.
 	$res = sql_getRun($runId);
 
 	if (pg_num_rows($res) <> 1) {
@@ -494,7 +494,7 @@ function doRestartRun($runId) {
 			$logFile = $conf['scheduler_log_dir'] . '/' . date('Ymd_His');
 
 // Create the log file on the scheduler server.
-// The directory tree is previously created, if needed
+// The directory tree is previously created, if needed.
 			$shellConn = shellOpen();
 			$cmd = "mkdir -p ${conf['scheduler_log_dir']}; touch $logFile; chmod 666 $logFile 2>&1";
 			$outputTouch = shellExec($shellConn, $cmd);
@@ -505,9 +505,14 @@ function doRestartRun($runId) {
 
 			} else {
 
-// OK, spawn the scheduler
-				$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] . ' --action restart ' .
-						'--target ' . $run['run_database'] . ' --batch ' . $run['run_batch_name'];
+// OK, get the next run id from the run_run_id_seq sequence,
+				$res = sql_getNextRunId();
+				$newRunId = pg_fetch_result($res, 0, 0);
+
+// ... and spawn the scheduler.
+				$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
+						' --action restart' . ' --run ' . $newRunId . ' --target ' . $run['run_database'] .
+						' --batch ' . $run['run_batch_name'];
 //				if ($verbose) {
 					$bashCmd .= ' --debug';
 //				}
@@ -515,8 +520,8 @@ function doRestartRun($runId) {
 				$outputRun = shellExec($shellConn, $cmd);
 
 				shellClose($shellConn);
-// Display the log file name so that the user can get the run results
-				runDetails($runId, "A scheduler run has been spawned. Its output file is located at $logFile.");
+// Display the log file name so that the user can get the run results.
+				runDetails($runId, "A scheduler run has been spawned (id = $newRunId). Its output file is located at $logFile.");
 			}
 		}
 	}
