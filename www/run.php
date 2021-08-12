@@ -69,6 +69,11 @@ function runDetails($runId, $msg = '') {
 	if ($nbRows > 0) {
 		$run = pg_fetch_assoc($res);
 
+// Get data about the external application that launched the run, if any.
+		$res = sql_getExternalRunStart($runId);
+		$existExternalRunStart = pg_num_rows($res);
+		if ($existExternalRunStart) {$externalRunStart = pg_fetch_assoc($res);}
+
 // Get the min, max and adjacent run ids to prepare links.
 		$res = sql_getAdjacentRuns($runId);
 		$runIds = pg_fetch_assoc($res);
@@ -153,6 +158,11 @@ function runDetails($runId, $msg = '') {
 
 		if ($run['run_comment'] != '') {
 			echo "\t<p>Comment = " . htmlspecialchars($run['run_comment']) . "</p>\n";
+		}
+
+		if ($existExternalRunStart) {
+			echo "\t<p>Launched by \"" . htmlspecialchars($externalRunStart['ext_client']) . "\" - Log file = " .
+				htmlspecialchars($externalRunStart['ext_sched_log_file']) . "</p>\n";
 		}
 
 		echo "\t<p>Status = <span class=\"bold\">" . htmlspecialchars($run['run_status']) . "</span>";
@@ -370,7 +380,7 @@ function doAlterRun($runId) {
 	if (pg_affected_rows($res) <> 1) {
 		$msg = "Error: internal error while updating the run's properties.";
 	} else {
-		$msg = "The run $rinId has been altered.";
+		$msg = "The run $runId has been altered.";
 	}
 
 // Display the modified databases list.
@@ -463,7 +473,7 @@ function restartRun($runId) {
 			echo "\t<p><form name=\"confirmRestartRun\" action='run.php' method='get'>\n";
 			echo "\t\t<input type='hidden' name='a' value='doRestartRun'>\n";
 			echo "\t\t<input type='hidden' name='runId' value='$runId'>\n";
-			echo "\t\t<input type='submit' value='OK'>\n";
+			echo "\t\t<input type='submit' value='Start and Monitor' style=\"width:125px;\">\n";
 			echo "\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='run.php?a=runDetails&runId=$runId';\">\n";
 			echo "\t</form></p>\n";
 			echo "</div>\n";
@@ -520,8 +530,19 @@ function doRestartRun($runId) {
 				$outputRun = shellExec($shellConn, $cmd);
 
 				shellClose($shellConn);
-// Display the log file name so that the user can get the run results.
-				runDetails($runId, "A scheduler run has been spawned (id = $newRunId). Its output file is located at $logFile.");
+
+// Register the run start attempt.
+// TODO: the scheduler address and account need to be register
+				sql_insertExternalRunStart($newRunId, NULL, NULL, $bashCmd, $logFile);
+
+// Wait until the run starts and display the new run details.
+				$isRunVisible = sql_waitForRunStart($newRunId);
+				if ($isRunVisible) {
+					runDetails($newRunId);
+				} else {
+// The run is not visible. This is probably abnormal. So stay on the old run and display the log file name so that the user can get the run results.
+					runDetails($runId, "A scheduler run has been spawned (id = $newRunId). But the run is not yet visible. Its output file is located at $logFile.");
+				}
 			}
 		}
 	}

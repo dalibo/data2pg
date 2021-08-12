@@ -371,7 +371,7 @@ function confirmNewRun() {
 	echo "\t\t<input type='hidden' name='ascSession' value='$ascSession'>\n";
 	echo "\t\t<input type='hidden' name='comment' value='$comment'>\n";
 	echo "\t\t<input type='hidden' name='verbose' value='$verbose'>\n";
-	echo "\t\t<input type='submit' value='OK'>\n";
+	echo "\t\t<input type='submit' value='Start and Monitor' style=\"width:125px;\">\n";
 	echo "\t\t<input type='button' value='Cancel' onclick='history.back()'>\n";
 	echo "\t</form></p>\n";
 	echo "</div>\n";
@@ -430,8 +430,19 @@ function spawnNewRun() {
 		$outputRun = shellExec($shellConn, $cmd);
 
 		shellClose($shellConn);
-// Display the log file name so that the user can get the run results.
-		displayDb("A scheduler run has been spawned (id = $newRunId). Its output file is located at $logFile.");
+
+// Register the run start attempt.
+// TODO: the scheduler address and account need to be register
+		sql_insertExternalRunStart($newRunId, NULL, NULL, $bashCmd, $logFile);
+
+// Wait until the run starts and display run details.
+		$isRunVisible = sql_waitForRunStart($newRunId);
+		if ($isRunVisible) {
+			echo "<script language='Javascript'>window.location.href=\"run.php?a=runDetails&runId=$newRunId\";</script>\n";
+		} else {
+// The run is not visible. This is probably abnormal. So display the log file name so that the user can get the run results.
+			displayDb("A scheduler run has been spawned (id = $newRunId). But the run is not yet visible. Its output file is located at $logFile.");
+		}
 	}
 }
 

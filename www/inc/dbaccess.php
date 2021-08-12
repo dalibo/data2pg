@@ -131,6 +131,29 @@ function sql_deleteDatabase($tdbId){
 	return $res;
 }
 
+// The sql_waitForRunStart() function waits until a given run is started.
+// It returns 1 as soon as the run is visible into the run table. It returns 0 if the run is not visible after 5 seconds.
+function sql_waitForRunStart($runId) {
+	global $conn;
+
+// Look at the run table at most 10 times and wait 1/2 second between each attempt.
+	$maxRetry = 10;
+	$sleepDelay = 500000;			// in microseconds
+	$retryCount = 0;
+	$found = 0;
+	while (!$found && $retryCount < $maxRetry) {
+		$sql = "SELECT 1 FROM data2pg.run WHERE run_id = $runId";
+		$res = pg_query($conn, $sql) or die(pg_last_error());
+		if (pg_num_rows($res) == 0) {
+			$retryCount++;
+		} else {
+			$found = 1;
+		}
+		usleep($sleepDelay);
+	}
+	return $found;
+}
+
 // The sql_getPreviousRun() function returns the id and the status about the most recent run for a given target database and batch.
 function sql_getPreviousRun($tdbId, $batch) {
 	global $conn;
@@ -284,6 +307,29 @@ function sql_getNextRunId() {
 
 	$sql = "SELECT nextval('run_run_id_seq')";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
+	return $res;
+}
+
+// The sql_getExternalRunStart() returns the columns to display of the external_run_start table for a given run id, if exists.
+function sql_getExternalRunStart($runId){
+	global $conn;
+
+	$sql = "SELECT ext_client, ext_sched_log_file
+			FROM data2pg.external_run_start
+			WHERE ext_run_id = $1";
+	$res = pg_query_params($conn, $sql, array($runId)) or die(pg_last_error());
+	return $res;
+}
+
+// The sql_insertExternalRunStart() inserts a row into the external_run_start table.
+function sql_insertExternalRunStart($runId, $schedAddr, $schedAccount, $schedCommand, $schedLogFile){
+	global $conn;
+
+	$sql = "INSERT INTO data2pg.external_run_start
+					(ext_run_id, ext_client, ext_sched_addr, ext_sched_account, ext_sched_command, ext_sched_log_file)
+			VALUES  ($1, 'Data2Pg WebApp', $2, $3, $4, $5)";
+	$res = pg_query_params($conn, $sql, array($runId, $schedAddr, $schedAccount, $schedCommand, $schedLogFile))
+		or die(pg_last_error());
 	return $res;
 }
 
