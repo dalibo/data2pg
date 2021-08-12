@@ -224,7 +224,7 @@ div.form-input {
 	padding-left: 5px;
 }
 input[type=submit], input[type=reset], input[type=button] {
-	width: 70px;
+	min-width: 70px;
 	margin: 5px 3px;
 	padding: 5px 8px;
 	background-color: white;

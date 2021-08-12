@@ -371,7 +371,7 @@ function confirmNewRun() {
 	echo "\t\t<input type='hidden' name='ascSession' value='$ascSession'>\n";
 	echo "\t\t<input type='hidden' name='comment' value='$comment'>\n";
 	echo "\t\t<input type='hidden' name='verbose' value='$verbose'>\n";
-	echo "\t\t<input type='submit' value='Start and Monitor' style=\"width:125px;\">\n";
+	echo "\t\t<input type='submit' value='Start and Monitor'>\n";
 	echo "\t\t<input type='button' value='Cancel' onclick='history.back()'>\n";
 	echo "\t</form></p>\n";
 	echo "</div>\n";

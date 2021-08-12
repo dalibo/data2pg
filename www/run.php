@@ -473,7 +473,7 @@ function restartRun($runId) {
 			echo "\t<p><form name=\"confirmRestartRun\" action='run.php' method='get'>\n";
 			echo "\t\t<input type='hidden' name='a' value='doRestartRun'>\n";
 			echo "\t\t<input type='hidden' name='runId' value='$runId'>\n";
-			echo "\t\t<input type='submit' value='Start and Monitor' style=\"width:125px;\">\n";
+			echo "\t\t<input type='submit' value='Start and Monitor'>\n";
 			echo "\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='run.php?a=runDetails&runId=$runId';\">\n";
 			echo "\t</form></p>\n";
 			echo "</div>\n";
