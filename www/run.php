@@ -466,13 +466,29 @@ function restartRun($runId) {
 		} else {
 
 // Ask for the confirmation.
-			mainTitle('', "Please confirm the restart of the run #$runId", '');
+			mainTitle('', "Restart the run #$runId", '');
 	
 			echo "<div id=\"runToRestart\">\n";
 			echo "\t<p>Target database <b>${run['run_database']}</b> - Batch <b>${run['run_batch_name']}</b> (type ${run['run_batch_type']})</p>\n";
 			echo "\t<p><form name=\"confirmRestartRun\" action='run.php' method='get'>\n";
+			echo "\t<div class=\"form-container\">\n";
 			echo "\t\t<input type='hidden' name='a' value='doRestartRun'>\n";
 			echo "\t\t<input type='hidden' name='runId' value='$runId'>\n";
+
+			echo "\t\t<div class=\"form-label\">Max sessions</div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"maxSession\" size=3 min=0 max=999 value=${run['run_init_max_ses']}></div>\n";
+
+			echo "\t\t<div class=\"form-label\">Sessions in cost ascending order</div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"ascSession\" size=3 min=0 max=999 value=${run['run_init_asc_ses']}></div>\n";
+
+			echo "\t\t<div class=\"form-label\">Comment</div>";
+			echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60 value=\"" . htmlspecialchars($run['run_comment']) . "\"></div>\n";
+
+			echo "\t\t<div class=\"form-label\">Verbose</div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"verbose\"></div>\n";
+
+			echo "\t</div>\n";
+
 			echo "\t\t<input type='submit' value='Start and Monitor'>\n";
 			echo "\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='run.php?a=runDetails&runId=$runId';\">\n";
 			echo "\t</form></p>\n";
@@ -484,6 +500,11 @@ function restartRun($runId) {
 // The doRestartRun() function effectively restarts a run.
 function doRestartRun($runId) {
 	global $conf;
+
+	$comment = @$_GET["comment"];
+	$maxSession = @$_GET["maxSession"];
+	$ascSession = @$_GET["ascSession"];
+	$verbose = @$_GET["verbose"];
 
 // Get the run characteristics.
 	$res = sql_getRun($runId);
@@ -522,10 +543,13 @@ function doRestartRun($runId) {
 // ... and spawn the scheduler.
 				$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
 						' --action restart' . ' --run ' . $newRunId . ' --target ' . $run['run_database'] .
-						' --batch ' . $run['run_batch_name'];
-//				if ($verbose) {
+						' --batch ' . $run['run_batch_name'] . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+				if ($comment <> '') {
+					$bashCmd .= ' --comment "' . $comment . '"';
+				}
+				if ($verbose) {
 					$bashCmd .= ' --debug';
-//				}
+				}
 				$cmd = 'nohup bash -c "' . addslashes($bashCmd) . '" 1>' . $logFile . ' 2>&1 &';
 				$outputRun = shellExec($shellConn, $cmd);
 

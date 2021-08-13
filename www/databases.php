@@ -33,11 +33,8 @@
 	  case "newRun":
 		newRun();
 		break;
-	  case "confirmNewRun":
-		confirmNewRun();
-		break;
-	  case "spawnNewRun":
-		spawnNewRun();
+	  case "doNewRun":
+		doNewRun();
 		break;
 	  case "checkDb":
 		checkDb();
@@ -303,8 +300,7 @@ function newRun() {
 		echo "<div id=\"newRun\">\n";
 		echo "\t<form name=\"newRun\" action=\"databases.php\" method=\"get\">\n";
 		echo "<div class=\"form-container\">\n";
-		echo "\t\t<input type=\"hidden\" name=\"a\" value=\"confirmNewRun\">\n";
-
+		echo "\t\t<input type=\"hidden\" name=\"a\" value=\"doNewRun\">\n";
 		echo "\t\t<input type=\"hidden\" name=\"tdbId\" value=\"$tdbId\">\n";
 
 		echo "\t\t<div class=\"form-label\">Batch</div>";
@@ -328,7 +324,7 @@ function newRun() {
 
 		echo "\t</div>\n";
 		echo "\t<p>\n";
-		echo "\t\t<input type=\"submit\" name=\"OK\" value=\"OK\">\n";
+		echo "\t\t<input type=\"submit\" name=\"OK\" value='Start and Monitor'>\n";
 		echo "\t\t<input type=\"reset\" value=\"Reset\">\n";
 		echo "\t\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='databases.php?a=display'\">\n";
 		echo "\t</p></form>\n";
@@ -336,49 +332,8 @@ function newRun() {
 	}
 }
 
-// The confirmNewRun() function just asks the user to confirm the new run parameters.
-function confirmNewRun() {
-	global $tdbId;
-
-	$batch = @$_GET["batch"];
-	$comment = @$_GET["comment"];
-	$maxSession = @$_GET["maxSession"];
-	$ascSession = @$_GET["ascSession"];
-	$verbose = @$_GET["verbose"];
-
-// Check the state of a potential previous run for this same database and batch
-	$res = sql_getPreviousRun($tdbId, $batch);
-	if (pg_num_rows($res) > 0) {
-		$prevRun = pg_fetch_assoc($res);
-		if ($prevRun['run_status'] <> 'Completed' && $prevRun['run_status'] <> 'Suspended' && $prevRun['run_status'] <> 'Aborted') {
-			displayDb("Error: A previous run (<a href=\"run.php?a=runDetails&runId=${prevRun['run_id']}\">#${prevRun['run_id']}</a>) for the database '$tdbId' and batch '$batch' is in '${prevRun['run_status']}' state.");
-			exit;
-		}
-	}
-
-// Display the confirmation form
-	mainTitle('', "Please confirm the Data2Pg run", '');
-	echo "<div id=\"newRun\">\n";
-	echo "\t<p>Target database <b>$tdbId</b> - batch <b>$batch</b></p>\n";
-	echo "<p>using <b>$maxSession</b> sessions (of which $ascSession with steps sorted in estimated cost ascending order)</p>\n";
-	if ($comment != '') echo "\t<p>Comment: $comment</p>\n";
-	if ($verbose) echo "<p>In verbose mode</p>\n";
-	echo "\t<p><form name=\"confirmNewRun\" action='databases.php' method='get'>\n";
-	echo "\t\t<input type='hidden' name='a' value='spawnNewRun'>\n";
-	echo "\t\t<input type='hidden' name='tdbId' value='$tdbId'>\n";
-	echo "\t\t<input type='hidden' name='batch' value='$batch'>\n";
-	echo "\t\t<input type='hidden' name='maxSession' value='$maxSession'>\n";
-	echo "\t\t<input type='hidden' name='ascSession' value='$ascSession'>\n";
-	echo "\t\t<input type='hidden' name='comment' value='$comment'>\n";
-	echo "\t\t<input type='hidden' name='verbose' value='$verbose'>\n";
-	echo "\t\t<input type='submit' value='Start and Monitor'>\n";
-	echo "\t\t<input type='button' value='Cancel' onclick='history.back()'>\n";
-	echo "\t</form></p>\n";
-	echo "</div>\n";
-}
-
-// The spawnNewRun() function effectively spawns a new Data2Pg run, using the just confirmed parameters.
-function spawnNewRun() {
+// The doNewRun() function effectively spawns a new Data2Pg run, using the input parameters.
+function doNewRun() {
 	global $conf, $tdbId;
 
 	$batch = @$_GET["batch"];
