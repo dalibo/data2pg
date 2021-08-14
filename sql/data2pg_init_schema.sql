@@ -569,7 +569,7 @@ DECLARE
     v_sourceKBytes           FLOAT;
     r_tbl                    RECORD;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_migration IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
         RAISE EXCEPTION 'register_tables: None of the first 3 input parameters can be NULL.';
     END IF;
@@ -816,7 +816,7 @@ $register_table_part$
 DECLARE
     v_migrationName          TEXT;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_schema IS NULL OR p_table IS NULL OR p_partNum IS NULL THEN
         RAISE EXCEPTION 'register_table_part: None of the first 3 input parameters can be NULL.';
     END IF;
@@ -877,7 +877,7 @@ DECLARE
     v_prevMigration          TEXT;
     r_seq                    RECORD;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_migration IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
         RAISE EXCEPTION 'register_sequences: The first 3 input parameters cannot be NULL.';
     END IF;
@@ -964,7 +964,7 @@ DECLARE
     v_prevBatchName          TEXT;
     r_tbl                    RECORD;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_batchName IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
         RAISE EXCEPTION 'assign_tables_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
@@ -1124,7 +1124,7 @@ DECLARE
     v_prevBatchName          TEXT;
     r_seq                    RECORD;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_batchName IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
@@ -1198,7 +1198,7 @@ DECLARE
     v_cost                   BIGINT;
     r_fk                     RECORD;
 BEGIN
--- Check that the first 3 parameter are not NULL.
+-- Check that the first 3 parameters are not NULL.
     IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
