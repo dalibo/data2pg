@@ -93,7 +93,7 @@ SELECT data2pg.assign_sequences_to_batch('BATCH1', 'phil''s schema3', '.*', NULL
 --select data2pg.assign_sequences_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
 SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
-SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl6|mytbl5)$');  -- JSON or POINT types cannot be compared
+SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl1|mytbl5|mytbl6)$');  -- JSON or POINT types cannot be compared
 SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 
 --
@@ -105,6 +105,12 @@ SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 2);
 SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 3);
 SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 4);
 SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 5);
+
+SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 1);
+SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
+SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
+SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
+SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 5);
 
 --
 -- Assign FK checks

@@ -1100,7 +1100,12 @@ BEGIN
             stp_sql_function, stp_cost
         ) VALUES (
             p_schema || '.' || p_table || '.' || p_partNum, p_batchName, 'TABLE_PART', p_schema, p_table, p_partNum,
-            'data2pg.copy_table', v_kbytes
+            CASE v_batchType
+                WHEN 'COPY' THEN 'data2pg.copy_table'
+                WHEN 'CHECK' THEN 'data2pg.check_table'
+                WHEN 'COMPARE' THEN 'data2pg.compare_table'
+            END,
+            v_kbytes
         );
 --
     RETURN 1;
@@ -1403,7 +1408,8 @@ BEGIN
               AND stp_batch_name = r_step.stp_batch_name;
         UPDATE data2pg.step
             SET stp_parents = array_cat(stp_parents, v_parents)
-            WHERE stp_name = r_step.stp_name;
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_name = r_step.stp_name;
     END LOOP;
 -- Add chaining constraints for foreign keys checks.
     FOR r_step IN
@@ -1436,7 +1442,8 @@ BEGIN
                    ));
         UPDATE data2pg.step
             SET stp_parents = array_cat(stp_parents, v_parentsToAdd)
-            WHERE stp_name = r_step.stp_name;
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_name = r_step.stp_name;
     END LOOP;
 -- Process the chaining constraints related to the TRUNCATE step in the first batch.
     UPDATE data2pg.step
@@ -1444,29 +1451,31 @@ BEGIN
         WHERE stp_batch_name = v_firstBatchArray[1]
           AND stp_type IN ('TABLE', 'TABLE_PART')
           AND stp_parents IS NULL;
+-- Remove duplicate steps in the all parents array of the migration.
+    WITH parent_rebuild AS (
+        SELECT step_batch, step_name, array_agg(step_parent ORDER BY step_parent) AS unique_parents
+            FROM (
+               SELECT DISTINCT stp_batch_name AS step_batch, stp_name AS step_name, unnest(stp_parents) AS step_parent
+                   FROM data2pg.step
+                   WHERE stp_batch_name = ANY (v_batchArray)
+                 ) AS t
+            GROUP BY step_batch, step_name)
+    UPDATE data2pg.step
+        SET stp_parents = parent_rebuild.unique_parents
+        FROM parent_rebuild
+        WHERE stp_batch_name = ANY (v_batchArray)
+          AND step.stp_batch_name = parent_rebuild.step_batch
+          AND step.stp_name = parent_rebuild.step_name
+          AND step.stp_parents <> parent_rebuild.unique_parents;
 -- Compute the cost of the Truncate step, now that the number of tables to truncate is known.
     UPDATE data2pg.step
         SET stp_cost = (
              SELECT 10 * count(*)
                  FROM data2pg.table_to_process
+
                  WHERE tbl_migration = p_migration
                        )
         WHERE stp_name = 'TRUNCATE_' || p_migration;
--- Remove duplicate steps in the all parents array of the migration.
-    WITH parent_rebuild AS (
-        SELECT step_name, array_agg(step_parent ORDER BY step_parent) AS unique_parents
-            FROM (
-               SELECT DISTINCT stp_name AS step_name, unnest(stp_parents) AS step_parent
-                   FROM data2pg.step
-                   WHERE stp_batch_name = ANY (v_batchArray)
-                 ) AS t
-            GROUP BY step_name)
-    UPDATE data2pg.step
-        SET stp_parents = parent_rebuild.unique_parents
-        FROM parent_rebuild
-        WHERE stp_batch_name = ANY (v_batchArray)
-          AND step.stp_name = parent_rebuild.step_name
-          AND step.stp_parents <> parent_rebuild.unique_parents;
 --
     RETURN;
 END;
@@ -1748,7 +1757,7 @@ BEGIN
             FROM data2pg.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
         IF v_partCondition IS NULL THEN
-            RAISE EXCEPTION 'compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
+            RAISE WARNING 'compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
         END IF;
     END IF;
 --
@@ -1786,21 +1795,31 @@ BEGIN
         GET DIAGNOSTICS v_nbRows = ROW_COUNT;
     END IF;
 -- Return the result record
-    r_output.sr_indicator = 'COMPARED_TABLES';
+    IF v_partNum IS NULL THEN
+        r_output.sr_indicator = 'COMPARED_TABLES';
+        r_output.sr_rank = 50;
+    ELSE
+        r_output.sr_indicator = 'COMPARED_TABLE_PARTS';
+        r_output.sr_rank = 52;
+    END IF;
     r_output.sr_value = 1;
-    r_output.sr_rank = 50;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
     IF v_nbRows = 0 THEN
-        r_output.sr_indicator = 'EQUAL_TABLES';
+   	    IF v_partNum IS NULL THEN
+            r_output.sr_indicator = 'EQUAL_TABLES';
+            r_output.sr_rank = 51;
+        ELSE
+            r_output.sr_indicator = 'EQUAL_TABLE_PARTS';
+            r_output.sr_rank = 53;
+        END IF;
         r_output.sr_value = 1;
-        r_output.sr_rank = 51;
         r_output.sr_is_main_indicator = FALSE;
         RETURN NEXT r_output;
     END IF;
     r_output.sr_indicator = 'DIFFERENCES';
     r_output.sr_value = v_nbRows;
-    r_output.sr_rank = 52;
+    r_output.sr_rank = 54;
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
 --
