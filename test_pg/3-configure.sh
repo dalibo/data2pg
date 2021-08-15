@@ -96,6 +96,10 @@ SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
 SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl1|mytbl5|mytbl6)$');  -- JSON or POINT types cannot be compared
 SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 
+SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
+SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'myschema2', '.*', NULL);
+SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
+
 --
 -- assign the table parts to batches
 --

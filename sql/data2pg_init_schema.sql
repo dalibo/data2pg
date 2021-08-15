@@ -187,14 +187,15 @@ CREATE TABLE source_table_stat (
     PRIMARY KEY (stat_migration, stat_schema, stat_table)
 );
 
--- The table_content_diff table is populated with the result of elementary compare_table steps.
+-- The content_diff table is populated with the result of elementary compare_table and compare_sequence steps.
 -- The table is just a report and has no pkey.
-CREATE TABLE table_content_diff (
+CREATE TABLE content_diff (
     diff_schema              TEXT NOT NULL,              -- The name of the destination schema
     diff_relation            TEXT NOT NULL,              -- The schema of the destination table used for the comparison
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
-    diff_row                 JSON                        -- The JSON representation of the rows that are different beetween both databases
+    diff_row                 JSON                        -- The JSON representation of the table rows or sequence characteristics
+                                                         -- that are different beetween both databases
 );
 
 --
@@ -1487,7 +1488,7 @@ $complete_migration_configuration$;
 
 -- The copy_table() function is the generic copy function that is used to processes tables.
 -- Input parameters: batch and step names.
--- The output parameter is the number of copied rows.
+-- It returns a step report including the number of copied rows.
 -- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
 CREATE FUNCTION copy_table(
     p_batchName                TEXT,
@@ -1633,7 +1634,7 @@ BEGIN
 ---- temporary slowdown (for testing purpose)
 ----      PERFORM pg_sleep(v_nbRows/1000);
     END IF;
--- Return the result records
+-- Return the step report.
     IF v_isLastStep THEN
         r_output.sr_indicator = 'COPIED_TABLES';
         r_output.sr_value = 1;
@@ -1651,9 +1652,9 @@ BEGIN
 END;
 $copy_table$;
 
--- The copy_sequence() function is a generic sequence adjustment function that isb used to processes individual sequences.
+-- The copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
 -- Input parameters: batch and step names.
--- The output parameter is 0.
+-- It returns a step report.
 CREATE FUNCTION copy_sequence(
     p_batchName                TEXT,
     p_step                     TEXT
@@ -1681,27 +1682,15 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_sequence: Step % not found in the step table.', p_step;
     END IF;
--- Depending on the source DBMS, set the sequence's characteristics.
-    IF v_sourceDbms = 'Oracle' THEN
-        SELECT last_number, 'TRUE' INTO v_lastValue, v_isCalled
-           FROM data2pg.dba_sequences
-           WHERE sequence_owner = v_sourceSchema
-             AND sequence_name = upper(v_sequence);
-    ELSIF v_sourceDbms = 'PostgreSQL' THEN
--- Copy the foreign table to the destination table.
-        EXECUTE format(
-            'SELECT last_value, CASE WHEN is_called THEN ''TRUE'' ELSE ''FALSE'' END FROM %I.%I',
-            v_foreignSchema, v_sequence
-            ) INTO v_lastValue, v_isCalled;
-    ELSE
-        RAISE EXCEPTION 'copy_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
-    END IF;
+-- Depending on the source DBMS, get the sequence's characteristics.
+    SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
+       FROM data2pg.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
 -- Set the sequence's characteristics.
     EXECUTE format(
         'SELECT setval(%L, %s, %s)',
         quote_ident(v_schema) || '.' || quote_ident(v_sequence), v_lastValue, v_isCalled
         );
--- Return the result record
+-- Return the step report.
     r_output.sr_indicator = 'COPIED_SEQUENCES';
     r_output.sr_value = 1;
     r_output.sr_rank = 20;
@@ -1712,9 +1701,44 @@ BEGIN
 END;
 $copy_sequence$;
 
+-- The get_source_sequence() function get the properties of a sequence on the source database, depending on the RDBMS.
+-- It is called by functions processing sequences copy or comparison.
+-- Input parameters: source DBSM and the sequence id.
+-- The output parameters: last value and is_called properties.
+CREATE FUNCTION get_source_sequence(
+    p_sourceDbms               TEXT,
+    p_sourceSchema             TEXT,
+    p_foreignSchema            TEXT,
+    p_sequence                 TEXT,
+    OUT p_lastValue            BIGINT,
+    OUT p_isCalled             TEXT
+    )
+    RETURNS RECORD LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
+$get_source_sequence$
+BEGIN
+-- Depending on the source DBMS, get the sequence's characteristics.
+    IF p_sourceDbms = 'Oracle' THEN
+        SELECT last_number, 'TRUE' INTO p_lastValue, p_isCalled
+           FROM data2pg.dba_sequences
+           WHERE sequence_owner = p_sourceSchema
+             AND sequence_name = upper(p_sequence);
+    ELSIF p_sourceDbms = 'PostgreSQL' THEN
+        EXECUTE format(
+            'SELECT last_value, CASE WHEN is_called THEN ''true'' ELSE ''false'' END FROM %I.%I',
+            p_foreignSchema, p_sequence
+            ) INTO p_lastValue, p_isCalled;
+    ELSE
+        RAISE EXCEPTION 'get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
+    END IF;
+--
+    RETURN;
+END;
+$get_source_sequence$;
+
 -- The compare_table() function is a generic compare function that is used to processes tables.
 -- Input parameters: batch and step names.
--- The output parameter is the number of discrepancies found.
+-- It returns a step report including the number of discrepancies found.
 CREATE FUNCTION compare_table(
     p_batchName                TEXT,
     p_step                     TEXT
@@ -1777,7 +1801,7 @@ BEGIN
                      SELECT %s FROM %I.%I %s
                          EXCEPT
                      SELECT %s FROM ft)
-             INSERT INTO data2pg.table_content_diff
+             INSERT INTO data2pg.content_diff
                  SELECT %L, %L, ''S'', to_json(row(source_rows))->''f1'' FROM source_rows
                      UNION ALL
                  SELECT %L, %L, ''D'', to_json(row(destination_rows))->''f1'' FROM destination_rows',
@@ -1794,7 +1818,7 @@ BEGIN
         EXECUTE v_stmt;
         GET DIAGNOSTICS v_nbRows = ROW_COUNT;
     END IF;
--- Return the result record
+-- Return the step report.
     IF v_partNum IS NULL THEN
         r_output.sr_indicator = 'COMPARED_TABLES';
         r_output.sr_rank = 50;
@@ -1817,7 +1841,7 @@ BEGIN
         r_output.sr_is_main_indicator = FALSE;
         RETURN NEXT r_output;
     END IF;
-    r_output.sr_indicator = 'DIFFERENCES';
+    r_output.sr_indicator = 'ROW_DIFFERENCES';
     r_output.sr_value = v_nbRows;
     r_output.sr_rank = 54;
     r_output.sr_is_main_indicator = TRUE;
@@ -1827,7 +1851,79 @@ BEGIN
 END;
 $compare_table$;
 
+-- The compare_sequence() function compares the characteristics of a source and its destination sequence.
+-- Input parameters: batch and step names.
+-- It returns a step report.
+CREATE FUNCTION compare_sequence(
+    p_batchName                TEXT,
+    p_step                     TEXT
+    )
+    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
+$compare_sequence$
+DECLARE
+    v_schema                   TEXT;
+    v_sequence                 TEXT;
+    v_foreignSchema            TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceDbms               TEXT;
+    v_srcLastValue             BIGINT;
+    v_srcIsCalled              TEXT;
+    v_destLastValue            BIGINT;
+    v_destIsCalled             TEXT;
+    v_areSequencesEqual        BOOLEAN;
+    r_output                   data2pg.step_report_type;
+BEGIN
+-- Get the identity of the sequence.
+    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
+      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
+        FROM data2pg.step
+             JOIN data2pg.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
+             JOIN data2pg.migration ON (seq_migration = mgr_name)
+        WHERE stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'compare_sequence: Step % not found in the step table.', p_step;
+    END IF;
+-- Depending on the source DBMS, get the source sequence's characteristics.
+    SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
+       FROM data2pg.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+-- Get the destination sequence's characteristics.
+    EXECUTE format(
+        'SELECT last_value, is_called
+             FROM %s',
+        quote_ident(v_schema) || '.' || quote_ident(v_sequence)
+        )
+        INTO v_destLastValue, v_destIsCalled;
+-- If both sequences don't match, record it.
+    v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
+    IF NOT v_areSequencesEqual THEN
+        INSERT INTO data2pg.content_diff VALUES
+            (v_schema, v_sequence, 'S', ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
+            (v_schema, v_sequence, 'D', ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
+    END IF;
+-- Return the step report.
+    r_output.sr_indicator = 'COMPARED_SEQUENCES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 60;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'EQUAL_SEQUENCES';
+    r_output.sr_rank = 61;
+    r_output.sr_is_main_indicator = FALSE;
+    r_output.sr_value = CASE WHEN v_areSequencesEqual THEN 1 ELSE 0 END;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'SEQUENCE_DIFFERENCES';
+    r_output.sr_rank = 62;
+    r_output.sr_value = CASE WHEN NOT v_areSequencesEqual THEN 1 ELSE 0 END;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$compare_sequence$;
+
 -- The truncate_all() function is a generic truncate function to clean up all tables of a migration.
+-- It returns a step report including the number of truncated tables.
 -- It returns 0.
 CREATE FUNCTION truncate_all(
     p_batchName                TEXT,
@@ -1860,7 +1956,7 @@ BEGIN
           'TRUNCATE %s CASCADE',
           v_tablesList
           );
--- Return the result record
+-- Return the step report.
     r_output.sr_indicator = 'TRUNCATED_TABLES';
     r_output.sr_value = v_nbTables;
     r_output.sr_rank = 1;
@@ -1873,7 +1969,7 @@ $truncate_all$;
 
 -- The check_fkey() function supress and recreate a foreign key to be sure that the constraint is verified.
 -- This may not always be the case because tables are populated in replica mode.
--- It returns 0.
+-- It returns a step report.
 CREATE FUNCTION check_fkey(
     p_batchName                TEXT,
     p_step                     TEXT
@@ -1917,7 +2013,7 @@ BEGIN
           'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
           v_schema, v_table, v_fkey, v_fkeyDef
           );
--- Return the result record
+-- Return the step report.
     r_output.sr_indicator = 'CHECKED_FKEYS';
     r_output.sr_value = 1;
     r_output.sr_rank = 30;
