@@ -1192,6 +1192,7 @@ CREATE FUNCTION assign_fkey_checks_to_batch(
 $assign_fkey_checks_to_batch$
 DECLARE
     v_migrationName          TEXT;
+    v_batchType              TEXT;
     v_tableKbytes            FLOAT;
     v_refTableKbytes         FLOAT;
     v_nbFKey                 INT;
@@ -1203,12 +1204,15 @@ BEGIN
     IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
--- Check that the batch exists and get its migration name.
-    SELECT bat_migration INTO v_migrationName
+-- Check that the batch exists and is of type COPY and get its migration name.
+    SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
         FROM data2pg.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" not found.', p_batchName;
+    END IF;
+    IF v_batchType <> 'COPY' THEN
+        RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" is of type %. FK ckecks can only be assigned to batches of type COPY.', p_batchName, v_batchType;
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE data2pg.migration
