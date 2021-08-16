@@ -139,11 +139,11 @@ CREATE TABLE table_to_process (
     tbl_constraint_definitions TEXT[],                  -- The constraints to recreate after copying the table data
     tbl_index_names            TEXT[],                  -- The indexes to drop before copying the table data
     tbl_index_definitions      TEXT[],                  -- The indexes to recreate after copying the table data
-    tbl_copy_source_cols       TEXT[],                  -- For a COPY batch, the columns to select
-    tbl_copy_dest_cols         TEXT[],                  -- For a COPY batch, the columns to insert, in the same order as tbl_copy_source_cols
-    tbl_compare_source_cols    TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the foreign table
+    tbl_copy_source_exprs      TEXT[],                  -- For a COPY batch, the columns to select
+    tbl_copy_dest_cols         TEXT[],                  -- For a COPY batch, the columns to insert, in the same order as tbl_copy_source_exprs
+    tbl_compare_source_exprs   TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the foreign table
     tbl_compare_dest_cols      TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the local postgres table,
-                                                        --   in the same order as tbl_compare_source_cols
+                                                        --   in the same order as tbl_compare_source_exprs
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
@@ -714,7 +714,7 @@ BEGIN
                 tbl_rows, tbl_kbytes, tbl_sort_order,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
                 tbl_copy_dest_cols,
-                tbl_copy_source_cols, tbl_compare_source_cols, tbl_compare_dest_cols, tbl_some_gen_alw_id_col,
+                tbl_copy_source_exprs, tbl_compare_source_exprs, tbl_compare_dest_cols, tbl_some_gen_alw_id_col,
                 tbl_referencing_tables, tbl_referenced_tables
             ) VALUES (
                 p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
@@ -741,12 +741,12 @@ $register_tables$;
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
 -- It allows to manage columns with different names, with different types and or with specific computation rule.
 -- The target column is defined with the schema, table and column name.
--- Several transformation rule may be applied for the same column. In this case, the p_column parameter of the second rule must be the p_value of the first one.
+-- Several transformation rule may be applied for the same column. In this case, the p_column parameter of the second rule must be the p_expression of the first one.
 CREATE FUNCTION register_column_transform_rule(
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
     p_column                 TEXT,               -- The column name as it would appear in the INSERT SELECT statement of the copy processing
-    p_value                  TEXT                -- The column name as it will appear in the INSERT SELECT statement of the copy processing. It may be
+    p_expression             TEXT                -- The column name as it will appear in the INSERT SELECT statement of the copy processing. It may be
                                                  --   another column name if the column is renamed or an expression if the column content requires a
                                                  --   transformation rule. The column name may need to be double-quoted.
     )
@@ -754,16 +754,16 @@ CREATE FUNCTION register_column_transform_rule(
 $register_column_transform_rule$
 DECLARE
     v_migrationName          TEXT;
-    v_copyColumns            TEXT[];
-    v_compareColumns         TEXT[];
+    v_copyExpressions        TEXT[];
+    v_compareExpressions     TEXT[];
     v_colPosition            INTEGER;
 BEGIN
 -- Check that no parameter is not NULL.
-    IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL OR p_value IS NULL THEN
+    IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL OR p_expression IS NULL THEN
         RAISE EXCEPTION 'register_column_transform_rule: None of the input parameters can be NULL.';
     END IF;
 -- Check that the table is already registered and get its migration name and select columns array for both COPY and COMPARE steps.
-    SELECT tbl_migration, tbl_copy_source_cols, tbl_compare_source_cols INTO v_migrationName, v_copyColumns, v_compareColumns
+    SELECT tbl_migration, tbl_copy_source_exprs, tbl_compare_source_exprs INTO v_migrationName, v_copyExpressions, v_compareExpressions
         FROM data2pg.table_to_process
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
     IF NOT FOUND THEN
@@ -774,20 +774,20 @@ BEGIN
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Look in the tables copy column array if the source column exists, and apply the change.
-    v_colPosition = array_position(v_copyColumns, p_column);
+    v_colPosition = array_position(v_copyExpressions, p_column);
     IF v_colPosition IS NULL THEN
-        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy %.', p_column, v_copyColumns;
+        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy %.', p_column, v_copyExpressions;
     END IF;
-    v_copyColumns[v_colPosition] = p_value;
+    v_copyExpressions[v_colPosition] = p_expression;
 -- Look in the tables compare column array if the source column exists, and apply the change.
-    v_colPosition = array_position(v_compareColumns, p_column);
+    v_colPosition = array_position(v_compareExpressions, p_column);
     IF v_colPosition IS NULL THEN
-        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to compare %.', p_column, v_compareColumns;
+        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to compare %.', p_column, v_compareExpressions;
     END IF;
-    v_compareColumns[v_colPosition] = p_value;
+    v_compareExpressions[v_colPosition] = p_expression;
 -- Record the changes.
     UPDATE data2pg.table_to_process
-        SET tbl_copy_source_cols = v_copyColumns, tbl_compare_source_cols = v_compareColumns
+        SET tbl_copy_source_exprs = v_copyExpressions, tbl_compare_source_exprs = v_compareExpressions
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
 --
     RETURN;
@@ -1515,7 +1515,7 @@ DECLARE
     v_indexToDropNames         TEXT[];
     v_indexToCreateDefs        TEXT[];
     v_insertColList            TEXT;
-    v_selectColList            TEXT;
+    v_selectExprList           TEXT;
     v_someGenAlwaysIdentCol    BOOLEAN;
     v_constraint               TEXT;
     v_i                        INT;
@@ -1535,10 +1535,10 @@ BEGIN
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows, tbl_sort_order,
            tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
-           array_to_string(tbl_copy_dest_cols, ','), array_to_string(tbl_copy_source_cols, ','), tbl_some_gen_alw_id_col
+           array_to_string(tbl_copy_dest_cols, ','), array_to_string(tbl_copy_source_exprs, ','), tbl_some_gen_alw_id_col
         INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows, v_sortOrder,
              v_constraintToDropNames, v_constraintToCreateDefs, v_indexToDropNames, v_indexToCreateDefs,
-             v_insertColList, v_selectColList, v_someGenAlwaysIdentCol
+             v_insertColList, v_selectExprList, v_someGenAlwaysIdentCol
         FROM data2pg.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
@@ -1598,7 +1598,7 @@ BEGIN
                %s',
             v_schema, v_table, v_InsertColList,
             CASE WHEN v_someGenAlwaysIdentCol THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END,
-            v_selectColList, v_foreignSchema, v_foreignTable,
+            v_selectExprList, v_foreignSchema, v_foreignTable,
             coalesce('WHERE ' || v_partCondition, ''),
             coalesce('ORDER BY ' || v_sortOrder, '')
             );
@@ -1754,7 +1754,7 @@ DECLARE
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_estimatedNbRows          BIGINT;
-    v_sourceColList            TEXT;
+    v_sourceExprList           TEXT;
     v_destColList              TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
@@ -1769,9 +1769,9 @@ BEGIN
     END IF;
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name,
-           array_to_string(tbl_compare_source_cols, ','), array_to_string(tbl_compare_dest_cols, ',')
+           array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ',')
         INTO v_foreignSchema, v_foreignTable,
-             v_sourceColList, v_destColList
+             v_sourceExprList, v_destColList
         FROM data2pg.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
@@ -1806,7 +1806,7 @@ BEGIN
                      UNION ALL
                  SELECT %L, %L, ''D'', to_json(row(destination_rows))->''f1'' FROM destination_rows',
             v_destColList,
-            v_sourceColList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
+            v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
