@@ -97,7 +97,8 @@ CREATE TABLE batch (
     bat_migration              TEXT NOT NULL,           -- The migration the batch belongs to
     bat_type                   TEXT NOT NULL            -- The batch type, i.e. the type of action to perform
                                CHECK (bat_type IN ('COPY', 'CHECK', 'COMPARE')),
-    bat_is_first_batch         BOOLEAN,                 -- Boolean indicating whether the batch is the first one of the migration
+    bat_start_with_truncate    BOOLEAN,                 -- Boolean indicating whether a truncate step has to be included in the batch working plan
+                                                        --   It only concerns batches of type COPY
     PRIMARY KEY (bat_name),
     FOREIGN KEY (bat_migration) REFERENCES migration (mgr_name)
 );
@@ -445,8 +446,8 @@ $drop_migration$;
 CREATE FUNCTION create_batch(
     p_batchName              TEXT,                    -- Batch name
     p_migration              VARCHAR(16),             -- Migration name
-    p_batchType              TEXT DEFAULT 'COPY',     -- Batch type (either 'COPY', 'CHECK' or 'COMPARE')
-    p_isFirstBatch           BOOLEAN DEFAULT TRUE     -- Boolean indicating whether the batch is the first one of the migration
+    p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK' or 'COMPARE')
+    p_startWithTruncate      BOOLEAN                  -- Boolean indicating whether a truncate step will need to be added to the batch working plan
     )
     RETURNS INTEGER LANGUAGE plpgsql AS
 $create_batch$
@@ -454,8 +455,8 @@ DECLARE
     v_firstBatch             TEXT;
 BEGIN
 -- Check that no input parameter is NULL.
-    IF p_batchName IS NULL OR p_migration IS NULL OR p_batchType IS NULL OR p_isFirstBatch IS NULL THEN
-        RAISE EXCEPTION 'create_batch: No imput parameters can be NULL.';
+    IF p_batchName IS NULL OR p_migration IS NULL OR p_batchType IS NULL THEN
+        RAISE EXCEPTION 'create_batch: None of the first 3 input parameters can be NULL.';
     END IF;
 -- Check that the batch does not exist yet.
     PERFORM 0
@@ -475,22 +476,16 @@ BEGIN
     IF p_batchType <> 'COPY' AND p_batchType <> 'CHECK' AND p_batchType <> 'COMPARE' THEN
         RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY or CHECK or COMPARE.', p_batchType;
     END IF;
--- If the p_isFirstBatch is TRUE, verify that there is no other batch set as the first one of the migration.
-    IF p_isFirstBatch THEN
-        SELECT bat_name INTO v_firstBatch
-            FROM data2pg.batch
-            WHERE bat_migration = p_migration AND bat_type = p_batchType AND bat_is_first_batch
-            LIMIT 1;
-        IF FOUND THEN
-            RAISE EXCEPTION 'create_batch: The batch "%" is already defined as the first batch of type % for the migration "%".', v_firstBatch, p_batchType, p_migration;
-        END IF;
+-- If the p_startWithTruncate boolean is TRUE, check that the batch is of type COPY.
+    IF p_startWithTruncate AND p_batchType <> 'COPY' THEN
+        RAISE EXCEPTION 'create_batch: A batch of type % cannot start with a truncate step.', p_batchType;
     END IF;
 -- Checks are OK.
 -- Record the batch into the batch table.
-    INSERT INTO data2pg.batch
-        VALUES (p_batchName, p_migration, p_batchType, p_isFirstBatch);
--- If the batch is the first one of the migration, add a row into the step table.
-    IF p_batchType = 'COPY' AND p_isFirstBatch THEN
+    INSERT INTO data2pg.batch (bat_name, bat_migration, bat_type, bat_start_with_truncate)
+        VALUES (p_batchName, p_migration, p_batchType, coalesce(p_startWithTruncate, FALSE));
+-- If the batch needs a truncate step, add it into the step table.
+    IF p_batchType = 'COPY' AND p_startWithTruncate THEN
         INSERT INTO data2pg.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
             VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', 'data2pg.truncate_all', 1);
     END IF;
@@ -1298,7 +1293,7 @@ CREATE FUNCTION complete_migration_configuration(
 $complete_migration_configuration$
 DECLARE
     v_batchArray             TEXT[];
-    v_firstBatchArray        TEXT[];
+    v_countStartWithTruncate INT;
     v_parents                TEXT[];
     v_refSchema              TEXT;
     v_refTable               TEXT;
@@ -1315,12 +1310,12 @@ BEGIN
         RAISE EXCEPTION 'complete_migration_configuration: Migration "%" not found.', p_migration;
     END IF;
 -- Get the list of related batches and check that the number of batches marked as the first one is exactly 1.
-    SELECT array_agg(bat_name), array_agg(bat_name) FILTER (WHERE bat_is_first_batch)
-        INTO v_batchArray, v_firstBatchArray
+    SELECT array_agg(bat_name), count(bat_name) FILTER (WHERE bat_start_with_truncate)
+        INTO v_batchArray, v_countStartWithTruncate
         FROM data2pg.batch
         WHERE bat_migration = p_migration;
-    IF array_ndims(v_firstBatchArray) <> 1 THEN
-        RAISE EXCEPTION 'complete_migration_configuration: There must be 1 and only 1 batch in the migration set as the first one to be executed.';
+    IF v_countStartWithTruncate <> 1 THEN
+        RAISE WARNING 'complete_migration_configuration: % batches are declared as starting with a TRUNCATE step. It is usualy 1', v_countStartWithTruncate;
     END IF;
 -- Check that all tables registered into the migration have a unique part set as the first one and a unique part as the last one.
     FOR r_tbl IN
@@ -1446,10 +1441,12 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
--- Process the chaining constraints related to the TRUNCATE step in the first batch.
+-- Process the chaining constraints related to the TRUNCATE step for the batches starting with a TRUNCATE.
     UPDATE data2pg.step
         SET stp_parents = ARRAY['TRUNCATE_' || p_migration]
-        WHERE stp_batch_name = v_firstBatchArray[1]
+        FROM data2pg.batch
+        WHERE stp_batch_name = bat_name
+          AND bat_start_with_truncate
           AND stp_type IN ('TABLE', 'TABLE_PART')
           AND stp_parents IS NULL;
 -- Remove duplicate steps in the all parents array of the migration.

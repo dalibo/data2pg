@@ -75,7 +75,7 @@ SELECT data2pg.drop_batch('COMPARE_ALL');
 
 SELECT data2pg.create_batch('BATCH0','mig_all','COPY',true);
 SELECT data2pg.create_batch('BATCH1','mig_all','COPY',false);
-SELECT data2pg.create_batch('COMPARE_ALL','mig_all','COMPARE');
+SELECT data2pg.create_batch('COMPARE_ALL','mig_all','COMPARE',null);
 
 --
 -- Assign the tables and sequences to batches
@@ -114,7 +114,7 @@ SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 
 SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
 SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
 SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
-SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 5);
+
 
 --
 -- Assign FK checks
