@@ -154,7 +154,11 @@ function runDetails($runId, $msg = '') {
 
 		echo "\t</p>\n";
 		echo "\t<p>Batch = <span class=\"bold\">" . htmlspecialchars($run['run_batch_name']) . "</span>" .
-			"&nbsp;(type " . htmlspecialchars($run['run_batch_type']) . ")</p>\n";
+			"&nbsp;(type " . htmlspecialchars($run['run_batch_type']) . ")";
+		if ($run['run_step_options'] != '') {
+			echo "&nbsp;&nbsp;Step options = " . htmlspecialchars($run['run_step_options']);
+		}
+		echo "\t</p>\n";
 
 		if ($run['run_comment'] != '') {
 			echo "\t<p>Comment = " . htmlspecialchars($run['run_comment']) . "</p>\n";
@@ -190,6 +194,7 @@ function runDetails($runId, $msg = '') {
 			echo " - End = ${run['run_end_ts']} ";
 		}
 		echo " - Elapse = ${run['elapse']}</p>\n";
+
 		echo "\t<p>Steps: " . htmlspecialchars($run['total_steps']) .
 			" - Completed: "  . htmlspecialchars($run['completed_steps']) .
 			" (" . htmlspecialchars(number_format(($run['completed_steps'] * 100 / $run['total_steps']), 1)) . "% / " .
@@ -202,7 +207,6 @@ function runDetails($runId, $msg = '') {
 				" (" . htmlspecialchars(number_format((($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) * 100) / $run['total_steps'], 1)) . "% / " .
 						htmlspecialchars(number_format((($run['total_cost'] - $run['completed_cost'] - $run['in_progress_cost']) * 100) / $run['total_cost'], 1)) ."%)";
 		}
-
 		echo "</p>\n";
 		echo "</div>\n";
 

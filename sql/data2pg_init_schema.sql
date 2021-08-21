@@ -1353,7 +1353,7 @@ BEGIN
     END IF;
 -- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
     FOR r_function IN
-        SELECT DISTINCT stp_sql_function || '(TEXT, TEXT)' AS function_prototype
+        SELECT DISTINCT stp_sql_function || '(TEXT, TEXT, JSONB)' AS function_prototype
             FROM data2pg.step
             WHERE stp_batch_name = ANY (v_batchArray)
     LOOP
@@ -1493,7 +1493,8 @@ $complete_migration_configuration$;
 -- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
 CREATE FUNCTION copy_table(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SET session_replication_role = 'replica'
@@ -1507,6 +1508,8 @@ DECLARE
     v_partCondition            TEXT;
     v_isFirstStep              BOOLEAN = TRUE;
     v_isLastStep               BOOLEAN = TRUE;
+    v_copyMaxRows              BIGINT;
+    v_copySlowDown             BIGINT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_estimatedNbRows          BIGINT;
@@ -1549,6 +1552,9 @@ BEGIN
             FROM data2pg.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
     END IF;
+-- Analyze the step options.
+    v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
+    v_copySlowDown = p_stepOptions->>'COPY_SLOW_DOWN';
 --
 -- Pre-processing.
 --
@@ -1586,8 +1592,8 @@ BEGIN
 --
 -- The copy processing is not performed for a 'TABLE_PART' step without condition.
     IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
--- Do not sort the source data when the table is processed with a where clause.
-        IF v_partCondition IS NOT NULL THEN
+-- Do not sort the source data when the table is processed with a WHERE clause or a LIMIT clause.
+        IF v_partCondition IS NOT NULL OR v_copyMaxRows IS NOT NULL THEN
             v_sortOrder = NULL;
         END IF;
 -- Copy the foreign table to the destination table.
@@ -1596,12 +1602,14 @@ BEGIN
                SELECT %s
                FROM ONLY %I.%I
                %s
+               %s
                %s',
             v_schema, v_table, v_InsertColList,
             CASE WHEN v_someGenAlwaysIdentCol THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END,
             v_selectExprList, v_foreignSchema, v_foreignTable,
             coalesce('WHERE ' || v_partCondition, ''),
-            coalesce('ORDER BY ' || v_sortOrder, '')
+            coalesce('ORDER BY ' || v_sortOrder, ''),
+            coalesce('LIMIT ' || v_copyMaxRows, '')
             );
 --raise warning '%',v_stmt;
         EXECUTE v_stmt;
@@ -1632,8 +1640,10 @@ BEGIN
         EXECUTE format(
             'ANALYZE %I.%I',
             v_schema, v_table);
----- temporary slowdown (for testing purpose)
-----      PERFORM pg_sleep(v_nbRows/1000);
+-- Slowdown (for testing purpose only)
+        IF v_copySlowDown IS NOT NULL THEN
+            PERFORM pg_sleep(v_nbRows * v_copySlowDown / 1000000);
+        END IF;
     END IF;
 -- Return the step report.
     IF v_isLastStep THEN
@@ -1658,7 +1668,8 @@ $copy_table$;
 -- It returns a step report.
 CREATE FUNCTION copy_sequence(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
@@ -1742,7 +1753,8 @@ $get_source_sequence$;
 -- It returns a step report including the number of discrepancies found.
 CREATE FUNCTION compare_table(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -1857,7 +1869,8 @@ $compare_table$;
 -- It returns a step report.
 CREATE FUNCTION compare_sequence(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
@@ -1928,7 +1941,8 @@ $compare_sequence$;
 -- It returns 0.
 CREATE FUNCTION truncate_all(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -1968,12 +1982,14 @@ BEGIN
 END;
 $truncate_all$;
 
--- The check_fkey() function supress and recreate a foreign key to be sure that the constraint is verified.
--- This may not always be the case because tables are populated in replica mode.
+-- The check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
+-- This may not be always the case because tables are populated in replica mode.
+-- The function does not perform anything if the COPY_MAX_ROWS step option is set, because the referential integrity cannot be garanteed if only a subset of tables is copied.
 -- It returns a step report.
 CREATE FUNCTION check_fkey(
     p_batchName                TEXT,
-    p_step                     TEXT
+    p_step                     TEXT,
+    p_stepOptions              JSONB
     )
     RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -1982,6 +1998,7 @@ DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
     v_fkey                     TEXT;
+    v_copyMaxRows              BIGINT;
     v_fkeyDef                  TEXT;
     r_output                   data2pg.step_report_type;
 BEGIN
@@ -1992,31 +2009,40 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'check_fkey: Step % not found in the step table.', p_step;
     END IF;
+-- Analyze the step options.
+    v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
+-- Do not process any FK check if we are not sure that tables have been fully copied.
+    IF v_copyMaxRows IS NULL THEN
 -- Get the FK definition.
-    SELECT pg_get_constraintdef(pg_constraint.oid) INTO v_fkeyDef
-        FROM pg_catalog.pg_constraint
-             JOIN pg_catalog.pg_class ON (pg_class.oid = conrelid)
-             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
-        WHERE nspname = v_schema
-          AND relname = v_table
-          AND conname = v_fkey;
+        SELECT pg_get_constraintdef(pg_constraint.oid) INTO v_fkeyDef
+            FROM pg_catalog.pg_constraint
+                 JOIN pg_catalog.pg_class ON (pg_class.oid = conrelid)
+                 JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
+            WHERE nspname = v_schema
+              AND relname = v_table
+              AND conname = v_fkey;
 -- Check that the FK still exist.
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'check_fkey: The foreign key % for table %.% has not been found.', v_fkey, v_schema, v_table;
-    END IF;
+       IF NOT FOUND THEN
+           RAISE EXCEPTION 'check_fkey: The foreign key % for table %.% has not been found.', v_fkey, v_schema, v_table;
+       END IF;
 -- Drop the FK.
-    EXECUTE format(
-          'ALTER TABLE %I.%I DROP CONSTRAINT %I',
-          v_schema, v_table, v_fkey
-          );
+       EXECUTE format(
+             'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+             v_schema, v_table, v_fkey
+             );
 -- Recreate the FK.
-    EXECUTE format(
-          'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
-          v_schema, v_table, v_fkey, v_fkeyDef
-          );
+       EXECUTE format(
+             'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
+             v_schema, v_table, v_fkey, v_fkeyDef
+             );
+    END IF;
 -- Return the step report.
     r_output.sr_indicator = 'CHECKED_FKEYS';
-    r_output.sr_value = 1;
+    IF v_copyMaxRows IS NULL THEN
+        r_output.sr_value = 1;
+    ELSE
+        r_output.sr_value = 0;
+    END IF;
     r_output.sr_rank = 30;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
@@ -2066,6 +2092,48 @@ BEGIN
     RETURN;
 END;
 $get_working_plan$;
+
+-- The check_step_options() function is called by the data2pg scheduler. It checks the content of the step_options parameter presented in TEXT format.
+-- It verifies that the syntax is JSON compatible and that the keywords and values are valid.
+-- Input parameter: the step options, in TEXT format.
+-- Output parameter: the error message, or an empty string when no problem is detected.
+CREATE FUNCTION data2pg.check_step_options(
+    p_stepOptions            TEXT
+    )
+    RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS
+$check_step_options$
+DECLARE
+    v_jsonStepOptions        JSONB;
+    r_key                    RECORD;
+BEGIN
+-- Check that the parameter syntax is a proper JSON field.
+    BEGIN
+        v_jsonStepOptions = p_stepOptions::JSONB;
+    EXCEPTION
+        WHEN OTHERS THEN
+            RETURN 'The step options parameter is not in a valid JSON format.';
+    END;
+-- Check each option.
+    FOR r_key IN
+        SELECT * FROM jsonb_object_keys(v_jsonStepOptions) AS t(key)
+    LOOP
+        CASE r_key.key
+           WHEN 'COPY_MAX_ROWS' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'number' THEN
+                   RETURN 'The value for the COPY_MAX_ROWS step option must be a number.';
+               END IF;
+           WHEN 'COPY_SLOW_DOWN' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'number' THEN
+                   RETURN 'The value for the COPY_SLOW_DOWN step option must be a number.';
+               END IF;
+           ELSE
+               RETURN r_key.key || ' is not a known step option.';
+        END CASE;
+    END LOOP;
+--
+    RETURN '';
+END;
+$check_step_options$;
 
 -- The terminate_data2pg_backends() function is called by the data2pg scheduler for its 'abort' actions.
 -- It terminates Postgres backends that could be still in execution.

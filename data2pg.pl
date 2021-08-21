@@ -29,6 +29,7 @@ my $confFile;                          # Configuration file
 my $action;                            # Action to perform: 'run' / 'restart' / 'suspend' / 'abort'
 my $targetDb;                          # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
 my $batchName;                         # The identifier of the batch
+my $stepOptions;                       # A JSON formatted list of options that will be sent to each step
 my $maxSessions;                       # Maximum number of sessions to open on the target database
 my $ascSessions;                       # Number of sessions for which the steps will be assigned in estimated cost ascending order
 my $comment;                           # Comment associated to the run and registered in the run table
@@ -39,6 +40,7 @@ my $debug;
 # Global variables representing the parameters read from the configuration file.
 our $cfTargetDb;                       # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
 our $cfBatchName;                      # The identifier of the batch
+our $cfStepOptions;                    # A JSON formatted list of options that will be sent to each step
 our $cfMaxSessions;                    # Maximum number of sessions to open on the target database
 our $cfAscSessions;                    # Number of sessions for which the steps will be assigned in estimated cost ascending order
 our $cfComment;                        # Comment associated to the run and registered in the run table
@@ -98,6 +100,7 @@ sub usage
     print "  --conf         : configuration file (default = no configuration file)\n";
     print "  --target       : target database identifier (mandatory) (*)\n";
     print "  --batch        : batch name for the run (mandatory, except for the 'check' action) (*)\n";
+    print "  --step_options : JSON formatted list of options sent to each step (*)\n";
     print "  --sessions     : number of parallel sessions (default = 1) (*)\n";
     print "  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)\n";
     print "  --comment      : comment describing the run (between single or double quotes to include spaces) (*)\n";
@@ -168,6 +171,7 @@ sub parseCommandLine
         "action=s"       => \$action,
         "target=s"       => \$targetDb,
         "batch=s"        => \$batchName,
+        "step_options=s" => \$stepOptions,
         "sessions=s"     => \$maxSessions,
         "asc_sessions=s" => \$ascSessions,
         "comment=s"      => \$comment,
@@ -192,6 +196,7 @@ sub parseConfigurationFile
 my %parameters = (                     # Link between the config file parameters and the parameter variables
     'TARGET_DATABASE'    => 'cfTargetDb',
     'BATCH_NAME'         => 'cfBatchName',
+    'STEP_OPTIONS'       => 'cfStepOptions',
     'MAX_SESSIONS'       => 'cfMaxSessions',
     'ASC_SESSIONS'       => 'cfAscSessions',
     'COMMENT'            => 'cfComment',
@@ -240,6 +245,7 @@ sub checkParameters
     # Use the parameter values read from the configuration file when they are not set as command line options.
     $targetDb = $cfTargetDb       if (!defined($targetDb) && defined($cfTargetDb));
     $batchName = $cfBatchName     if (!defined($batchName) && defined($cfBatchName));
+    $stepOptions = $cfStepOptions if (!defined($stepOptions) && defined($cfStepOptions));
     $maxSessions = $cfMaxSessions if (!defined($maxSessions) && defined($cfMaxSessions));
     $comment = $cfComment         if (!defined($comment) && defined($cfComment));
 
@@ -252,7 +258,7 @@ sub checkParameters
     if (!defined ($targetDb)) { abort("Neither the 'TARGET_DATABASE' parameter nor the --target option is set."); }
     if (!defined ($batchName) && !$actionCheck) { abort("Neither the 'BATCH_NAME' parameter nor the --batch option is set."); }
 
-	# Check invalid parameters depending on the action
+    # Check invalid parameters depending on the action
     if (defined ($runId) && !$actionRun && !$actionRestart) { abort("The --run option is not valid for this action."); }
 
     # Check numeric values.
@@ -261,9 +267,11 @@ sub checkParameters
         if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
         if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
         if (defined($runId) && $runId !~ /^\d+$/) { abort("The --run option must be an integer."); }
+    }
+
+    # The step_options content checks will be performed later, during the run/restart initilization.
 
 #### TODO: checks directories used to manage shell scripts executions
-    }
 
     if ($debug) {printDebug("Parameters checks OK");}
 }
@@ -349,8 +357,8 @@ sub getPreviousRunStatus() {
     my $debugMsg;        # Final message displayed in debug mode
 
 # Get the previous run, if any.
-	$quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
-	$quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
+    $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
+    $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
     $sql = qq(
         SELECT run_id, run_start_ts, run_status, run_perl_pid, run_batch_type
             FROM data2pg.run
@@ -411,12 +419,14 @@ sub initRun {
     my $sth;             # Statement handle
     my $ret;             # SQL result
     my $row;             # SQL result row
-    my $quotedTargetDb;  # targetDb properly quoted for the SQL
+    my $quotedTargetDb;  # TargetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
+    my $quotedStepOpt;   # Step options perperly quoted for the SQL
     my $batchType;       # Batch type returned by the get_batch_ids() function call
     my $migrationName;   # Migration name returned by the get_batch_ids() function call
     my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
-	my $runFound;        # Boolean used to check the non existence of a supplied run id
+    my $stepOptionsError;# Error message, if any, reported by the check_step_options() function (empty string if no error)
+    my $runFound;        # Boolean used to check the non existence of a supplied run id
     my $quotedComment;   # Comment properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
     my $errorMsg;        # Error message reported by the check_batch_id() function
@@ -452,15 +462,15 @@ sub initRun {
     }
 
 # If the run_id is supplied, check that the id does not already exist.
-	if (defined($runId)) {
-		$sql = qq(
-			SELECT 1 FROM data2pg.run WHERE run_id = $runId
-		);
-		($runFound) = $d2pDbh->selectrow_array($sql)
-			and abort("The new run to start ($runId) already exists.");
-	} else {
-		$runId = 'DEFAULT';
-	}
+    if (defined($runId)) {
+        $sql = qq(
+            SELECT 1 FROM data2pg.run WHERE run_id = $runId
+        );
+        ($runFound) = $d2pDbh->selectrow_array($sql)
+            and abort("The new run to start ($runId) already exists.");
+    } else {
+        $runId = 'DEFAULT';
+    }
 
 # Create the new run into the data2pg.run table and get its id, if not already known.
     $quotedComment = $d2pDbh->quote($comment, { pg_type => PG_VARCHAR });
@@ -476,7 +486,7 @@ sub initRun {
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
 
-	$newRunCreated = 1;
+    $newRunCreated = 1;
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
 # In restart mode ...
@@ -506,18 +516,29 @@ sub initRun {
     adjustSessions();
     openSession(1);
 
-# Check that the batch name exists on the target database and that its "migration" is in a correct state.
+# Check that the batch name exists on the target database, that its "migration" is in a correct state and that the step options are valid.
+    if (defined($stepOptions)) {
+        $quotedStepOpt = $d2pDbh->quote($stepOptions, { pg_type => PG_VARCHAR });
+        if ($debug) {printDebug("Checking step options: $stepOptions");}
+    } else {
+        $quotedStepOpt = 'NULL';
+    }
+
     $sql = qq(
-        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed
+        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed, data2pg.check_step_options($quotedStepOpt)
             FROM data2pg.get_batch_ids()
             WHERE bi_batch_name = $quotedBatchName
     );
-    ($batchType, $migrationName, $isMigCompleted) = $sessions[1]->{dbh}->selectrow_array($sql);
+    ($batchType, $migrationName, $isMigCompleted, $stepOptionsError) = $sessions[1]->{dbh}->selectrow_array($sql);
+
     if (!defined($batchType)) {
         abort("The batch name '$batchName' doesn't exist inside the target database.");
     }
     if (!$isMigCompleted) {
         abort("The batch name '$batchName' exists inside the target database. But the configuration of its migration ($migrationName) is not completed.");
+    }
+    if ($stepOptionsError ne '') {
+        abort($stepOptionsError);
     }
 
 # Build the working plan, depending on the action.
@@ -528,7 +549,7 @@ sub initRun {
     $quotedBatchType = $d2pDbh->quote($batchType, { pg_type => PG_VARCHAR });
     $sql = qq(
         UPDATE data2pg.run
-            SET run_status = 'In_progress', run_batch_type = $quotedBatchType
+            SET run_status = 'In_progress', run_batch_type = $quotedBatchType, run_step_options = $quotedStepOpt
             WHERE run_id = $runId
     );
     $ret = $d2pDbh->do($sql);
@@ -892,6 +913,7 @@ sub startStep
     my $step;            # Selected step name 
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $quotedStep;      # Quoted step so that it can be used in a SQL statement
+    my $quotedStepOpt;   # Step options properly quoted for the SQL
     my $sqlFunction;     # The SQL function to call, if supplied
     my $shellScript;     # The shell sctipt to spawn, if supplied
     my $cost;            # The cost of the selected step
@@ -909,8 +931,13 @@ sub startStep
           LIMIT 1
     );
     ($step, $sqlFunction, $shellScript, $cost, $cumCost) = $d2pDbh->selectrow_array($sql);
-	$quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
+    $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
     $quotedStep = $d2pDbh->quote($step, { pg_type => PG_VARCHAR });
+    if (defined($stepOptions)) {
+        $quotedStepOpt = $d2pDbh->quote($stepOptions, { pg_type => PG_VARCHAR });
+    } else {
+        $quotedStepOpt = 'NULL';
+    }
 
 # Update the step state, the assigned session id and the start time.
     $sql = qq(
@@ -931,7 +958,7 @@ sub startStep
         }
 # And execute the function asynchronously.
         $sql = qq(
-            SELECT * FROM $sqlFunction($quotedBatchName, $quotedStep) AS t
+            SELECT * FROM $sqlFunction($quotedBatchName, $quotedStep, $quotedStepOpt) AS t
         );
         $sessions[$session]->{sth} = $sessions[$session]->{dbh}->prepare($sql, {pg_async => PG_ASYNC});
         $sessions[$session]->{sth}->execute();
@@ -1265,7 +1292,7 @@ sub checkDb {
     my $batchTypeLen;    # Largest batch type length
 
 # Open a connection to the target database.
-	openSession(1);
+    openSession(1);
     print "The target database $targetDb is accessible with DSN $pgDsn.\n";
 
 # Get the configured batches.

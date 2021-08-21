@@ -202,7 +202,7 @@ sub showRunDetails {
         $currLine++;
 # Get global information and statistics for the run.
         $sql = qq(
-            SELECT run_id, run_database, run_batch_name, run_batch_type, run_status, run_max_sessions, run_start_ts,
+            SELECT run_id, run_database, run_batch_name, run_batch_type, run_step_options, run_status, run_max_sessions, run_start_ts,
                    run_end_ts, to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS') AS run_elapse,
                    run_error_msg, run_comment, run_restart_id, run_restarted_id,
                    count(step.*) AS total_steps, sum(stp_cost) AS total_cost,
@@ -226,9 +226,11 @@ sub showRunDetails {
         if (defined($row->{'run_restarted_id'})) {
 			printf("    Restarted run #%u", $row->{'run_restarted_id'});
 		}
-        printf("    Status: '%s'", $row->{'run_status'});
         if (defined($row->{'run_restart_id'})) {
 			printf(" by run #%u", $row->{'run_restart_id'});
+		}
+        if (defined($row->{'run_step_options'})) {
+			printf("    Step options: %s", $row->{'run_step_options'});
 		}
         print "\n"; $currLine++;
 #
@@ -243,8 +245,8 @@ sub showRunDetails {
 #### TODO: count newlines from the error message.
         }
 # 
-        printf("Start: %-19.19s",
-               $row->{'run_start_ts'});
+        printf("Status: '%s'    Start: %-19.19s",
+                $row->{'run_status'}, $row->{'run_start_ts'});
         if (defined($row->{'run_end_ts'})) {
             printf("   End:%-19.19s", $row->{'run_end_ts'});
         }
