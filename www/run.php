@@ -195,19 +195,21 @@ function runDetails($runId, $msg = '') {
 		}
 		echo " - Elapse = ${run['elapse']}</p>\n";
 
-		echo "\t<p>Steps: " . htmlspecialchars($run['total_steps']) .
-			" - Completed: "  . htmlspecialchars($run['completed_steps']) .
-			" (" . htmlspecialchars(number_format(($run['completed_steps'] * 100 / $run['total_steps']), 1)) . "% / " .
-					htmlspecialchars(number_format($run['completed_cost'] * 100 / $run['total_cost']), 1) ."%)";
-		if ($run['run_status'] == 'In_progress') {
-			echo " - In-progress: "  . htmlspecialchars($run['in_progress_steps']) .
-				" (" . htmlspecialchars(number_format($run['in_progress_steps'] * 100 / $run['total_steps'], 1)) . "% / " .
-						htmlspecialchars(number_format($run['in_progress_cost'] * 100 / $run['total_cost'], 1)) ."%)";
-			echo " - Others: "  . htmlspecialchars($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) .
-				" (" . htmlspecialchars(number_format((($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) * 100) / $run['total_steps'], 1)) . "% / " .
-						htmlspecialchars(number_format((($run['total_cost'] - $run['completed_cost'] - $run['in_progress_cost']) * 100) / $run['total_cost'], 1)) ."%)";
+		echo "\t<p>Steps: " . htmlspecialchars($run['total_steps']);
+		if ($run['total_steps'] > 0) {
+			echo " - Completed: "  . htmlspecialchars($run['completed_steps']) .
+				 " (" . htmlspecialchars(number_format(($run['completed_steps'] * 100 / $run['total_steps']), 1)) . "% / " .
+						htmlspecialchars(number_format($run['completed_cost'] * 100 / $run['total_cost']), 1) ."%)";
+			if ($run['run_status'] == 'In_progress') {
+				echo " - In-progress: "  . htmlspecialchars($run['in_progress_steps']) .
+					" (" . htmlspecialchars(number_format($run['in_progress_steps'] * 100 / $run['total_steps'], 1)) . "% / " .
+							htmlspecialchars(number_format($run['in_progress_cost'] * 100 / $run['total_cost'], 1)) ."%)";
+				echo " - Others: "  . htmlspecialchars($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) .
+					" (" . htmlspecialchars(number_format((($run['total_steps'] - $run['completed_steps'] - $run['in_progress_steps']) * 100) / $run['total_steps'], 1)) . "% / " .
+							htmlspecialchars(number_format((($run['total_cost'] - $run['completed_cost'] - $run['in_progress_cost']) * 100) / $run['total_cost'], 1)) ."%)";
+			}
 		}
-		echo "</p>\n";
+		echo "\t</p>\n";
 		echo "</div>\n";
 
 // Get the step results summary
@@ -241,11 +243,7 @@ function runDetails($runId, $msg = '') {
 		$res = sql_getSteps($runId, $run['run_status']);
 		$nbRows = pg_num_rows($res);
 
-		if ($nbRows == 0) {
-// No step to display.
-			echo "<p align=center>There is no step to display for this run.</p>\n";
-		} else {
-
+		if ($nbRows > 0) {
 // Display the step sheet.
 // Header.
 			echo "<table class='tbl'>\n";

@@ -249,7 +249,7 @@ function sql_getRun($runId) {
 				   sum(stp_cost) FILTER (WHERE stp_status = 'In_progress') AS in_progress_cost
 			  FROM data2pg.run
 				   JOIN data2pg.target_database ON (tdb_id = run_database)
-				   JOIN data2pg.step ON (stp_run_id = run_id)
+				   LEFT OUTER JOIN data2pg.step ON (stp_run_id = run_id)
 			WHERE run_id = $runId
 			GROUP BY run_id, tdb_id";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
