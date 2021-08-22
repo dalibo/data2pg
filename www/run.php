@@ -585,12 +585,14 @@ function doRestartRun($runId) {
 					$bashCmd .= ' --step_options "' . $stepOptions . '"';
 				}
 				if ($comment <> '') {
-					$bashCmd .= ' --comment "' . $comment . '"';
+					// Add a \ before ", if any
+					$bashCmd .= ' --comment "' . str_replace('"', '\"', $comment) . '"';
 				}
 				if ($conf['development_mode']) {
 					$bashCmd .= ' --debug';
 				}
-				$cmd = 'nohup bash -c "' . addslashes($bashCmd) . '" 1>' . $logFile . ' 2>&1 &';
+				// Add a \ before any \ and " in the command to spawn
+				$cmd = 'nohup bash -c "' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $bashCmd) . '" 1>' . $logFile . ' 2>&1 &';
 				$outputRun = shellExec($shellConn, $cmd);
 
 				shellClose($shellConn);
