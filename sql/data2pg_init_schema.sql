@@ -2111,7 +2111,7 @@ BEGIN
         v_jsonStepOptions = p_stepOptions::JSONB;
     EXCEPTION
         WHEN OTHERS THEN
-            RETURN 'The step options parameter is not in a valid JSON format.';
+            RETURN 'The step options parameter ' || p_stepOptions || ' is not in a valid JSON format.';
     END;
 -- Check each option.
     FOR r_key IN

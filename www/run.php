@@ -451,6 +451,7 @@ function doAbortRun($runId) {
 // The restartRun() function allows to restart a job that was either suspended or aborted and that has not been already restarted.
 // After some checks, it asks the user to confirm the restart action.
 function restartRun($runId) {
+	global $conf;
 
 // Get the run characteristics
 	$res = sql_getRun($runId);
@@ -467,7 +468,16 @@ function restartRun($runId) {
 			runDetails($runId, "Error: the run $runId has already been restarted.");
 		} else {
 
-// Ask for the confirmation.
+// Decode the step options from the previous run.
+			$copyMaxRows = ''; $copySlowDown = '';
+			if (preg_match('/"COPY_MAX_ROWS": (\d+)/', $run['run_step_options'], $matches)) {
+				$copyMaxRows = $matches[1];
+			}
+			if (preg_match('/"COPY_SLOW_DOWN": (\d+)/', $run['run_step_options'], $matches)) {
+				$copySlowDown = $matches[1];
+			}
+
+// OK, display the form to adjust the run execution parameters, if needed. The parameters from the previous run are proposed by default.
 			mainTitle('', "Restart the run #$runId", '');
 	
 			echo "<div id=\"runToRestart\">\n";
@@ -486,11 +496,22 @@ function restartRun($runId) {
 			echo "\t\t<div class=\"form-label\">Comment</div>";
 			echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60 value=\"" . htmlspecialchars($run['run_comment']) . "\"></div>\n";
 
-			echo "\t\t<div class=\"form-label\">Verbose</div>";
-			echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"verbose\"></div>\n";
+			echo "\t</div>\n";
+			echo "\t<p>Step options</p>";
+
+			echo "<div class=\"form-container\">\n";
+
+			echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_MAX_ROWS</span></div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copyMaxRows\" size=6 min=1 value=$copyMaxRows></div>\n";
+
+			if ($conf['development_mode']) {
+				echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_SLOW_DOWN (µs/row)</span></div>";
+				echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0 value = $copySlowDown></div>\n";
+			}
 
 			echo "\t</div>\n";
 
+			echo "\t<p>\n";
 			echo "\t\t<input type='submit' value='Start and Monitor'>\n";
 			echo "\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='run.php?a=runDetails&runId=$runId';\">\n";
 			echo "\t</form></p>\n";
@@ -506,7 +527,8 @@ function doRestartRun($runId) {
 	$comment = @$_GET["comment"];
 	$maxSession = @$_GET["maxSession"];
 	$ascSession = @$_GET["ascSession"];
-	$verbose = @$_GET["verbose"];
+	$copyMaxRows = @$_GET["copyMaxRows"];
+	$copySlowDown = @$_GET["copySlowDown"];
 
 // Get the run characteristics.
 	$res = sql_getRun($runId);
@@ -538,18 +560,34 @@ function doRestartRun($runId) {
 
 			} else {
 
-// OK, get the next run id from the run_run_id_seq sequence,
+// OK, get the next run id from the run_run_id_seq sequence.
 				$res = sql_getNextRunId();
 				$newRunId = pg_fetch_result($res, 0, 0);
 
-// ... and spawn the scheduler.
+// Build the step options parameter.
+				$stepOptions = '';
+				if ($copyMaxRows <> '' && $copyMaxRows > 0) {
+					$stepOptions .= '\"COPY_MAX_ROWS\":' . $copyMaxRows . ',';
+				}
+				if ($copySlowDown <> '' && $copySlowDown > 0) {
+					$stepOptions .= '\"COPY_SLOW_DOWN\":' . $copySlowDown . ',';
+				}
+				if ($stepOptions <> '') {
+					// Strip the last ',' and enclose with {} to get a proper JSON object.
+					$stepOptions = preg_replace('/(.*).$/', '{$1}', $stepOptions);
+				}
+
+// And spawn the scheduler.
 				$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
 						' --action restart' . ' --run ' . $newRunId . ' --target ' . $run['run_database'] .
 						' --batch ' . $run['run_batch_name'] . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+				if ($stepOptions <> '') {
+					$bashCmd .= ' --step_options "' . $stepOptions . '"';
+				}
 				if ($comment <> '') {
 					$bashCmd .= ' --comment "' . $comment . '"';
 				}
-				if ($verbose) {
+				if ($conf['development_mode']) {
 					$bashCmd .= ' --debug';
 				}
 				$cmd = 'nohup bash -c "' . addslashes($bashCmd) . '" 1>' . $logFile . ' 2>&1 &';

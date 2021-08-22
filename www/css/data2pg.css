@@ -235,6 +235,10 @@ input[type=submit], input[type=reset], input[type=button] {
 input[type=submit]:hover, input[type=reset]:hover, input[type=button]:hover {
 	background-color: #F5AE7F;
 }
+span.stepOption {
+	font-size: 0.86em;
+}
+
 /*
 	Footer styles.
  */

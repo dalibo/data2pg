@@ -319,10 +319,21 @@ function newRun() {
 		echo "\t\t<div class=\"form-label\">Comment</div>";
 		echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60></div>\n";
 
-		echo "\t\t<div class=\"form-label\">Verbose</div>";
-		echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"verbose\"></div>\n";
+		echo "\t</div>\n";
+		echo "\t<p>Step options</p>";
+
+		echo "<div class=\"form-container\">\n";
+
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_MAX_ROWS</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copyMaxRows\" size=6 min=1></div>\n";
+
+		if ($conf['development_mode']) {
+			echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_SLOW_DOWN (µs/row)</span></div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0></div>\n";
+		}
 
 		echo "\t</div>\n";
+
 		echo "\t<p>\n";
 		echo "\t\t<input type=\"submit\" name=\"OK\" value='Start and Monitor'>\n";
 		echo "\t\t<input type=\"reset\" value=\"Reset\">\n";
@@ -340,7 +351,8 @@ function doNewRun() {
 	$comment = @$_GET["comment"];
 	$maxSession = @$_GET["maxSession"];
 	$ascSession = @$_GET["ascSession"];
-	$verbose = @$_GET["verbose"];
+	$copyMaxRows = @$_GET["copyMaxRows"];
+	$copySlowDown = @$_GET["copySlowDown"];
 
 // Check the state of a potential previous run for this same database and batch.
 	$res = sql_getPreviousRun($tdbId, $batch);
@@ -367,18 +379,34 @@ function doNewRun() {
 	
 	} else {
 
-// OK, get the next run id from the run_run_id_seq sequence,
+// OK, get the next run id from the run_run_id_seq sequence.
 		$res = sql_getNextRunId();
 		$newRunId = pg_fetch_result($res, 0, 0);
 
-// ... and spawn the scheduler.
+// Build the step options parameter.
+		$stepOptions = '';
+		if ($copyMaxRows <> '' && $copyMaxRows > 0) {
+			$stepOptions .= '\"COPY_MAX_ROWS\":' . $copyMaxRows . ',';
+		}
+		if ($copySlowDown <> '' && $copySlowDown > 0) {
+			$stepOptions .= '\"COPY_SLOW_DOWN\":' . $copySlowDown . ',';
+		}
+		if ($stepOptions <> '') {
+			// Strip the last ',' and enclose with {} to get a proper JSON object.
+			$stepOptions = preg_replace('/(.*).$/', '{$1}', $stepOptions);
+		}
+
+// And spawn the scheduler.
 		$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
 				   ' --action run ' . ' --run ' . $newRunId . ' --target ' . $tdbId .
 				   ' --batch ' . $batch . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+		if ($stepOptions <> '') {
+			$bashCmd .= ' --step_options "' . $stepOptions . '"';
+		}
 		if ($comment <> '') {
 			$bashCmd .= ' --comment "' . $comment . '"';
 		}
-		if ($verbose) {
+		if ($conf['development_mode']) {
 			$bashCmd .= ' --debug';
 		}
 		$cmd = 'nohup bash -c "' . addslashes($bashCmd) . '" 1>' . $logFile . ' 2>&1 &';

@@ -49,4 +49,6 @@
 	// The directory to store the scheduler's log when the 'scheduler_location' is set to 'local' or 'central'.
 	$conf['scheduler_log_dir']		= '/tmp/data2pg';
 
+	// Is the web application currently in development.
+	$conf['development_mode']		= 0;				// Should normally be 0. Set it to 1 to have some features that help the development and the debug.
 ?>
