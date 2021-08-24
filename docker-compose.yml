@@ -1,0 +1,21 @@
+version: "3.8"
+services:
+  database:
+    build: ./Docker/database
+    env_file:
+      - ./Docker/database/database.env
+    ports:
+      - "2023:22"
+      - "5445:5432"
+    working_dir: /opt/data2pg
+    volumes:
+      - "./:/opt/data2pg"
+
+  web:
+    build: ./Docker/web
+    depends_on:
+      - database
+    ports:
+      - 8000:80
+    volumes:
+      - "./www:/var/www/html"

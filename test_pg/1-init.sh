@@ -1,10 +1,36 @@
 #!/usr/bin/bash
 # test_pg_init.sh
 # This shell script initialize a test environment that will use 2 postgres databases and the postgres fdw
+PGPORT_DEFAULT_VALUE=5432
+PGUSER_DEFAULT_VALUE=postgres
+PGHOST_DEFAULT_VALUE=localhost
 
-export PGHOST=localhost
-export PGPORT=5432
-export PGUSER=postgres
+if [ -z ${PGPORT+x} ];
+then
+  echo "Environment variable PGPORT is not defined."
+  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}"
+  export PGPORT=${PGPORT_DEFAULT_VALUE}
+else
+  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+fi
+
+if [ -z ${PGUSER+x} ];
+then
+  echo "Environment variable PGUSER is not defined."
+  echo "Setting environment variable PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  export PGUSER=${PGUSER_DEFAULT_VALUE}
+else
+  echo "Environment variable PGUSER is already defined to ${PGUSER}."
+fi
+
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
 
 echo "==================================================="
 echo "Initialize the data2pg test with Postgres databases"

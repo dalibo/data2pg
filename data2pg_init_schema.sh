@@ -3,10 +3,46 @@
 # This shell script initializes the data2pg schema in a target database.
 
 # The 4 following constants must be adjusted before execution.
-export PGHOST=localhost
-export PGPORT=5432
-export PGUSER=postgres                       # Must be a SUPERUSER
-export PGDATABASE=test_dest
+PGPORT_DEFAULT_VALUE=5432
+PGUSER_DEFAULT_VALUE=postgres
+PGDATABASE_DEFAULT_VALUE=test_dest
+PGHOST_DEFAULT_VALUE=localhost
+
+if [ -z ${PGPORT+x} ];
+then
+  echo "Environment variable PGPORT is not defined."
+  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  export PGPORT=${PGPORT_DEFAULT_VALUE}
+else
+  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+fi
+
+if [ -z ${PGUSER+x} ];
+then
+  echo "Environment variable PGUSER is not defined."
+  echo "Setting environment variable PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  export PGUSER=${PGUSER_DEFAULT_VALUE}
+else
+  echo "Environment variable PGUSER is already defined to ${PGUSER}."
+fi
+
+if [ -z ${PGDATABASE+x} ];
+then
+  echo "Environment variable PGDATABASE is not defined."
+  echo "Setting environment variable PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
+  export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
+else
+  echo "Environment variable PGDATABASE is already defined to ${PGDATABASE}."
+fi
+
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
 
 echo "======================================================================================"
 echo "Create the data2pg role on the instance and the database schema on the target database"
