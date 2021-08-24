@@ -1640,10 +1640,10 @@ BEGIN
         EXECUTE format(
             'ANALYZE %I.%I',
             v_schema, v_table);
+    END IF;
 -- Slowdown (for testing purpose only)
-        IF v_copySlowDown IS NOT NULL THEN
-            PERFORM pg_sleep(v_nbRows * v_copySlowDown / 1000000);
-        END IF;
+    IF v_copySlowDown IS NOT NULL THEN
+        PERFORM pg_sleep(v_nbRows * v_copySlowDown / 1000000);
     END IF;
 -- Return the step report.
     IF v_isLastStep THEN
