@@ -3,10 +3,46 @@
 # This shell script initializes the data2pg management database
 
 # Environment variables to setup
-export PGHOST=localhost
-export PGPORT=5432
-export PGUSER=postgres
-export TARGET_DB_FILE=target_database.dat
+PGPORT_DEFAULT_VALUE=5432
+PGUSER_DEFAULT_VALUE=postgres
+TARGET_DB_FILE_DEFAULT_VALUE=target_database.dat
+PGHOST_DEFAULT_VALUE=localhost
+
+if [ -z ${PGPORT+x} ];
+then
+  echo "Environment variable PGPORT is not defined."
+  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}"
+  export PGPORT=${PGPORT_DEFAULT_VALUE}
+else
+  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+fi
+
+if [ -z ${PGUSER+x} ];
+then
+  echo "Environment variable PGUSER is not defined."
+  echo "Setting environment variable PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  export PGUSER=${PGUSER_DEFAULT_VALUE}
+else
+  echo "Environment variable PGUSER is already defined to ${PGUSER}."
+fi
+
+if [ -z ${TARGET_DB_FILE+x} ];
+then
+  echo "Environment variable TARGET_DB_FILE is not defined."
+  echo "Setting environment variable TARGET_DB_FILE to ${TARGET_DB_FILE_DEFAULT_VALUE}."
+  export TARGET_DB_FILE=${TARGET_DB_FILE_DEFAULT_VALUE}
+else
+  echo "Environment variable TARGET_DB_FILE is already defined to ${TARGET_DB_FILE}."
+fi
+
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
 
 echo "============================================================="
 echo "Create the data2pg role if not exits and the data2pg database"

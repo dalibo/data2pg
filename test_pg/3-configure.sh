@@ -2,9 +2,36 @@
 # 3-configure.sh
 # This shell script prepares the data2pg components on the destination database
 
-export PGHOST=localhost
-export PGPORT=5432
-export PGDATABASE=test_dest
+PGPORT_DEFAULT_VALUE=5432
+PGDATABASE_DEFAULT_VALUE=test_dest
+PGHOST_DEFAULT_VALUE=localhost
+
+if [ -z ${PGPORT+x} ];
+then
+  echo "Environment variable PGPORT is not defined."
+  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  export PGPORT=${PGPORT_DEFAULT_VALUE}
+else
+  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+fi
+
+if [ -z ${PGDATABASE+x} ];
+then
+  echo "Environment variable PGPORT is not defined."
+  echo "Setting environment variable PGPORT to ${PGDATABASE_DEFAULT_VALUE}."
+  export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
+else
+  echo "Environment variable PGPORT is already defined to ${PGDATABASE}."
+fi
+
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
 
 echo "==================================================="
 echo "Prepare the data2pg test with Postgres databases"
