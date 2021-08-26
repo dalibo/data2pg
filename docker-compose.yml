@@ -9,7 +9,8 @@ services:
       - "5445:5432"
     working_dir: /opt/data2pg
     volumes:
-      - "./:/opt/data2pg"
+      - "${ABSOLUTE_PATH}/:/opt/data2pg"
+      #- "./:/opt/data2pg"
 
   web:
     build: ./Docker/web
@@ -18,4 +19,5 @@ services:
     ports:
       - 8000:80
     volumes:
-      - "./www:/var/www/html"
+      - "${ABSOLUTE_PATH}/www:/var/www/html"
+      #- "./www:/var/www/html"

@@ -1,3 +1,6 @@
+ifndef CI_PROJECT_PATH
+	export ABSOLUTE_PATH=.
+endif
 .PHONY: help
 help: ## Display callable targets.
 	@echo "Reference card for usual actions."
@@ -5,13 +8,13 @@ help: ## Display callable targets.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: all ## Initializes data2pg.
-all: stop build up database-init
-
-.PHONY: init ## Initializes data2pg.
-init: init-database test-init-database init-schema test-init-schema
+all: stop build up
 
 .PHONY: init-database ## Initializes data2pg.
-init-database:
+init-database: init-db test-init-database init-schema test-init-schema
+
+.PHONY: init-db ## Initializes data2pg.
+init-db:
 	bash data2pg_init_db.sh
 
 .PHONY: test-init-database ## Initializes data2pg.
@@ -30,9 +33,9 @@ test-init-schema:
 #######################DOCKER###################################################
 ################################################################################
 
-.PHONY: database-init ## Initializes database.
-database-init:
-	docker-compose exec -T database make init
+.PHONY: dc-init-database ## Initializes database.
+dc-init-database:
+	docker-compose exec -T database make init-database
 
 .PHONY: rm ## delete all containers.
 rm: ## delete all container.

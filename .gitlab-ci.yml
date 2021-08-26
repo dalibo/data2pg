@@ -7,6 +7,9 @@ services:
 before_script:
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
   - apk add --no-cache docker-compose make bash rsync #perl perl-dev perl-dbi perl-test-simple perl-test-nowarnings perl-dbd-pg
+  - JOB_CONTAINER_ID=`docker ps -q -f "label=com.gitlab.gitlab-runner.job.id=$CI_JOB_ID"`
+  #- docker inspect --format '{{ range .Mounts }}{{ .Name }}{{ printf " " }}{{ .Source }}{{ printf " " }}{{ .Destination }}{{ printf "\n" }}{{ end }}' ${JOB_CONTAINER_ID}
+  - export ABSOLUTE_PATH=`docker inspect --format '{{ range .Mounts }}{{ if eq .Destination "/builds" }}{{ .Source }}{{ printf "\n" }}{{ end }}{{ end }}' ${JOB_CONTAINER_ID}`/${CI_PROJECT_PATH}
 
 variables:
   SHARED_PATH: $CI_PROJECT_DIR/shared
@@ -19,4 +22,5 @@ build:
     - make up
     - docker-compose exec -T web echo 'Web is running'
     - docker-compose exec -T database echo 'Database is running'
-    #- make dc-test
+    - make dc-init-database
+    - make dc-test
