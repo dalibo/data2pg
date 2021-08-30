@@ -217,7 +217,8 @@ CREATE FUNCTION create_migration(
     p_sourceDbms             TEXT,
     p_extension              TEXT,
     p_serverOptions          TEXT,
-    p_userMappingOptions     TEXT
+    p_userMappingOptions     TEXT,
+    p_userHasPrivileges      BOOLEAN DEFAULT false
     )
     RETURNS INTEGER LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -260,7 +261,7 @@ BEGIN
         '    OPTIONS (%s)',
         current_user, v_serverName, p_userMappingOptions);
 -- Load additional objects depending on the selected DBMS.
-    PERFORM data2pg.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName);
+    PERFORM data2pg.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, p_userHasPrivileges);
 --
     RETURN 1;
 END;
@@ -272,25 +273,65 @@ $create_migration$;
 CREATE FUNCTION load_dbms_specific_objects(
     p_migration              TEXT,
     p_sourceDbms             TEXT,
-    p_serverName             TEXT
+    p_serverName             TEXT,
+    p_userHasPrivileges      BOOLEAN DEFAULT false
     )
     RETURNS VOID LANGUAGE plpgsql AS
 $load_dbms_specific_objects$
+DECLARE
+    v_queryTables TEXT;
+    v_querySequences TEXT;
 BEGIN
     -- perform DBMS specific tasks.
     IF p_sourceDbms = 'Oracle' THEN
-        -- Create an image of the dba_tables, dba_segments and dba_sequences tables.
+        -- Create an image for ora_tables and ora_sequences tables.
+        -- Depends of DBA privileges
+        IF p_userHasPrivileges THEN
+            v_queryTables := '('
+                'SELECT t.owner, t.table_name, num_rows, bytes'
+                '  FROM dba_tables t JOIN dba_segments s ON t.table_name = s.segment_name'
+            ')';
+            v_querySequences := '('
+                'SELECT sequence_owner, sequence_name, last_number'
+                '  FROM dba_sequences'
+            ')';
+        ELSE
+            v_queryTables := '('
+                'SELECT user, t.table_name, num_rows, bytes'
+                '  FROM user_tables t JOIN user_segments s ON t.table_name = s.segment_name'
+            ')';
+            v_querySequences := '('
+                'SELECT sequence_owner, sequence_name, last_number'
+                '  FROM all_sequences'
+            ')';
+        END IF;
         EXECUTE format(
-            'IMPORT FOREIGN SCHEMA "SYS" LIMIT TO (dba_tables, dba_segments, dba_sequences) FROM SERVER %s INTO data2pg',
-            p_serverName);
+            'CREATE FOREIGN TABLE data2pg.ora_tables ('
+            '   owner VARCHAR(128),'
+            '   table_name VARCHAR(128),'
+            '   num_rows BIGINT,'
+            '   bytes BIGINT'
+            ') SERVER %s OPTIONS ( table ''%s'')',
+            p_serverName, v_queryTables
+        );
+        EXECUTE format(
+            'CREATE FOREIGN TABLE data2pg.ora_sequences ('
+            '   sequence_owner VARCHAR(128),'
+            '   sequence_name VARCHAR(128),'
+            '   last_number bigint'
+            ') SERVER %s OPTIONS ( table ''%s'')',
+            p_serverName, v_querySequences
+        );
+
         -- Populate the source_table_stat table.
         INSERT INTO data2pg.source_table_stat
-            SELECT p_migration, dba_tables.owner, table_name, num_rows, sum(bytes) / 1024
-                FROM data2pg.dba_tables, data2pg.dba_segments
-                WHERE dba_tables.owner = dba_segments.owner AND table_name = segment_name
-                GROUP BY 1,2,3,4;
-        -- Drop the now useless foreign tables, but keep the dba_sequences that will be used by the copy_sequence() function.
-        DROP FOREIGN TABLE data2pg.dba_tables, data2pg.dba_segments;
+            SELECT p_migration, owner, table_name, num_rows, sum(bytes) / 1024
+              FROM data2pg.ora_tables GROUP BY 1,2,3,4;
+
+        -- Drop the now useless foreign tables, but keep the ora_sequences
+        -- that will be used by the copy_sequence() function.
+        DROP FOREIGN TABLE data2pg.ora_tables;
+
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
         -- Create an image of the pg_class table.
         EXECUTE format(
@@ -1732,7 +1773,7 @@ BEGIN
 -- Depending on the source DBMS, get the sequence's characteristics.
     IF p_sourceDbms = 'Oracle' THEN
         SELECT last_number, 'TRUE' INTO p_lastValue, p_isCalled
-           FROM data2pg.dba_sequences
+           FROM data2pg.ora_sequences
            WHERE sequence_owner = p_sourceSchema
              AND sequence_name = upper(p_sequence);
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
