@@ -1,6 +1,6 @@
 #! /usr/bin/perl -w
 # data2pg_monitor.pl
-# This perl module belongs to the data2pg project.
+# This perl module belongs to the Data2Pg project.
 #
 # It monitors data migrations towards PostgreSQL performed by the data2pg scheduler.
 
@@ -28,9 +28,10 @@ my $delay = 5;                            # --delay (in seconds, default=5s)
 my $run = undef;                          # --run identifier
 
 # Global variables to manage the sessions and the statements to the databases.
-my $cnxRole = 'data2pg';                  # The role name used for all connections to postgres databases
-my $d2pDbh;                               # handle for the connection on the data2pg database
-my $d2pSth;                               # handle for the statements to submit on the data2pg database connection
+my $d2pUser = 'data2pg';                  # The role name used for the data2pg database connection
+my $d2pSchema = 'data2pg';                # The schema holding the tables to reach
+my $d2pDbh;                               # Handle for the connection on the data2pg database
+my $d2pSth;                               # Handle for the statements to submit on the data2pg database connection
 
 # Other variables.
 
@@ -121,18 +122,18 @@ sub logonData2pg {
 
 # Open the connection on the data2pg database.
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
-    $d2pDbh = DBI->connect($d2pDsn, $cnxRole, undef, {RaiseError => 1})
+    $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {RaiseError => 1})
         or die("Error while logging on the data2pg database ($DBI::errstr).");
-
-# Set the application_name.
-    $d2pDbh->do("SET application_name to '".$APPNAME."'");
 
 # Check that the data2pg schema exists.
     $sql = qq(
-        SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg'
+        SELECT 1 FROM pg_namespace WHERE nspname = '$d2pSchema'
     );
     ($schemaFound) = $d2pDbh->selectrow_array($sql)
         or die("The 'data2pg' schema does not exist in the data2pg database.");
+
+# Set the application_name and the search_path.
+    $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -162,7 +163,7 @@ sub showLatestRuns {
         SELECT run_id, run_database, run_batch_name, run_status, run_max_sessions, run_start_ts,
                coalesce(run_end_ts::TEXT,'') AS run_end_ts, coalesce((run_end_ts - run_start_ts)::TEXT,'') AS run_elapse,
                coalesce(run_error_msg,'') AS run_error_msg
-          FROM data2pg.run ORDER BY run_id DESC $limit
+          FROM run ORDER BY run_id DESC $limit
     );
     $sth = $d2pDbh->prepare($sql);
     $sth->execute()
@@ -210,8 +211,8 @@ sub showRunDetails {
                    sum(stp_cost) FILTER (WHERE stp_status = 'Completed') AS completed_cost,
                    count(step.*) FILTER (WHERE stp_status = 'In_progress') AS in_progress_steps,
                    sum(stp_cost) FILTER (WHERE stp_status = 'In_progress') AS in_progress_cost
-                FROM data2pg.run
-                     JOIN data2pg.step ON (stp_run_id = run_id)
+                FROM run
+                     JOIN step ON (stp_run_id = run_id)
                 WHERE run_id = $run
                 GROUP BY run_id
         );
@@ -286,8 +287,8 @@ sub showRunDetails {
                         ELSE NULL
                    END AS stp_elapse,
                    sr_value
-            FROM data2pg.step
-                 LEFT OUTER JOIN data2pg.step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
+            FROM step
+                 LEFT OUTER JOIN step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
                  (VALUES ('In_progress',1),('Ready',2),('Blocked',3),('Completed',4)) AS state(state_name, state_order)
             WHERE state_name = stp_status::TEXT
               AND stp_run_id = $run
