@@ -279,8 +279,8 @@ CREATE FUNCTION load_dbms_specific_objects(
     RETURNS VOID LANGUAGE plpgsql AS
 $load_dbms_specific_objects$
 DECLARE
-    v_queryTables TEXT;
-    v_querySequences TEXT;
+    v_queryTables            TEXT;
+    v_querySequences         TEXT;
 BEGIN
     -- perform DBMS specific tasks.
     IF p_sourceDbms = 'Oracle' THEN
@@ -769,6 +769,10 @@ BEGIN
                 r_tbl.relname, v_serverName, v_foreignSchema);
         END IF;
     END LOOP;
+-- If no table has been selected, raise an exception.
+    IF v_nbTables = 0 THEN
+        RAISE EXCEPTION 'register_tables: No table has been found in the schema "%" using the provided selection criteria.', p_schema;
+    END IF;
 --
     RETURN v_nbTables;
 END;
@@ -979,6 +983,10 @@ BEGIN
                 p_schema, r_seq.relname, p_migration, v_foreignSchema, r_seq.relname, coalesce(p_sourceSchema, p_schema)
             );
     END LOOP;
+-- If no sequence has been selected, raise an exception.
+    IF v_nbSequences = 0 THEN
+        RAISE EXCEPTION 'register_sequences: No sequence has been found in the schema "%" using the provided selection criteria.', p_schema;
+    END IF;
 --
     RETURN v_nbSequences;
 END;
