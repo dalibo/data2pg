@@ -41,20 +41,22 @@ psql -U data2pg -a <<EOF
 
 \set ON_ERROR_STOP ON
 
+SET search_path TO data2pg;
+
 BEGIN TRANSACTION;
 
 --
 -- Create the migration object and the FDW infrastructure
 --
 
-SELECT data2pg.drop_migration('mig_all');
+SELECT drop_migration('mig_all');
 
-select * from data2pg.migration;
-select * from data2pg.batch;
+select * from migration;
+select * from batch;
 \des
 \dn
 
-SELECT data2pg.create_migration(
+SELECT create_migration(
     p_migration            => 'mig_all',
     p_sourceDbms           => 'PostgreSQL',
     p_extension            => 'postgres_fdw',
@@ -67,13 +69,13 @@ SELECT data2pg.create_migration(
 -- Register the tables and sequences
 --
 
-SELECT data2pg.register_tables('mig_all', 'myschema1', '.*', NULL);
-SELECT data2pg.register_tables('mig_all', 'myschema2', '.*', NULL);
-SELECT data2pg.register_tables('mig_all', 'phil''s schema3', '.*', NULL);
+SELECT register_tables('mig_all', 'myschema1', '.*', NULL);
+SELECT register_tables('mig_all', 'myschema2', '.*', NULL);
+SELECT register_tables('mig_all', 'phil''s schema3', '.*', NULL);
 
-SELECT data2pg.register_sequences('mig_all', 'myschema1', '.*', NULL);
-SELECT data2pg.register_sequences('mig_all', 'myschema2', '.*', NULL);
-SELECT data2pg.register_sequences('mig_all', 'phil''s schema3', '.*', NULL);
+SELECT register_sequences('mig_all', 'myschema1', '.*', NULL);
+SELECT register_sequences('mig_all', 'myschema2', '.*', NULL);
+SELECT register_sequences('mig_all', 'phil''s schema3', '.*', NULL);
 
 --
 -- Register the columns transformation rules
@@ -87,70 +89,70 @@ SELECT register_column_transform_rule('myschema1','mytbl1','col13','substr(col13
 -- Register the table parts
 --
 
-SELECT data2pg.register_table_part('myschema2', 'mytbl1', 1, 'col11 < 50000', TRUE, FALSE);
-SELECT data2pg.register_table_part('myschema2', 'mytbl1', 2, 'col11 >= 50000 and col12 = ''ABC''', FALSE, FALSE);
-SELECT data2pg.register_table_part('myschema2', 'mytbl1', 3, 'col11 >= 50000 and col12 = ''DEF''', FALSE, FALSE);
-SELECT data2pg.register_table_part('myschema2', 'mytbl1', 4, 'col11 >= 50000 and col12 = ''GHI''', FALSE, FALSE);
-SELECT data2pg.register_table_part('myschema2', 'mytbl1', 5, NULL, FALSE, TRUE);
+SELECT register_table_part('myschema2', 'mytbl1', 1, 'col11 < 50000', TRUE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 2, 'col11 >= 50000 and col12 = ''ABC''', FALSE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 3, 'col11 >= 50000 and col12 = ''DEF''', FALSE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 4, 'col11 >= 50000 and col12 = ''GHI''', FALSE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 5, NULL, FALSE, TRUE);
 
 --
 -- Build the batches
 --
-SELECT data2pg.drop_batch('BATCH0');
-SELECT data2pg.drop_batch('BATCH1');
-SELECT data2pg.drop_batch('COMPARE_ALL');
+SELECT drop_batch('BATCH0');
+SELECT drop_batch('BATCH1');
+SELECT drop_batch('COMPARE_ALL');
 
-SELECT data2pg.create_batch('BATCH0','mig_all','COPY',true);
-SELECT data2pg.create_batch('BATCH1','mig_all','COPY',false);
-SELECT data2pg.create_batch('COMPARE_ALL','mig_all','COMPARE',null);
+SELECT create_batch('BATCH0','mig_all','COPY',true);
+SELECT create_batch('BATCH1','mig_all','COPY',false);
+SELECT create_batch('COMPARE_ALL','mig_all','COMPARE',null);
 
 --
 -- Assign the tables and sequences to batches
 --
 
-SELECT data2pg.assign_tables_to_batch('BATCH1', 'myschema1', '.*', NULL);
---select data2pg.assign_tables_to_batch('BATCH1', 'myschema1', '.*', '^mytbl2b$');
-SELECT data2pg.assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^mytbl1$');
-SELECT data2pg.assign_tables_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
---select data2pg.assign_tables_to_batch('BATCH1', 'myschema4', '.*', NULL);
+SELECT assign_tables_to_batch('BATCH1', 'myschema1', '.*', NULL);
+--select assign_tables_to_batch('BATCH1', 'myschema1', '.*', '^mytbl2b$');
+SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^mytbl1$');
+SELECT assign_tables_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
+--select assign_tables_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
-SELECT data2pg.assign_sequences_to_batch('BATCH1', 'myschema1', '.*', NULL);
-SELECT data2pg.assign_sequences_to_batch('BATCH1', 'myschema2', '.*', NULL);
-SELECT data2pg.assign_sequences_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
---select data2pg.assign_sequences_to_batch('BATCH1', 'myschema4', '.*', NULL);
+SELECT assign_sequences_to_batch('BATCH1', 'myschema1', '.*', NULL);
+SELECT assign_sequences_to_batch('BATCH1', 'myschema2', '.*', NULL);
+SELECT assign_sequences_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
+--select assign_sequences_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
-SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
-SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl1|mytbl5|mytbl6)$');  -- JSON or POINT types cannot be compared
-SELECT data2pg.assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
+SELECT assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
+SELECT assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl1|mytbl5|mytbl6)$');  -- JSON or POINT types cannot be compared
+SELECT assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 
-SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
-SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'myschema2', '.*', NULL);
-SELECT data2pg.assign_sequences_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
+SELECT assign_sequences_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
+SELECT assign_sequences_to_batch('COMPARE_ALL', 'myschema2', '.*', NULL);
+SELECT assign_sequences_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 
 --
 -- assign the table parts to batches
 --
 
-SELECT data2pg.assign_table_part_to_batch('BATCH0', 'myschema2', 'mytbl1', 1);
-SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 2);
-SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 3);
-SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 4);
-SELECT data2pg.assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 5);
+SELECT assign_table_part_to_batch('BATCH0', 'myschema2', 'mytbl1', 1);
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 2);
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 3);
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 4);
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 5);
 
-SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 1);
-SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
-SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
-SELECT data2pg.assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
+SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 1);
+SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
+SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
+SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
 
 
 --
 -- Assign FK checks
 --
 
-SELECT data2pg.assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl1');
-SELECT data2pg.assign_fkey_checks_to_batch('BATCH1', 'myschema1', 'mytbl4');
-SELECT data2pg.assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl4', 'mytbl4_col44_fkey');
-SELECT data2pg.assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl4_col44_fkey');
+SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl1');
+SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema1', 'mytbl4');
+SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl4', 'mytbl4_col44_fkey');
+SELECT assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl4_col44_fkey');
 
 --
 -- Complete the migration configuration
