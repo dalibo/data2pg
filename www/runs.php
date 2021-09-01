@@ -5,6 +5,7 @@
 	session_start();
 	$pageId="runs.php";
 
+	require_once('inc/constants.php');
 	require_once('conf/config.inc.php');
 	require_once('inc/htmlcommon.php');
 	require_once('inc/dbaccess.php');

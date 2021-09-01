@@ -1,24 +1,33 @@
 <?php
 // dbaccess.php
 // This file belongs to the Data2Pg web client
-// It contains all the sql accesses to the data2pg database.
+// It contains all the sql accesses to the data2pg administration database.
+
+	require_once('inc/constants.php');
+	require_once('conf/config.inc.php');
 
 // The sql_connect() function opens a connection to the data2pg database and verifies that the run table exists
 function sql_connect() {
-	global $conf;
+	global $const, $conf;
 
 	// Connection
-	$dsn = "host=${conf['data2pg_host']} port=${conf['data2pg_port']} dbname=data2pg user=data2pg password=${conf['data2pg_pwd']}";
+	$dsn = "host=${conf['data2pg_host']} port=${conf['data2pg_port']} dbname=${const['d2pDbName']} user=${const['d2pUser']} password=${conf['data2pg_pwd']}";
 	$conn = pg_connect($dsn)
-		or die ("Problem while connecting to the data2pg database. You may have to adjust the 'data2pgDsn' configuration value.");
+		or die ("Problem while connecting to the data2pg administration database. You may have to adjust the 'data2pgDsn' configuration value.");
 
 	// Verify that the data2pg schema exists
-	$sql = "SELECT 0 FROM information_schema.tables WHERE table_schema = 'data2pg' AND table_name = 'run'";
+	$sql = "SELECT 0 FROM information_schema.tables WHERE table_schema = '${const['d2pSchema']}' AND table_name = 'run'";
 	$res = pg_query($conn, $sql)
 		or die (pg_last_error());
 	if (pg_num_rows($res) == 0) {
-		die ("No 'data2pg.run' table found in the data2pg database.");
-	}
+		die ("No 'run' table found in the data2pg administration database.");
+		}
+
+# Set the application_name and the search_path.
+    $sql = "SET application_name TO ${const['d2pAppName']}; SET search_path TO ${const['d2pSchema']}";
+	$res = pg_query($conn, $sql)
+		or die (pg_last_error());
+
 	return $conn;
 }
 
@@ -35,8 +44,8 @@ function sql_getDatabases(){
 
 	$sql = "SELECT tdb_id, tdb_host, tdb_port, tdb_dbname, coalesce(tdb_description, '') AS tdb_description, tdb_locked,
 				   count(run_id) AS nb_run
-			FROM data2pg.target_database
-				 LEFT OUTER JOIN data2pg.run ON (run_database = tdb_id)
+			FROM target_database
+				 LEFT OUTER JOIN run ON (run_database = tdb_id)
 			GROUP BY tdb_id
 			ORDER BY tdb_id DESC";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
@@ -49,8 +58,8 @@ function sql_getDatabase($tdbId){
 
 	$sql = "SELECT tdb_id, tdb_host, tdb_port, tdb_dbname, coalesce(tdb_description, '') AS tdb_description, tdb_locked,
 				   count(run_id) AS nb_run
-			FROM data2pg.target_database
-				 LEFT OUTER JOIN data2pg.run ON (run_database = tdb_id)
+			FROM target_database
+				 LEFT OUTER JOIN run ON (run_database = tdb_id)
 			WHERE tdb_id = $1
 			GROUP BY tdb_id";
 	$res = pg_query_params($conn, $sql, array($tdbId)) or die(pg_last_error());
@@ -63,19 +72,19 @@ function sql_existDatabaseId($tdbId){
 
 	$sql = "SELECT EXISTS(
 				SELECT tdb_id
-					FROM data2pg.target_database
+					FROM target_database
 					WHERE tdb_id = $1)";
 	$res = pg_query_params($conn, $sql, array($tdbId)) or die(pg_last_error());
 	return $res;
 }
 
-// The sql_existDatabase() function returns a boolean indicating whether a database  identified by its name, host name and port exists in the target_database table.
+// The sql_existDatabase() function returns a boolean indicating whether a database identified by its name, host name and port exists in the target_database table.
 function sql_existDatabase($tdbHost, $tdbPort, $tdbDbname){
 	global $conn;
 
 	$sql = "SELECT EXISTS(
 				SELECT tdb_id
-					FROM data2pg.target_database
+					FROM target_database
 					WHERE tdb_host = $1 AND tdb_port = $2 AND tdb_dbname = $3)";
 	$res = pg_query_params($conn, $sql, array($tdbHost, $tdbPort, $tdbDbname)) or die(pg_last_error());
 	return $res;
@@ -85,7 +94,7 @@ function sql_existDatabase($tdbHost, $tdbPort, $tdbDbname){
 function sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription){
 	global $conn;
 
-	$sql = "INSERT INTO data2pg.target_database
+	$sql = "INSERT INTO target_database
 					(tdb_id, tdb_host, tdb_port, tdb_dbname, tdb_description)
 			VALUES  ($1, $2, $3, $4, $5)
 			ON CONFLICT DO NOTHING";
@@ -99,7 +108,7 @@ function sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescript
 function sql_updateLockDatabase($tdbId, $trueFalse){
 	global $conn;
 
-	$sql = "UPDATE data2pg.target_database
+	$sql = "UPDATE target_database
 				SET tdb_locked = $trueFalse
 			WHERE tdb_id = $1";
 	$res = pg_query_params($conn, $sql, array($tdbId))
@@ -111,7 +120,7 @@ function sql_updateLockDatabase($tdbId, $trueFalse){
 function sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription){
 	global $conn;
 
-	$sql = "UPDATE data2pg.target_database
+	$sql = "UPDATE target_database
 				SET tdb_host = $1, tdb_port = $2, tdb_dbname = $3, tdb_description = $4
 			WHERE tdb_id = $5";
 	$res = pg_query_params($conn, $sql, array($tdbHost, $tdbPort, $tdbDbname,
@@ -124,7 +133,7 @@ function sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescript
 function sql_deleteDatabase($tdbId){
 	global $conn;
 
-	$sql = "DELETE FROM data2pg.target_database
+	$sql = "DELETE FROM target_database
 			WHERE tdb_id = $1";
 	$res = pg_query_params($conn, $sql, array($tdbId))
 		or die(pg_last_error());
@@ -142,7 +151,7 @@ function sql_waitForRunStart($runId) {
 	$retryCount = 0;
 	$found = 0;
 	while (!$found && $retryCount < $maxRetry) {
-		$sql = "SELECT 1 FROM data2pg.run WHERE run_id = $runId";
+		$sql = "SELECT 1 FROM run WHERE run_id = $runId";
 		$res = pg_query($conn, $sql) or die(pg_last_error());
 		if (pg_num_rows($res) == 0) {
 			$retryCount++;
@@ -159,7 +168,7 @@ function sql_getPreviousRun($tdbId, $batch) {
 	global $conn;
 
 	$sql = "SELECT run_id, run_status
-			FROM data2pg.run
+			FROM run
 			WHERE run_database = $1 AND run_batch_name = $2
 			ORDER BY run_start_ts DESC
 			LIMIT 1";
@@ -182,7 +191,7 @@ function sql_getAllRuns(){
 						END as elapse,
 				   run_status, run_max_sessions, run_asc_sessions,
 				   run_error_msg, run_restart_id, run_perl_pid
-			FROM data2pg.run
+			FROM run
 			ORDER BY run_id DESC";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
 	return $res;
@@ -204,8 +213,8 @@ function sql_getInProgressRuns(){
 				   run_error_msg, run_restart_id, run_perl_pid,
 				   count(step.*) AS total_steps,
 				   count(step.*) FILTER (WHERE stp_status = 'Completed') AS completed_steps
-			FROM data2pg.run
-			   JOIN data2pg.step ON (stp_run_id = run_id)
+			FROM run
+			   JOIN step ON (stp_run_id = run_id)
 			WHERE run_status IN ('Initializing', 'In_progress', 'Ending')
 			GROUP BY run_id
 			ORDER BY run_id DESC";
@@ -221,7 +230,7 @@ function sql_getAdjacentRuns($runId) {
 				   max(run_id) FILTER (WHERE run_id < $runId) AS previous_run,
 				   min(run_id) FILTER (WHERE run_id > $runId) AS next_run,
 				   max(run_id) AS last_run
-				FROM data2pg.run";
+				FROM run";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
 	return $res;
 }
@@ -247,9 +256,9 @@ function sql_getRun($runId) {
 				   sum(stp_cost) FILTER (WHERE stp_status = 'Completed') AS completed_cost,
 				   count(step.*) FILTER (WHERE stp_status = 'In_progress') AS in_progress_steps,
 				   sum(stp_cost) FILTER (WHERE stp_status = 'In_progress') AS in_progress_cost
-			  FROM data2pg.run
-				   JOIN data2pg.target_database ON (tdb_id = run_database)
-				   LEFT OUTER JOIN data2pg.step ON (stp_run_id = run_id)
+			  FROM run
+				   JOIN target_database ON (tdb_id = run_database)
+				   LEFT OUTER JOIN step ON (stp_run_id = run_id)
 			WHERE run_id = $runId
 			GROUP BY run_id, tdb_id";
 	$res = pg_query($conn, $sql) or die(pg_last_error());
@@ -261,7 +270,7 @@ function sql_getStepResultsSummary($runId) {
 	global $conn;
 
 	$sql = "SELECT sr_indicator, sr_rank, sum(sr_value) AS sum_value
-			FROM data2pg.step_result
+			FROM step_result
 			WHERE sr_run_id = $runId
 			GROUP BY sr_indicator, sr_rank
 			ORDER BY sr_rank";
@@ -291,8 +300,8 @@ function sql_getSteps($runId, $runStatus) {
 						ELSE NULL
 				   END AS stp_elapse,
 				   sr_value
-			FROM data2pg.step
-				 LEFT OUTER JOIN data2pg.step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
+			FROM step
+				 LEFT OUTER JOIN step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
 				 (VALUES ('In_progress',1),('Ready',2),('Blocked',3),('Completed',4)) AS state(state_name, state_order)
 			WHERE state_name = stp_status::TEXT
 			  AND stp_run_id = $runId
@@ -315,7 +324,7 @@ function sql_getExternalRunStart($runId){
 	global $conn;
 
 	$sql = "SELECT ext_client, ext_sched_log_file
-			FROM data2pg.external_run_start
+			FROM external_run_start
 			WHERE ext_run_id = $1";
 	$res = pg_query_params($conn, $sql, array($runId)) or die(pg_last_error());
 	return $res;
@@ -325,7 +334,7 @@ function sql_getExternalRunStart($runId){
 function sql_insertExternalRunStart($runId, $schedAddr, $schedAccount, $schedCommand, $schedLogFile){
 	global $conn;
 
-	$sql = "INSERT INTO data2pg.external_run_start
+	$sql = "INSERT INTO external_run_start
 					(ext_run_id, ext_client, ext_sched_addr, ext_sched_account, ext_sched_command, ext_sched_log_file)
 			VALUES  ($1, 'Data2Pg WebApp', $2, $3, $4, $5)";
 	$res = pg_query_params($conn, $sql, array($runId, $schedAddr, $schedAccount, $schedCommand, $schedLogFile))
@@ -337,7 +346,7 @@ function sql_insertExternalRunStart($runId, $schedAddr, $schedAccount, $schedCom
 function sql_updateRun($runId, $maxSession, $ascSessions, $comment){
 	global $conn;
 
-	$sql = "UPDATE data2pg.run
+	$sql = "UPDATE run
 				SET run_max_sessions = $1, run_asc_sessions = $2, run_comment = $3
 			WHERE run_id = $4";
 	$res = pg_query_params($conn, $sql, array($maxSession, $ascSessions, ($comment <> '') ? $comment : NULL, $runId))

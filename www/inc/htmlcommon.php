@@ -2,9 +2,12 @@
 // functions.php
 // This file belongs to the Data2Pg web client. It describes general purpose functions.
 
+	require_once('inc/constants.php');
+	require_once('conf/config.inc.php');
+
 // The PageHeader() function generates the HTML page header, including the Head, the page title and the main navigation bar.
 function PageHeader() {
-	global $conf;
+	global $const, $conf;
 
 	header('Content-Type: text/html');
 	echo "<html>\n";
@@ -17,7 +20,7 @@ function PageHeader() {
 	// body
 	echo "<body>\n";
 	echo "\t\t<header>\n";
-	echo "\t\t\t<div class=\"headerLogo\">Data2Pg<span class=\"headerVersion\">" . $conf['version'] . "</span>";
+	echo "\t\t\t<div class=\"headerLogo\">Data2Pg<span class=\"headerVersion\">" . $const['version'] . "</span>";
 	if ($conf['environment'] <> '') {
 		echo "<span class=\"headerEnvir\">" . htmlspecialchars($conf['environment']);
 		if ($conf['environment_desc'] != '') {

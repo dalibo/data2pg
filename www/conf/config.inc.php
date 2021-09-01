@@ -4,14 +4,19 @@
 	 * Central Data2Pg web client configuration.
 	 */
 
-	// Current Data2Pg version.
-	$conf['version']				= '0.1';			// Do not change this value
-
 	// Connection parameters to reach the data2pg database.
 	// Both database and role names are fixed (and equal 'data2pg').
-	$conf['data2pg_host']			= "database";     // The ip address must be accessible by the data2pg web client and all data2pg.pl schedulers
+	$conf['data2pg_host']			= 'localhost';		// The ip address must be accessible by the data2pg web client and all data2pg.pl schedulers
 	$conf['data2pg_port']			= 5432;
-	$conf['data2pg_pwd']			= "gp2atad";
+	$conf['data2pg_pwd']			= 'gp2atad';
+
+	// If not empty, the environment and environment_desc parameters are displayed in the page header
+	// They tell the user on which Data2Pg environment he is currently working
+	$conf['environment']			= 'Production'; 	// Displayed in the page header
+	$conf['environment_desc']		= 'This is the Data2Pg environment for production databases migration';		// Displayed as additional comment
+
+	// The refresh delay when displaying the details of an in-progress run.
+	$conf['refresh_delay']	    	= 3;				// In seconds
 
 	// Is the web application allowed to perform actions or do the users only look at the data2pg database content ?
 	$conf['read_only']		    	= 0;				// If set to 1, no action is allowed
@@ -30,7 +35,7 @@
 										// 'distributed' means that the scheduler is located on different server depending on the target databases
 
 	// The OS account to use to reach the Data2Pg scheduler when the 'scheduler_location' is set to 'central'.
-	$conf['scheduler_ip']			= 'database';
+	$conf['scheduler_ip']			= 'localhost';
 	$conf['scheduler_port'] 		= 22;
 	$conf['scheduler_user'] 		= 'postgres';
 	$conf['scheduler_pwd']			= 'postgres';
@@ -40,5 +45,8 @@
 
 	// The directory to store the scheduler's log when the 'scheduler_location' is set to 'local' or 'central'.
 	$conf['scheduler_log_dir']		= '/tmp/data2pg';
+
+	// Is the web application currently in development.
+	$conf['development_mode']		= 1;				// Should normally be 0. Set it to 1 to have some features that help the development and the debug.
 
 ?>
