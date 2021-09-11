@@ -1014,7 +1014,7 @@ BEGIN
               AND bat_type = v_batchType;
         IF FOUND THEN
             RAISE EXCEPTION 'assign_tables_to_batch: The table %.% is already assigned to the batch "%".',
-                            p_schema, r_tbl.rtbl_name, v_prevBatchName;
+                            p_schema, r_tbl.tbl_name, v_prevBatchName;
         END IF;
 -- Check that the table has no table part already assigned to any batch of the same type.
         PERFORM 0
@@ -1024,7 +1024,7 @@ BEGIN
               AND bat_type = v_batchType;
         IF FOUND THEN
             RAISE EXCEPTION 'assign_tables_to_batch: The table %.% has at least 1 part already assigned to a batch of type %.',
-                            p_schema, r_tbl.rtbl_name, v_batchType;
+                            p_schema, r_tbl.tbl_name, v_batchType;
         END IF;
 -- Register the table into the step table.
         INSERT INTO @extschema@.step (
