@@ -1,53 +1,24 @@
--- data2pg_schema.sql
--- This file belongs to data2pg, the framework that helps migrating data to PostgreSQL databases from various sources.
--- This sql script creates the structure of the data2pg schema installed into each target database.
--- It must be executed by a superuser role.
+-- This file belongs to Data2Pg, the framework that helps migrating data to PostgreSQL databases from various sources.
+-- This script defines the data2pg extension content.
 
-\set ON_ERROR_STOP
-
+-- Complain if the script is sourced in psql, rather than a CREATE EXTENSION statement.
+\echo Use "CREATE EXTENSION data2pg" to load this file. \quit
 ---
---- Preliminary checks on roles.
+--- Preliminary checks.
 ---
 DO LANGUAGE plpgsql
 $$
 BEGIN
-    PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = current_user AND rolsuper;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'The current user (%) is not a superuser.', current_user;
+    IF current_setting('server_version_num')::int < 90600 THEN
+        RAISE EXCEPTION 'The current postgres version (%) is too old. It should be at least 9.6', current_setting('server_version');
     END IF;
 END
 $$;
 
-BEGIN TRANSACTION;
-
--- If the data2pg schema already exists, drop all migrations if any, before dropping it.
-DO LANGUAGE plpgsql
-$$
-BEGIN
-    PERFORM 0 FROM pg_catalog.pg_namespace WHERE nspname = 'data2pg';
-    IF FOUND THEN
-        BEGIN
-            PERFORM data2pg.drop_migration(mgr_name) FROM data2pg.migration;
-        EXCEPTION
-            WHEN OTHERS THEN
-                RAISE NOTICE 'Trying to drop migrations failed';
-        END;
-    END IF;
-END;
-$$;
-
---
--- Create the data2pg schema.
---
-DROP SCHEMA IF EXISTS data2pg CASCADE;
-
-CREATE SCHEMA data2pg AUTHORIZATION data2pg;
-SET search_path = data2pg;
-
 --
 -- Create specific types.
 --
--- The batch_id_type coposite type is used as output record for the get_batch_ids() function called by the data2pg.pl scheduler.
+-- The batch_id_type coposite type is used as output record for the get_batch_ids() function called by the Data2Pg scheduler.
 CREATE TYPE batch_id_type AS (
     bi_batch_name              TEXT,                    -- The name of the batch
     bi_batch_type              TEXT,                    -- The batch type
@@ -55,7 +26,7 @@ CREATE TYPE batch_id_type AS (
     bi_mgr_config_completed    BOOLEAN                  -- Boolean indicating whether the migration configuration is completed or not
 );
 
--- The working_plan_type composite type is used as output record for the get_working_plan() function called by the data2pg.pl scheduler.
+-- The working_plan_type composite type is used as output record for the get_working_plan() function called by the Data2Pg scheduler.
 CREATE TYPE working_plan_type AS (
     wp_name                    TEXT,                    -- The name of the step
     wp_sql_function            TEXT,                    -- The sql function to execute (for common cases)
@@ -64,7 +35,7 @@ CREATE TYPE working_plan_type AS (
     wp_parents                 TEXT[]                   -- A set of parent steps that need to be completed to allow the step to start
 );
 
--- The step_report_type is used as output record for the elementary step functions called by the data2pg.pl scheduler.
+-- The step_report_type is used as output record for the elementary step functions called by the Data2Pg scheduler.
 CREATE TYPE step_report_type AS (
     sr_indicator               TEXT,                    -- The indicator, depending on the called function
                                                         --   ('COPIED_ROWS'/'COPIED_SEQUENCES'/'COMPARED_ROWS'/...)
@@ -232,14 +203,14 @@ BEGIN
     END IF;
 -- Check that the migration does not exist yet.
     PERFORM 0
-       FROM data2pg.migration
+       FROM @extschema@.migration
        WHERE mgr_name = p_migration;
     IF FOUND THEN
         RAISE EXCEPTION 'create_migration: The migration "%" already exists. Call the drop_migration() function to drop it, if needed.', p_migration;
     END IF;
 -- Record the supplied parameters into the migration table.
     v_serverName = 'data2pg_' || p_migration || '_server';
-    INSERT INTO data2pg.migration
+    INSERT INTO @extschema@.migration
         VALUES (p_migration, p_sourceDbms, p_extension, v_serverName, p_serverOptions, p_userMappingOptions);
 -- Create the FDW extension.
     EXECUTE format(
@@ -261,7 +232,7 @@ BEGIN
         '    OPTIONS (%s)',
         current_user, v_serverName, p_userMappingOptions);
 -- Load additional objects depending on the selected DBMS.
-    PERFORM data2pg.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, p_userHasPrivileges);
+    PERFORM @extschema@.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, p_userHasPrivileges);
 --
     RETURN 1;
 END;
@@ -306,7 +277,7 @@ BEGIN
             ')';
         END IF;
         EXECUTE format(
-            'CREATE FOREIGN TABLE data2pg.ora_tables ('
+            'CREATE FOREIGN TABLE @extschema@.ora_tables ('
             '   owner VARCHAR(128),'
             '   table_name VARCHAR(128),'
             '   num_rows BIGINT,'
@@ -315,7 +286,7 @@ BEGIN
             p_serverName, v_queryTables
         );
         EXECUTE format(
-            'CREATE FOREIGN TABLE data2pg.ora_sequences ('
+            'CREATE FOREIGN TABLE @extschema@.ora_sequences ('
             '   sequence_owner VARCHAR(128),'
             '   sequence_name VARCHAR(128),'
             '   last_number bigint'
@@ -324,18 +295,18 @@ BEGIN
         );
 
         -- Populate the source_table_stat table.
-        INSERT INTO data2pg.source_table_stat
+        INSERT INTO @extschema@.source_table_stat
             SELECT p_migration, owner, table_name, num_rows, sum(bytes) / 1024
-              FROM data2pg.ora_tables GROUP BY 1,2,3,4;
+              FROM @extschema@.ora_tables GROUP BY 1,2,3,4;
 
         -- Drop the now useless foreign tables, but keep the ora_sequences
         -- that will be used by the copy_sequence() function.
-        DROP FOREIGN TABLE data2pg.ora_tables;
+        DROP FOREIGN TABLE @extschema@.ora_tables;
 
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
         -- Create an image of the pg_class table.
         EXECUTE format(
-            'CREATE FOREIGN TABLE data2pg.pg_foreign_pg_class ('
+            'CREATE FOREIGN TABLE @extschema@.pg_foreign_pg_class ('
             '    relname TEXT,'
             '    relnamespace OID,'
             '    relkind TEXT,'
@@ -345,24 +316,24 @@ BEGIN
             p_serverName);
         -- Create an image of the pg_namespace table.
         EXECUTE format(
-            'CREATE FOREIGN TABLE data2pg.pg_foreign_pg_namespace ('
+            'CREATE FOREIGN TABLE @extschema@.pg_foreign_pg_namespace ('
             '    oid OID,'
             '    nspname TEXT'
             ') SERVER %s OPTIONS (schema_name ''pg_catalog'', table_name ''pg_namespace'')',
             p_serverName);
         -- Populate the source_table_stat table.
-        INSERT INTO data2pg.source_table_stat
+        INSERT INTO @extschema@.source_table_stat
             SELECT p_migration, nspname, relname, reltuples, relpages * 8
-                FROM data2pg.pg_foreign_pg_class
-                     JOIN data2pg.pg_foreign_pg_namespace ON (relnamespace = pg_foreign_pg_namespace.oid)
+                FROM @extschema@.pg_foreign_pg_class
+                     JOIN @extschema@.pg_foreign_pg_namespace ON (relnamespace = pg_foreign_pg_namespace.oid)
                 WHERE relkind = 'r'
                   AND nspname NOT IN ('pg_catalog', 'information_schema');
         -- Drop the now useless foreign tables.
-        DROP FOREIGN TABLE data2pg.pg_foreign_pg_class, data2pg.pg_foreign_pg_namespace;
+        DROP FOREIGN TABLE @extschema@.pg_foreign_pg_class, @extschema@.pg_foreign_pg_namespace;
     ELSIF p_sourceDbms = 'Sybase_ASA' THEN
         -- Create an image of the systab table.
         EXECUTE format(
-            'CREATE FOREIGN TABLE data2pg.asa_foreign_systab('
+            'CREATE FOREIGN TABLE @extschema@.asa_foreign_systab('
             '    user_name TEXT,'
             '    table_name TEXT,'
             '    row_count BIGINT,'
@@ -380,11 +351,11 @@ BEGIN
             ')',
             p_serverName);
         -- Populate the source_table_stat table.
-        INSERT INTO data2pg.source_table_stat
+        INSERT INTO @extschema@.source_table_stat
             SELECT p_migration, user_name, table_name, row_count, size_kb
-                FROM data2pg.asa_foreign_systab;
+                FROM @extschema@.asa_foreign_systab;
         -- Drop the now useless foreign tables.
-        DROP FOREIGN TABLE data2pg.asa_foreign_systab;
+        DROP FOREIGN TABLE @extschema@.asa_foreign_systab;
     ELSE
         RAISE EXCEPTION 'load_dbms_specific_objects: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
     END IF;
@@ -408,24 +379,24 @@ DECLARE
 BEGIN
 -- Check that the migration exists and get its characteristics.
     SELECT mgr_server_name INTO v_serverName
-        FROM data2pg.migration
+        FROM @extschema@.migration
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RETURN 0;
     END IF;
 -- Drop the batches linked to the migration.
-    PERFORM data2pg.drop_batch(bat_name)
-        FROM data2pg.batch
+    PERFORM @extschema@.drop_batch(bat_name)
+        FROM @extschema@.batch
         WHERE bat_migration = p_migration;
 -- Drop foreign tables linked to this migration.
     v_nbForeignTables = 0;
     FOR r_tbl IN
         SELECT tbl_foreign_schema AS foreign_schema, tbl_foreign_name AS foreign_table
-            FROM data2pg.table_to_process
+            FROM @extschema@.table_to_process
             WHERE tbl_migration = p_migration
         UNION
         SELECT seq_foreign_schema, seq_foreign_name
-            FROM data2pg.sequence_to_process
+            FROM @extschema@.sequence_to_process
             WHERE seq_migration = p_migration
     LOOP
         v_nbForeignTables = v_nbForeignTables + 1;
@@ -437,19 +408,19 @@ BEGIN
     SELECT string_agg(quote_ident(foreign_schema), ',') INTO v_schemaList
         FROM (
           (  SELECT DISTINCT tbl_foreign_schema AS foreign_schema
-                 FROM data2pg.table_to_process
+                 FROM @extschema@.table_to_process
                  WHERE tbl_migration = p_migration
            UNION
              SELECT DISTINCT seq_foreign_schema
-                 FROM data2pg.sequence_to_process
+                 FROM @extschema@.sequence_to_process
                  WHERE seq_migration = p_migration
           ) EXCEPT (
              SELECT DISTINCT tbl_foreign_schema AS foreign_schema
-                 FROM data2pg.table_to_process
+                 FROM @extschema@.table_to_process
                  WHERE tbl_migration <> p_migration
           ) EXCEPT (
              SELECT DISTINCT seq_foreign_schema
-                 FROM data2pg.sequence_to_process
+                 FROM @extschema@.sequence_to_process
                  WHERE seq_migration <> p_migration
           )
             ) AS t;
@@ -457,18 +428,18 @@ BEGIN
         EXECUTE 'DROP SCHEMA IF EXISTS ' || v_schemaList;
     END IF;
 -- Remove table parts associated to tables belonging to the migration.
-    DELETE FROM data2pg.table_part
-        USING data2pg.table_to_process
+    DELETE FROM @extschema@.table_part
+        USING @extschema@.table_to_process
         WHERE prt_schema = tbl_schema AND prt_table = tbl_name
           AND tbl_migration = p_migration;
 -- Remove tables from the table_to_process table.
-    DELETE FROM data2pg.table_to_process
+    DELETE FROM @extschema@.table_to_process
         WHERE tbl_migration = p_migration;
 -- Remove sequences from the sequence_to_process table.
-    DELETE FROM data2pg.sequence_to_process
+    DELETE FROM @extschema@.sequence_to_process
         WHERE seq_migration = p_migration;
 -- Remove the source table statistics from the source_table_stat table.
-    DELETE FROM data2pg.source_table_stat
+    DELETE FROM @extschema@.source_table_stat
         WHERE stat_migration = p_migration;
 -- The FDW is left because it can be used for other purposes.
 -- Drop the server, if it exists.
@@ -476,7 +447,7 @@ BEGIN
         'DROP SERVER IF EXISTS %s CASCADE',
         v_serverName);
 -- Delete the row from the migration table.
-    DELETE FROM data2pg.migration where mgr_name = p_migration;
+    DELETE FROM @extschema@.migration where mgr_name = p_migration;
 --
     RETURN v_nbForeignTables;
 END;
@@ -501,13 +472,13 @@ BEGIN
     END IF;
 -- Check that the batch does not exist yet.
     PERFORM 0
-       FROM data2pg.batch
+       FROM @extschema@.batch
        WHERE bat_name = p_batchName;
     IF FOUND THEN
         RAISE EXCEPTION 'create_batch: The batch "%" already exists.', p_batchName;
     END IF;
 -- Check that the migration exists and set it as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
@@ -523,12 +494,12 @@ BEGIN
     END IF;
 -- Checks are OK.
 -- Record the batch into the batch table.
-    INSERT INTO data2pg.batch (bat_name, bat_migration, bat_type, bat_start_with_truncate)
+    INSERT INTO @extschema@.batch (bat_name, bat_migration, bat_type, bat_start_with_truncate)
         VALUES (p_batchName, p_migration, p_batchType, coalesce(p_startWithTruncate, FALSE));
 -- If the batch needs a truncate step, add it into the step table.
     IF p_batchType = 'COPY' AND p_startWithTruncate THEN
-        INSERT INTO data2pg.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
-            VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', 'data2pg.truncate_all', 1);
+        INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
+            VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', 'truncate_all', 1);
     END IF;
 --
     RETURN 1;
@@ -546,11 +517,11 @@ DECLARE
     v_nbStep                 INT;
 BEGIN
 -- Delete rows from the step table.
-    DELETE FROM data2pg.step
+    DELETE FROM @extschema@.step
         WHERE stp_batch_name = p_batchName;
     GET DIAGNOSTICS v_nbStep = ROW_COUNT;
 -- Delete the row from the batch table.
-    DELETE FROM data2pg.batch
+    DELETE FROM @extschema@.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE WARNING 'drop_batch: No batch found with name "%".', p_batchName;
@@ -612,13 +583,13 @@ BEGIN
     END IF;
 -- Check that the migration exists and get its server name and source DBMS.
     SELECT mgr_server_name, mgr_source_dbms INTO v_serverName, v_sourceDbms
-        FROM data2pg.migration
+        FROM @extschema@.migration
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_tables: Migration "%" not found.', p_migration;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = p_migration;
 -- Check that the schema exists.
@@ -650,7 +621,7 @@ BEGIN
         v_nbTables = v_nbTables + 1;
 -- Check that the table is not already registered for another migration.
         SELECT tbl_migration INTO v_prevMigration
-            FROM data2pg.table_to_process
+            FROM @extschema@.table_to_process
             WHERE tbl_schema = p_schema
               AND tbl_name = r_tbl.relname;
         IF FOUND THEN
@@ -738,14 +709,14 @@ BEGIN
 -- Get statistics for the table.
         EXECUTE format (
             'SELECT stat_rows, stat_kbytes
-                FROM data2pg.%I
+                FROM @extschema@.%I
                 WHERE stat_schema = %L
                   AND stat_table = %L',
             p_sourceTableStatLoc, v_sourceSchema,
             CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END)
             INTO v_sourceRows, v_sourceKBytes;
 -- Register the table into the table_to_process table.
-        INSERT INTO data2pg.table_to_process (
+        INSERT INTO @extschema@.table_to_process (
                 tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name,
                 tbl_rows, tbl_kbytes, tbl_sort_order,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
@@ -804,13 +775,13 @@ BEGIN
     END IF;
 -- Check that the table is already registered and get its migration name and select columns array for both COPY and COMPARE steps.
     SELECT tbl_migration, tbl_copy_source_exprs, tbl_compare_source_exprs INTO v_migrationName, v_copyExpressions, v_compareExpressions
-        FROM data2pg.table_to_process
+        FROM @extschema@.table_to_process
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_column_transform_rule: Table %.% not found.', p_schema, p_table;
     END IF;
 -- Set the related migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Look in the tables copy column array if the source column exists, and apply the change.
@@ -826,7 +797,7 @@ BEGIN
     END IF;
     v_compareExpressions[v_colPosition] = p_expression;
 -- Record the changes.
-    UPDATE data2pg.table_to_process
+    UPDATE @extschema@.table_to_process
         SET tbl_copy_source_exprs = v_copyExpressions, tbl_compare_source_exprs = v_compareExpressions
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
 --
@@ -863,18 +834,18 @@ BEGIN
     END IF;
 -- Check that the table is already registered and get its migration name.
     SELECT tbl_migration INTO v_migrationName
-        FROM data2pg.table_to_process
+        FROM @extschema@.table_to_process
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_table_part: Table %.% not found.', p_schema, p_table;
     END IF;
 -- Set the related migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Check that the table part doesn't exist yet.
     PERFORM 0
-        FROM data2pg.table_part
+        FROM @extschema@.table_part
         WHERE prt_schema = p_schema AND prt_table = p_table AND prt_number = p_partNum;
     IF FOUND THEN
         RAISE EXCEPTION 'register_table_part: A part % already exists for the table %.%.',
@@ -885,7 +856,7 @@ BEGIN
         RAISE EXCEPTION 'register_table_part: these parameters combination would lead to nothing to do for this table part.';
     END IF;
 -- Register the table part into the ... table_part table.
-    INSERT INTO data2pg.table_part (
+    INSERT INTO @extschema@.table_part (
             prt_schema, prt_table, prt_number, prt_condition, prt_is_first_step, prt_is_last_step
         ) VALUES (
             p_schema, p_table, p_partNum, p_condition, p_isFirstPart, p_isLastPart
@@ -924,13 +895,13 @@ BEGIN
     END IF;
 -- Check that the migration exists and get its server name and source DBMS.
     SELECT mgr_server_name, mgr_source_dbms INTO v_serverName, v_sourceDbms
-        FROM data2pg.migration
+        FROM @extschema@.migration
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_sequences: Migration "%" not found.', p_migration;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = p_migration;
 -- Check that the schema exists.
@@ -958,7 +929,7 @@ BEGIN
         v_nbSequences = v_nbSequences + 1;
 -- Check that the sequence is not already assigned to another migration.
         SELECT seq_migration INTO v_prevMigration
-            FROM data2pg.sequence_to_process
+            FROM @extschema@.sequence_to_process
             WHERE seq_schema = p_schema
               AND seq_name = r_seq.relname;
         IF FOUND THEN
@@ -977,7 +948,7 @@ BEGIN
                 v_foreignSchema, r_seq.relname);
         END IF;
 -- Register the sequence into the sequence_to_process table.
-        INSERT INTO data2pg.sequence_to_process (
+        INSERT INTO @extschema@.sequence_to_process (
                 seq_schema, seq_name, seq_migration, seq_foreign_schema, seq_foreign_name, seq_source_schema
             ) VALUES (
                 p_schema, r_seq.relname, p_migration, v_foreignSchema, r_seq.relname, coalesce(p_sourceSchema, p_schema)
@@ -1015,20 +986,20 @@ BEGIN
     END IF;
 -- Check that the batch exists and get its migration name.
     SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_tables_to_batch: batch "%" not found.', p_batchName;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Get the selected tables.
     v_nbTables = 0;
     FOR r_tbl IN
         SELECT tbl_name, tbl_rows, tbl_kbytes, tbl_referencing_tables
-            FROM data2pg.table_to_process
+            FROM @extschema@.table_to_process
             WHERE tbl_migration = v_migrationName
               AND tbl_schema = p_schema
               AND tbl_name ~ p_tablesToInclude
@@ -1037,8 +1008,8 @@ BEGIN
         v_nbTables = v_nbTables + 1;
 -- Check that the table is not already fully assigned to a batch of the same type.
         SELECT stp_batch_name INTO v_prevBatchName
-            FROM data2pg.step
-                 JOIN data2pg.batch ON (bat_name = stp_batch_name)
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
             WHERE stp_name = p_schema || '.' || r_tbl.tbl_name
               AND bat_type = v_batchType;
         IF FOUND THEN
@@ -1047,8 +1018,8 @@ BEGIN
         END IF;
 -- Check that the table has no table part already assigned to any batch of the same type.
         PERFORM 0
-            FROM data2pg.step
-                 JOIN data2pg.batch ON (bat_name = stp_batch_name)
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
             WHERE stp_name LIKE p_schema || '.' || r_tbl.tbl_name || '.%'
               AND bat_type = v_batchType;
         IF FOUND THEN
@@ -1056,15 +1027,15 @@ BEGIN
                             p_schema, r_tbl.rtbl_name, v_batchType;
         END IF;
 -- Register the table into the step table.
-        INSERT INTO data2pg.step (
+        INSERT INTO @extschema@.step (
                 stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
                 stp_sql_function, stp_cost
             ) VALUES (
                 p_schema || '.' || r_tbl.tbl_name, p_batchName, 'TABLE', p_schema, r_tbl.tbl_name,
                 CASE v_batchType
-                    WHEN 'COPY' THEN 'data2pg.copy_table'
-                    WHEN 'CHECK' THEN 'data2pg.check_table'
-                    WHEN 'COMPARE' THEN 'data2pg.compare_table'
+                    WHEN 'COPY' THEN 'copy_table'
+                    WHEN 'CHECK' THEN 'check_table'
+                    WHEN 'COMPARE' THEN 'compare_table'
                 END,
                 r_tbl.tbl_kbytes
             );
@@ -1101,19 +1072,19 @@ BEGIN
     END IF;
 -- Check that the batch exists and get its migration name.
     SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: batch "%" not found.', p_batchName;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Check that the table part has been registered and get the table statistics.
     SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
-        FROM data2pg.table_part
-             JOIN data2pg.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
+        FROM @extschema@.table_part
+             JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
         WHERE prt_schema = p_schema AND prt_table = p_table AND prt_number = p_partNum;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% has not been registered.',
@@ -1121,8 +1092,8 @@ BEGIN
     END IF;
 -- Check that the table part has not been already assigned to a batch of the same type.
     SELECT stp_batch_name INTO v_prevBatchName
-        FROM data2pg.step
-             JOIN data2pg.batch ON (bat_name = stp_batch_name)
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
         WHERE stp_name = p_schema || '.' || p_table || '.' || p_partNum
           AND bat_type = v_batchType;
     IF FOUND THEN
@@ -1131,8 +1102,8 @@ BEGIN
     END IF;
 -- Check that the table is not already fully assigned to a batch of the same type.
     SELECT stp_batch_name INTO v_prevBatchName
-        FROM data2pg.step
-             JOIN data2pg.batch ON (bat_name = stp_batch_name)
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
         WHERE stp_name = p_schema || '.' || p_table
           AND bat_type = v_batchType;
     IF FOUND THEN
@@ -1140,15 +1111,15 @@ BEGIN
                         p_schema, p_table, v_prevBatchName;
     END IF;
 -- Register the table part into the step table.
-    INSERT INTO data2pg.step (
+    INSERT INTO @extschema@.step (
             stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_part_num,
             stp_sql_function, stp_cost
         ) VALUES (
             p_schema || '.' || p_table || '.' || p_partNum, p_batchName, 'TABLE_PART', p_schema, p_table, p_partNum,
             CASE v_batchType
-                WHEN 'COPY' THEN 'data2pg.copy_table'
-                WHEN 'CHECK' THEN 'data2pg.check_table'
-                WHEN 'COMPARE' THEN 'data2pg.compare_table'
+                WHEN 'COPY' THEN 'copy_table'
+                WHEN 'CHECK' THEN 'check_table'
+                WHEN 'COMPARE' THEN 'compare_table'
             END,
             v_kbytes
         );
@@ -1180,7 +1151,7 @@ BEGIN
     END IF;
 -- Check that the batch exists and get its migration name.
     SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: batch "%" not found.', p_batchName;
@@ -1190,14 +1161,14 @@ BEGIN
         RAISE EXCEPTION 'assign_sequences_to_batch: sequences cannot be assigned to a batch of type %.', p_batchType;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Get the selected sequences.
     v_nbSequences = 0;
     FOR r_seq IN
         SELECT seq_name
-            FROM data2pg.sequence_to_process
+            FROM @extschema@.sequence_to_process
             WHERE seq_migration = v_migrationName
               AND seq_schema = p_schema
               AND seq_name ~ p_sequencesToInclude
@@ -1206,8 +1177,8 @@ BEGIN
         v_nbSequences = v_nbSequences + 1;
 -- Check that the sequence is not already assigned to a batch of the same type.
         SELECT stp_batch_name INTO v_prevBatchName
-            FROM data2pg.step
-                 JOIN data2pg.batch ON (bat_name = stp_batch_name)
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
             WHERE stp_name = p_schema || '.' || r_seq.seq_name
               AND bat_type = v_batchType;
         IF FOUND THEN
@@ -1215,12 +1186,12 @@ BEGIN
                             p_schema, r_seq.seq_name, v_prevBatchName;
         END IF;
 -- Register the sequence into the step table.
-        INSERT INTO data2pg.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sql_function, stp_cost)
+        INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sql_function, stp_cost)
             VALUES (
                 p_schema || '.' || r_seq.seq_name, p_batchName, 'SEQUENCE', p_schema, r_seq.seq_name,
                 CASE v_batchType
-                    WHEN 'COPY' THEN 'data2pg.copy_sequence'
-                    WHEN 'COMPARE' THEN 'data2pg.compare_sequence'
+                    WHEN 'COPY' THEN 'copy_sequence'
+                    WHEN 'COMPARE' THEN 'compare_sequence'
                 END,
                 10);
     END LOOP;
@@ -1255,7 +1226,7 @@ BEGIN
     END IF;
 -- Check that the batch exists and is of type COPY and get its migration name.
     SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" not found.', p_batchName;
@@ -1264,7 +1235,7 @@ BEGIN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" is of type %. FK ckecks can only be assigned to batches of type COPY.', p_batchName, v_batchType;
     END IF;
 -- Set the migration as 'configuration in progress'.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
 -- Check that the table exists (It may not been registered into the migration).
@@ -1279,7 +1250,7 @@ BEGIN
 -- Get the table size, if it has been registered.
     v_tableKbytes = 0;
     SELECT tbl_kbytes INTO v_tableKbytes
-        FROM data2pg.table_to_process
+        FROM @extschema@.table_to_process
         WHERE tbl_schema = p_schema
           AND tbl_name = p_table;
 -- Get the fkeys.
@@ -1299,7 +1270,7 @@ BEGIN
         v_nbFKey = v_nbFKey + 1;
 -- Check that the fkey is not already assigned.
         SELECT stp_batch_name INTO v_prevBatchName
-            FROM data2pg.step
+            FROM @extschema@.step
             WHERE stp_name = p_schema || '.' || p_table || '.' || r_fk.conname;
         IF FOUND THEN
             RAISE EXCEPTION 'assign_fkey_checks_to_batch: The fkey % of table %.% is already assigned to the batch %.',
@@ -1308,7 +1279,7 @@ BEGIN
 -- Get the table size for the referenced table, if registered.
         v_refTableKbytes = 0;
         SELECT tbl_kbytes INTO v_refTableKbytes
-            FROM data2pg.table_to_process
+            FROM @extschema@.table_to_process
             WHERE tbl_schema = r_fk.nspname
               AND tbl_name = r_fk.relname;
 -- Compute the global cost and check that at least one of both tables are registered.
@@ -1318,10 +1289,10 @@ BEGIN
                             p_schema, p_table, r_fk.conname;
         END IF;
 -- Register the sequence into the step table.
-        INSERT INTO data2pg.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
+        INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
                                   stp_sub_object, stp_sql_function, stp_cost)
             VALUES (p_schema || '.' || p_table || '.' || r_fk.conname, p_batchName, 'FOREIGN_KEY', p_schema, p_table,
-                    r_fk.conname, 'data2pg.check_fkey', v_cost);
+                    r_fk.conname, 'check_fkey', v_cost);
     END LOOP;
 -- Check that fkeys have been found.
     IF v_nbFKey = 0 AND p_fkey IS NOT NULL THEN
@@ -1356,7 +1327,7 @@ DECLARE
     r_step                   RECORD;
 BEGIN
 -- Check that the migration exist and set it config_completed flag as true.
-    UPDATE data2pg.migration
+    UPDATE @extschema@.migration
         SET mgr_config_completed = TRUE
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
@@ -1365,7 +1336,7 @@ BEGIN
 -- Get the list of related batches and check that the number of batches marked as the first one is exactly 1.
     SELECT array_agg(bat_name), count(bat_name) FILTER (WHERE bat_start_with_truncate)
         INTO v_batchArray, v_countStartWithTruncate
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE bat_migration = p_migration;
     IF v_countStartWithTruncate <> 1 THEN
         RAISE WARNING 'complete_migration_configuration: % batches are declared as starting with a TRUNCATE step. It is usualy 1', v_countStartWithTruncate;
@@ -1377,8 +1348,8 @@ BEGIN
                 SELECT prt_schema, prt_table,
                        count(*) FILTER (WHERE prt_is_first_step) AS nb_first,
                        count(*) FILTER (WHERE prt_is_last_step) AS nb_last
-                    FROM data2pg.table_part
-                         JOIN data2pg.table_to_process ON (prt_schema = tbl_schema AND prt_table = tbl_name)
+                    FROM @extschema@.table_part
+                         JOIN @extschema@.table_to_process ON (prt_schema = tbl_schema AND prt_table = tbl_name)
                     WHERE tbl_migration = p_migration
                     GROUP BY 1,2
                  ) AS t
@@ -1403,7 +1374,7 @@ BEGIN
 -- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
     FOR r_function IN
         SELECT DISTINCT stp_sql_function || '(TEXT, TEXT, JSONB)' AS function_prototype
-            FROM data2pg.step
+            FROM @extschema@.step
             WHERE stp_batch_name = ANY (v_batchArray)
     LOOP
 -- If the function (or the data2pg role) does not exist, trying to check the privilege will raise a standart postgres exception.
@@ -1415,7 +1386,7 @@ BEGIN
 -- Build the chaining constraints between steps.
 --
 -- Reset the stp_parents column for the all steps of the migration.
-    UPDATE data2pg.step
+    UPDATE @extschema@.step
         SET stp_parents = NULL
         WHERE stp_batch_name = ANY (v_batchArray)
           AND stp_parents IS NOT NULL;
@@ -1423,14 +1394,14 @@ BEGIN
 -- The table parts set as the first step for their table must be the parents of all the others parts of the same batch.
     FOR r_step IN
         SELECT stp_batch_name, stp_name, stp_schema, stp_object, stp_part_num
-            FROM data2pg.step
-                 JOIN data2pg.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
-                 JOIN data2pg.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
+            FROM @extschema@.step
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
             WHERE stp_type = 'TABLE_PART'
               AND tbl_migration = p_migration
               AND prt_is_first_step
     LOOP
-        UPDATE data2pg.step
+        UPDATE @extschema@.step
             SET stp_parents = array_append(stp_parents, r_step.stp_name)
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_schema = r_step.stp_schema
@@ -1440,22 +1411,22 @@ BEGIN
 -- The table parts set as the last step for their table must have all the other parts of the same batch as parents.
     FOR r_step IN
         SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_part_num
-            FROM data2pg.step
-                 JOIN data2pg.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+            FROM @extschema@.step
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
             WHERE stp_batch_name = ANY (v_batchArray)
               AND stp_type = 'TABLE_PART'
               AND prt_is_last_step
     LOOP
         SELECT array_agg(stp_name) INTO v_parents
-            FROM data2pg.step
-                 JOIN data2pg.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
-                 JOIN data2pg.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
+            FROM @extschema@.step
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
             WHERE stp_type = 'TABLE_PART'
               AND stp_schema = r_step.stp_schema
               AND stp_object = r_step.stp_object
               AND stp_part_num <> r_step.stp_part_num
               AND stp_batch_name = r_step.stp_batch_name;
-        UPDATE data2pg.step
+        UPDATE @extschema@.step
             SET stp_parents = array_cat(stp_parents, v_parents)
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
@@ -1463,7 +1434,7 @@ BEGIN
 -- Add chaining constraints for foreign keys checks.
     FOR r_step IN
         SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_sub_object
-            FROM data2pg.step
+            FROM @extschema@.step
             WHERE stp_batch_name = ANY (v_batchArray)
               AND stp_type = 'FOREIGN_KEY'
     LOOP
@@ -1480,7 +1451,7 @@ BEGIN
               AND conname = r_step.stp_sub_object;
 --      Build the parents to add list.
         SELECT array_agg(stp_name ORDER BY stp_name) INTO v_parentsToAdd
-            FROM data2pg.step
+            FROM @extschema@.step
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_type IN ('TABLE', 'TABLE_PART')
               AND ((    stp_schema = r_step.stp_schema
@@ -1489,15 +1460,15 @@ BEGIN
                         stp_schema = v_refSchema
                     AND stp_object = v_refTable
                    ));
-        UPDATE data2pg.step
+        UPDATE @extschema@.step
             SET stp_parents = array_cat(stp_parents, v_parentsToAdd)
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
 -- Process the chaining constraints related to the TRUNCATE step for the batches starting with a TRUNCATE.
-    UPDATE data2pg.step
+    UPDATE @extschema@.step
         SET stp_parents = ARRAY['TRUNCATE_' || p_migration]
-        FROM data2pg.batch
+        FROM @extschema@.batch
         WHERE stp_batch_name = bat_name
           AND bat_start_with_truncate
           AND stp_type IN ('TABLE', 'TABLE_PART')
@@ -1507,11 +1478,11 @@ BEGIN
         SELECT step_batch, step_name, array_agg(step_parent ORDER BY step_parent) AS unique_parents
             FROM (
                SELECT DISTINCT stp_batch_name AS step_batch, stp_name AS step_name, unnest(stp_parents) AS step_parent
-                   FROM data2pg.step
+                   FROM @extschema@.step
                    WHERE stp_batch_name = ANY (v_batchArray)
                  ) AS t
             GROUP BY step_batch, step_name)
-    UPDATE data2pg.step
+    UPDATE @extschema@.step
         SET stp_parents = parent_rebuild.unique_parents
         FROM parent_rebuild
         WHERE stp_batch_name = ANY (v_batchArray)
@@ -1519,10 +1490,10 @@ BEGIN
           AND step.stp_name = parent_rebuild.step_name
           AND step.stp_parents <> parent_rebuild.unique_parents;
 -- Compute the cost of the Truncate step, now that the number of tables to truncate is known.
-    UPDATE data2pg.step
+    UPDATE @extschema@.step
         SET stp_cost = (
              SELECT 10 * count(*)
-                 FROM data2pg.table_to_process
+                 FROM @extschema@.table_to_process
 
                  WHERE tbl_migration = p_migration
                        )
@@ -1545,7 +1516,7 @@ CREATE FUNCTION copy_table(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SET session_replication_role = 'replica'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $copy_table$
@@ -1576,11 +1547,11 @@ DECLARE
     v_indexDef                 TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
-        FROM data2pg.step
+        FROM @extschema@.step
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_table: Step % not found in the step table.', p_step;
@@ -1592,13 +1563,13 @@ BEGIN
         INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows, v_sortOrder,
              v_constraintToDropNames, v_constraintToCreateDefs, v_indexToDropNames, v_indexToCreateDefs,
              v_insertColList, v_selectExprList, v_someGenAlwaysIdentCol
-        FROM data2pg.table_to_process
+        FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
     IF v_partNum IS NOT NULL THEN
         SELECT prt_condition, prt_is_first_step, prt_is_last_step
             INTO v_partCondition, v_isFirstStep, v_isLastStep
-            FROM data2pg.table_part
+            FROM @extschema@.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
     END IF;
 -- Analyze the step options.
@@ -1720,7 +1691,7 @@ CREATE FUNCTION copy_sequence(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
 $copy_sequence$
 DECLARE
@@ -1731,21 +1702,21 @@ DECLARE
     v_sourceDbms               TEXT;
     v_lastValue                BIGINT;
     v_isCalled                 TEXT;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the sequence.
     SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
       INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
-        FROM data2pg.step
-             JOIN data2pg.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
-             JOIN data2pg.migration ON (seq_migration = mgr_name)
+        FROM @extschema@.step
+             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
+             JOIN @extschema@.migration ON (seq_migration = mgr_name)
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_sequence: Step % not found in the step table.', p_step;
     END IF;
 -- Depending on the source DBMS, get the sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
-       FROM data2pg.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
 -- Set the sequence's characteristics.
     EXECUTE format(
         'SELECT setval(%L, %s, %s)',
@@ -1781,7 +1752,7 @@ BEGIN
 -- Depending on the source DBMS, get the sequence's characteristics.
     IF p_sourceDbms = 'Oracle' THEN
         SELECT last_number, 'TRUE' INTO p_lastValue, p_isCalled
-           FROM data2pg.ora_sequences
+           FROM @extschema@.ora_sequences
            WHERE sequence_owner = p_sourceSchema
              AND sequence_name = upper(p_sequence);
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
@@ -1805,7 +1776,7 @@ CREATE FUNCTION compare_table(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $compare_table$
 DECLARE
@@ -1820,11 +1791,11 @@ DECLARE
     v_destColList              TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
-        FROM data2pg.step
+        FROM @extschema@.step
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'compare_table: Step % not found in the step table.', p_step;
@@ -1834,13 +1805,13 @@ BEGIN
            array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ',')
         INTO v_foreignSchema, v_foreignTable,
              v_sourceExprList, v_destColList
-        FROM data2pg.table_to_process
+        FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
     IF v_partNum IS NOT NULL THEN
         SELECT prt_condition
             INTO v_partCondition
-            FROM data2pg.table_part
+            FROM @extschema@.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
         IF v_partCondition IS NULL THEN
             RAISE WARNING 'compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
@@ -1863,7 +1834,7 @@ BEGIN
                      SELECT %s FROM %I.%I %s
                          EXCEPT
                      SELECT %s FROM ft)
-             INSERT INTO data2pg.content_diff
+             INSERT INTO @extschema@.content_diff
                  SELECT %L, %L, ''S'', to_json(row(source_rows))->''f1'' FROM source_rows
                      UNION ALL
                  SELECT %L, %L, ''D'', to_json(row(destination_rows))->''f1'' FROM destination_rows',
@@ -1921,7 +1892,7 @@ CREATE FUNCTION compare_sequence(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
 $compare_sequence$
 DECLARE
@@ -1935,21 +1906,21 @@ DECLARE
     v_destLastValue            BIGINT;
     v_destIsCalled             TEXT;
     v_areSequencesEqual        BOOLEAN;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the sequence.
     SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
       INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
-        FROM data2pg.step
-             JOIN data2pg.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
-             JOIN data2pg.migration ON (seq_migration = mgr_name)
+        FROM @extschema@.step
+             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
+             JOIN @extschema@.migration ON (seq_migration = mgr_name)
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'compare_sequence: Step % not found in the step table.', p_step;
     END IF;
 -- Depending on the source DBMS, get the source sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
-       FROM data2pg.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
 -- Get the destination sequence's characteristics.
     EXECUTE format(
         'SELECT last_value, is_called
@@ -1960,7 +1931,7 @@ BEGIN
 -- If both sequences don't match, record it.
     v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
     IF NOT v_areSequencesEqual THEN
-        INSERT INTO data2pg.content_diff VALUES
+        INSERT INTO @extschema@.content_diff VALUES
             (v_schema, v_sequence, 'S', ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
             (v_schema, v_sequence, 'D', ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
     END IF;
@@ -1993,7 +1964,7 @@ CREATE FUNCTION truncate_all(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $truncate_all$
 DECLARE
@@ -2001,11 +1972,11 @@ DECLARE
     v_tablesList               TEXT;
     v_nbTables                 BIGINT;
     r_tbl                      RECORD;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name INTO v_batchName
-        FROM data2pg.step
+        FROM @extschema@.step
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'truncate_all: Step % not found in the step table.', p_step;
@@ -2013,8 +1984,8 @@ BEGIN
 -- Build the tables list of all tables of the migration.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
         INTO v_tablesList, v_nbTables
-        FROM data2pg.table_to_process
-             JOIN data2pg.batch ON (bat_migration = tbl_migration)
+        FROM @extschema@.table_to_process
+             JOIN @extschema@.batch ON (bat_migration = tbl_migration)
         WHERE bat_name = v_batchName;
     EXECUTE format(
           'TRUNCATE %s CASCADE',
@@ -2040,7 +2011,7 @@ CREATE FUNCTION check_fkey(
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
-    RETURNS SETOF data2pg.step_report_type LANGUAGE plpgsql
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $check_fkey$
 DECLARE
@@ -2049,11 +2020,11 @@ DECLARE
     v_fkey                     TEXT;
     v_copyMaxRows              BIGINT;
     v_fkeyDef                  TEXT;
-    r_output                   data2pg.step_report_type;
+    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_schema, stp_object, stp_sub_object INTO v_schema, v_table, v_fkey
-        FROM data2pg.step
+        FROM @extschema@.step
         WHERE stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'check_fkey: Step % not found in the step table.', p_step;
@@ -2105,8 +2076,8 @@ CREATE FUNCTION get_batch_ids()
     RETURNS SETOF batch_id_type LANGUAGE sql AS
 $get_batch_ids$
 SELECT bat_name, bat_type, bat_migration, mgr_config_completed
-    FROM data2pg.batch
-         JOIN data2pg.migration ON (bat_migration = mgr_name);
+    FROM @extschema@.batch
+         JOIN @extschema@.migration ON (bat_migration = mgr_name);
 $get_batch_ids$;
 
 -- The get_working_plan() function is called by the data2pg scheduler to build its working plan.
@@ -2123,8 +2094,8 @@ BEGIN
 -- Check that the batch exists and that the its migration is known as having a completed configuration.
 -- The calling program is supposed to have already called the check_batch_id() function. But recheck to be sure.
     SELECT bat_migration, mgr_config_completed INTO v_migration, v_isConfigCompleted
-        FROM data2pg.batch
-             JOIN data2pg.migration ON (bat_migration = mgr_name)
+        FROM @extschema@.batch
+             JOIN @extschema@.migration ON (bat_migration = mgr_name)
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'get_working_plan: batch "%" not found.', p_batchName;
@@ -2136,7 +2107,7 @@ BEGIN
 -- Deliver steps.
     RETURN QUERY
         SELECT stp_name, stp_sql_function, stp_shell_script, stp_cost, stp_parents
-            FROM data2pg.step
+            FROM @extschema@.step
             WHERE stp_batch_name = p_batchName;
     RETURN;
 END;
@@ -2146,7 +2117,7 @@ $get_working_plan$;
 -- It verifies that the syntax is JSON compatible and that the keywords and values are valid.
 -- Input parameter: the step options, in TEXT format.
 -- Output parameter: the error message, or an empty string when no problem is detected.
-CREATE FUNCTION data2pg.check_step_options(
+CREATE FUNCTION check_step_options(
     p_stepOptions            TEXT
     )
     RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS
@@ -2188,7 +2159,7 @@ $check_step_options$;
 -- It terminates Postgres backends that could be still in execution.
 -- Input parameter: an array of the pids to terminate, if they are still in execution.
 -- Output parameter: an array of the pids that have been effectively terminated.
-CREATE FUNCTION data2pg.terminate_data2pg_backends(
+CREATE FUNCTION terminate_data2pg_backends(
     p_pids                   INT[]
     )
     RETURNS INT[] LANGUAGE SQL AS
@@ -2204,11 +2175,19 @@ $terminate_data2pg_backends$;
 --
 -- Set the appropriate rights.
 --
-REVOKE ALL ON ALL FUNCTIONS IN SCHEMA data2pg FROM public;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA @extschema@ FROM public;
 
-DO $$ BEGIN EXECUTE format ('GRANT ALL ON DATABASE %s TO data2pg;', current_database()); END;$$;
-GRANT ALL ON ALL TABLES IN SCHEMA data2pg TO data2pg;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA data2pg TO data2pg;
+DO $$ BEGIN EXECUTE format('GRANT ALL ON DATABASE %s TO data2pg;', current_database()); END;$$;
+GRANT ALL ON SCHEMA @extschema@ TO data2pg;
+GRANT ALL ON ALL TABLES IN SCHEMA @extschema@ TO data2pg;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA @extschema@ TO data2pg;
 
-COMMIT;
-RESET search_path;
+-- Add the extension tables and sequences to the list of content that pg_dump has to save.
+SELECT pg_catalog.pg_extension_config_dump('migration', '');
+SELECT pg_catalog.pg_extension_config_dump('batch', '');
+SELECT pg_catalog.pg_extension_config_dump('step', '');
+SELECT pg_catalog.pg_extension_config_dump('table_to_process', '');
+SELECT pg_catalog.pg_extension_config_dump('table_part', '');
+SELECT pg_catalog.pg_extension_config_dump('sequence_to_process', '');
+SELECT pg_catalog.pg_extension_config_dump('source_table_stat', '');
+SELECT pg_catalog.pg_extension_config_dump('content_diff', '');

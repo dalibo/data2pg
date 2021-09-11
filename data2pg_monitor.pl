@@ -13,7 +13,7 @@ use POSIX qw(strftime floor);
 use vars qw($VERSION $PROGRAM $APPNAME);
 use Data::Dumper;
 
-$VERSION = '0.1';
+$VERSION = '0.2';
 $PROGRAM = 'data2pg_monitor.pl';
 $APPNAME = 'data2pg_monitor';
 
@@ -29,7 +29,6 @@ my $run = undef;                          # --run identifier
 
 # Global variables to manage the sessions and the statements to the databases.
 my $d2pUser = 'data2pg';                  # The role name used for the data2pg database connection
-my $d2pSchema = 'data2pg';                # The schema holding the tables to reach
 my $d2pDbh;                               # Handle for the connection on the data2pg database
 my $d2pSth;                               # Handle for the statements to submit on the data2pg database connection
 
@@ -113,24 +112,27 @@ sub logonData2pg {
 # The function opens the connection on the data2pg database.
     my $d2pDsn;          # The DSN to reach the data2pg database
     my $sql;             # SQL statement
-    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the data2pg database
+    my $d2pSchema;       # The schema holding the extension
 
 # Set the data2pg database connection DSN.
     $d2pDsn = "dbi:Pg:dbname=data2pg";
     $d2pDsn .= ";host=$host" if defined $host;
     $d2pDsn .= ";port=$port" if defined $port;
 
-# Open the connection on the data2pg database.
+# Open the connection on the data2pg adminstration database.
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
     $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {RaiseError => 1})
         or die("Error while logging on the data2pg database ($DBI::errstr).");
 
-# Check that the data2pg schema exists.
+# Check that the data2pg_admin extension exists and get its installation schema.
     $sql = qq(
-        SELECT 1 FROM pg_namespace WHERE nspname = '$d2pSchema'
+        SELECT nspname
+            FROM pg_catalog.pg_extension
+                JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
+            WHERE extname = 'data2pg_admin'
     );
-    ($schemaFound) = $d2pDbh->selectrow_array($sql)
-        or die("The 'data2pg' schema does not exist in the data2pg database.");
+    ($d2pSchema) = $d2pDbh->selectrow_array($sql)
+        or die("The 'data2pg_admin' extension does not exist in the Data2Pg administration database.");
 
 # Set the application_name and the search_path.
     $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");

@@ -1,31 +1,9 @@
--- data2pg_init_db.sql
--- This file belongs to data2pg, the framework that helps migrating data to PostgreSQL databases from various sources.
--- This sql script defines the structure of the central database used by data2pg.pl.
--- It must be executed by the data2pg role.
+-- This file belongs to Data2Pg, the framework that helps migrating data to PostgreSQL databases from various sources.
+-- This script defines the data2pg_admin extension content.
 
-\set ON_ERROR_STOP
+-- Complain if the script is sourced in psql, rather than a CREATE EXTENSION statement.
+\echo Use "CREATE EXTENSION data2pg_admin" to load this file. \quit
 
---- 
---- Preliminary checks on roles.
----
-DO LANGUAGE plpgsql
-$$
-BEGIN
-  IF current_user <> 'data2pg' THEN
-    RAISE EXCEPTION 'The connection role to create the data2pg schema must be ''data2pg''';
-  END IF;
-END
-$$;
-
-BEGIN TRANSACTION;
-
---
--- Create the schema.
---
-DROP SCHEMA IF EXISTS data2pg CASCADE;
-
-CREATE SCHEMA data2pg;
-SET search_path = data2pg;
 --
 -- Create specific types.
 --
@@ -137,5 +115,10 @@ CREATE TABLE step_result (
     FOREIGN KEY (sr_run_id, sr_step) REFERENCES step(stp_run_id, stp_name)
 );
 
-COMMIT;
-RESET search_path;
+-- Add the extension tables and sequences to the list of content that pg_dump has to save.
+SELECT pg_catalog.pg_extension_config_dump('target_database', '');
+SELECT pg_catalog.pg_extension_config_dump('external_run_start', '');
+SELECT pg_catalog.pg_extension_config_dump('run', '');
+SELECT pg_catalog.pg_extension_config_dump('run_run_id_seq', '');
+SELECT pg_catalog.pg_extension_config_dump('session', '');
+SELECT pg_catalog.pg_extension_config_dump('step', '');

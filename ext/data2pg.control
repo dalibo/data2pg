@@ -1,0 +1,7 @@
+# Data2Pg core extension
+comment = 'Data2Pg core'
+default_version = '0.2'
+module_pathname = '$libdir/data2pg'
+superuser = yes
+relocatable = no
+schema = data2pg

@@ -2,14 +2,27 @@
 # 3-configure.sh
 # This shell script prepares the data2pg components on the destination database
 
+echo "==================================================="
+echo "Prepare the data2pg test with Postgres databases"
+echo "==================================================="
+
 PGPORT_DEFAULT_VALUE=5432
 PGDATABASE_DEFAULT_VALUE=test_dest
 PGHOST_DEFAULT_VALUE=localhost
 
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "  => Setting PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
+
 if [ -z ${PGPORT+x} ];
 then
   echo "Environment variable PGPORT is not defined."
-  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  echo "  => Setting PGPORT to ${PGPORT_DEFAULT_VALUE}."
   export PGPORT=${PGPORT_DEFAULT_VALUE}
 else
   echo "Environment variable PGPORT is already defined to ${PGPORT}."
@@ -17,25 +30,12 @@ fi
 
 if [ -z ${PGDATABASE+x} ];
 then
-  echo "Environment variable PGPORT is not defined."
-  echo "Setting environment variable PGPORT to ${PGDATABASE_DEFAULT_VALUE}."
+  echo "Environment variable PGDATABASE is not defined."
+  echo "  => Setting PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
   export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
 else
   echo "Environment variable PGPORT is already defined to ${PGDATABASE}."
 fi
-
-if [ -z ${PGHOST+x} ];
-then
-  echo "Environment variable PGHOST is not defined."
-  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
-  export PGHOST=${PGHOST_DEFAULT_VALUE}
-else
-  echo "Environment variable PGHOST is already defined to ${PGHOST}."
-fi
-
-echo "==================================================="
-echo "Prepare the data2pg test with Postgres databases"
-echo "==================================================="
 
 psql -U data2pg -a <<EOF
 
@@ -143,7 +143,6 @@ SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 1);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
-
 
 --
 -- Assign FK checks

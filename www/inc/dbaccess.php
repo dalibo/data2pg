@@ -15,16 +15,21 @@ function sql_connect() {
 	$conn = pg_connect($dsn)
 		or die ("Problem while connecting to the data2pg administration database. You may have to adjust the 'data2pgDsn' configuration value.");
 
-	// Verify that the data2pg schema exists
-	$sql = "SELECT 0 FROM information_schema.tables WHERE table_schema = '${const['d2pSchema']}' AND table_name = 'run'";
+	// Verify that the data2pg_admin extension exists and get its installation schema.
+	$sql = "SELECT nspname
+				FROM pg_catalog.pg_extension
+					JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
+				WHERE extname = '${const['d2pExtName']}'";
 	$res = pg_query($conn, $sql)
 		or die (pg_last_error());
 	if (pg_num_rows($res) == 0) {
-		die ("No 'run' table found in the data2pg administration database.");
-		}
+		die ("The data2pg_admin extension does not exist.");
+	} else {
+		$d2pSchema = pg_fetch_result($res, 0, 0);
+	}
 
 # Set the application_name and the search_path.
-    $sql = "SET application_name TO ${const['d2pAppName']}; SET search_path TO ${const['d2pSchema']}";
+    $sql = "SET application_name TO ${const['d2pAppName']}; SET search_path TO $d2pSchema";
 	$res = pg_query($conn, $sql)
 		or die (pg_last_error());
 

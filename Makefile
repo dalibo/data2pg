@@ -11,26 +11,27 @@ help: ## Display callable targets.
 all: stop build up
 
 .PHONY: init-database ## Initializes data2pg.
-init-database: init-db test-init-database init-schema test-init-schema
+init-database: init-admin-db init-test-database init-schema configure-test-migration
 
-.PHONY: init-db ## Initializes data2pg.
-init-db:
+.PHONY: init-admin-db ## Initializes the data2pg administration database.
+init-admin-db:
+	cd ext/ ; sudo make install
 	bash data2pg_init_db.sh
 
-.PHONY: test-init-database ## Initializes data2pg.
-test-init-database:
+.PHONY: test-init-database ## Initializes postgres test environment.
+init-test-database:
 	bash test_pg/1-init.sh
 
-.PHONY: init-schema ## Initializes data2pg.
+.PHONY: init-schema ## Initializes the data2pg schema.
 init-schema:
 	bash data2pg_init_schema.sh
 
-.PHONY: test-init-schema ## Initializes data2pg.
-test-init-schema:
+.PHONY: configure-test-migration ## Configure the test migration.
+configure-test-migration:
 	bash test_pg/3-configure.sh
 
 ################################################################################
-#######################DOCKER###################################################
+#######################     DOCKER     #########################################
 ################################################################################
 
 .PHONY: dc-init-database ## Initializes database.
@@ -68,21 +69,17 @@ restart:
 		@docker-compose up --detach --build --force-recreate
 
 ################################################################################
-################################################################################
-################################################################################
-
-################################################################################
-#######################TEST inside CI#########################################################
+#######################     Tests inside CI     ################################
 ################################################################################
 .PHONY: dc-test ## Test data2pg.
 dc-test: ## Test data2pg.
 	@docker-compose exec --user postgres -T database make test
 
-#########################f#######################################################
-#######################TEST local#########################################################
+#########################f######################################################
+#######################     Manual tests     ###################################
 ################################################################################
 .PHONY: test ## Test data2pg.
-test: test-batch-0 test-batch-1 test-batch-compare ## Test data2pg.
+test: test-batch-0 test-batch-1 test-batch-compare ## Test Data2Pg runs.
 
 .PHONY: test-batch-0 ## Test batch0.
 test-batch-0: ## Test batch0.

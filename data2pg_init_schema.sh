@@ -2,16 +2,29 @@
 # data2pg_init_schema.sh
 # This shell script initializes the data2pg schema in a target database.
 
+echo "======================================================================================"
+echo "Create the data2pg role on the instance and the schema on the target database"
+echo "======================================================================================"
+
 # The 4 following constants must be adjusted before execution.
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
 PGDATABASE_DEFAULT_VALUE=test_dest
 PGHOST_DEFAULT_VALUE=localhost
 
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "  => Setting PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
+
 if [ -z ${PGPORT+x} ];
 then
   echo "Environment variable PGPORT is not defined."
-  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  echo "  => Setting PGPORT to ${PGPORT_DEFAULT_VALUE}."
   export PGPORT=${PGPORT_DEFAULT_VALUE}
 else
   echo "Environment variable PGPORT is already defined to ${PGPORT}."
@@ -20,7 +33,7 @@ fi
 if [ -z ${PGUSER+x} ];
 then
   echo "Environment variable PGUSER is not defined."
-  echo "Setting environment variable PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  echo "  => Setting PGUSER to ${PGUSER_DEFAULT_VALUE}."
   export PGUSER=${PGUSER_DEFAULT_VALUE}
 else
   echo "Environment variable PGUSER is already defined to ${PGUSER}."
@@ -29,29 +42,17 @@ fi
 if [ -z ${PGDATABASE+x} ];
 then
   echo "Environment variable PGDATABASE is not defined."
-  echo "Setting environment variable PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
+  echo "  => Setting PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
   export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
 else
   echo "Environment variable PGDATABASE is already defined to ${PGDATABASE}."
 fi
 
-if [ -z ${PGHOST+x} ];
-then
-  echo "Environment variable PGHOST is not defined."
-  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
-  export PGHOST=${PGHOST_DEFAULT_VALUE}
-else
-  echo "Environment variable PGHOST is already defined to ${PGHOST}."
-fi
-
-echo "======================================================================================"
-echo "Create the data2pg role on the instance and the database schema on the target database"
-echo "======================================================================================"
-
 echo "Create the role, if needed"
 echo "--------------------------"
 
 psql postgres <<EOF
+\set ON_ERROR_STOP ON
 
 -- Perform some checks and create the role if needed
 DO LANGUAGE plpgsql
@@ -87,14 +88,23 @@ else
   echo "  => the data2pg role is created"
 fi
 
-echo "Create the data2pg schema in the $PGDATABASE database"
-echo "-----------------------------------------------------"
+echo "Create the data2pg extension in the $PGDATABASE database"
+echo "--------------------------------------------------------"
 
-psql $PGDATABASE -f sql/data2pg_init_schema.sql
+psql<<EOF
+\set ON_ERROR_STOP ON
+
+DROP EXTENSION IF EXISTS data2pg;
+DROP SCHEMA IF EXISTS data2pg CASCADE;
+
+CREATE SCHEMA data2pg;
+CREATE EXTENSION data2pg;
+
+EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
   exit
 else
-  echo "  => data2pg schema successfuly created"
+  echo "  => the data2pg extension is successfuly created"
 fi

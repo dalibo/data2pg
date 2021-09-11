@@ -2,16 +2,29 @@
 # data2pg_init_db.sh
 # This shell script initializes the data2pg management database
 
+echo "=================================================="
+echo "    Create the Data2Pg administration database    "
+echo "=================================================="
+
 # Environment variables to setup
+PGHOST_DEFAULT_VALUE=localhost
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
 TARGET_DB_FILE_DEFAULT_VALUE=target_database.dat
-PGHOST_DEFAULT_VALUE=localhost
+
+if [ -z ${PGHOST+x} ];
+then
+  echo "Environment variable PGHOST is not defined."
+  echo "  => Setting PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  export PGHOST=${PGHOST_DEFAULT_VALUE}
+else
+  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+fi
 
 if [ -z ${PGPORT+x} ];
 then
   echo "Environment variable PGPORT is not defined."
-  echo "Setting environment variable PGPORT to ${PGPORT_DEFAULT_VALUE}"
+  echo "  => Setting PGPORT to ${PGPORT_DEFAULT_VALUE}"
   export PGPORT=${PGPORT_DEFAULT_VALUE}
 else
   echo "Environment variable PGPORT is already defined to ${PGPORT}."
@@ -20,7 +33,7 @@ fi
 if [ -z ${PGUSER+x} ];
 then
   echo "Environment variable PGUSER is not defined."
-  echo "Setting environment variable PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  echo "  => Setting PGUSER to ${PGUSER_DEFAULT_VALUE}."
   export PGUSER=${PGUSER_DEFAULT_VALUE}
 else
   echo "Environment variable PGUSER is already defined to ${PGUSER}."
@@ -29,45 +42,23 @@ fi
 if [ -z ${TARGET_DB_FILE+x} ];
 then
   echo "Environment variable TARGET_DB_FILE is not defined."
-  echo "Setting environment variable TARGET_DB_FILE to ${TARGET_DB_FILE_DEFAULT_VALUE}."
+  echo "  => Setting TARGET_DB_FILE to ${TARGET_DB_FILE_DEFAULT_VALUE}."
   export TARGET_DB_FILE=${TARGET_DB_FILE_DEFAULT_VALUE}
 else
   echo "Environment variable TARGET_DB_FILE is already defined to ${TARGET_DB_FILE}."
 fi
 
-if [ -z ${PGHOST+x} ];
-then
-  echo "Environment variable PGHOST is not defined."
-  echo "Setting environment variable PGHOST to ${PGHOST_DEFAULT_VALUE}"
-  export PGHOST=${PGHOST_DEFAULT_VALUE}
-else
-  echo "Environment variable PGHOST is already defined to ${PGHOST}."
-fi
-
-echo "============================================================="
-echo "Create the data2pg role if not exits and the data2pg database"
-echo "============================================================="
-
 echo "Create the role and the database"
 echo "--------------------------------"
 
-psql postgres <<EOF
+psql<<EOF
+\set ON_ERROR_STOP ON
 
 -- Perform some checks and create the role if needed
 DO LANGUAGE plpgsql
 \$do\$
   BEGIN
--- check the current role is a superuser
-    PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = current_user AND rolsuper;
-    IF NOT FOUND THEN
-      RAISE EXCEPTION 'The current user (%) is not a superuser.', current_user;
-    END IF;
--- check postgres version is >= 9.6
-    IF current_setting('server_version_num')::INT < 90600 THEN
-      RAISE EXCEPTION 'The current postgres version (%) is too old. It should be at least 9.6.',
-        current_setting('server_version');
-    END IF;
--- create the data2pg role, if it doesn't already exist
+-- create the data2pg role, if it doesn't already exist in the instance
     PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = 'data2pg';
     IF NOT FOUND THEN
 -- the role does not exist, so create it
@@ -91,16 +82,25 @@ else
   echo "  => data2pg role and database successfuly created"
 fi
 
-echo "Populate the data2pg database"
-echo "-----------------------------"
+echo "Create the data2pg administration extension"
+echo "-------------------------------------------"
 
-psql data2pg -U data2pg -f sql/data2pg_init_db.sql
+psql data2pg -U data2pg<<EOF 
+\set ON_ERROR_STOP ON
+
+DROP EXTENSION IF EXISTS data2pg_admin;
+DROP SCHEMA IF EXISTS data2pg CASCADE;
+
+CREATE SCHEMA data2pg;
+CREATE EXTENSION data2pg_admin SCHEMA data2pg;
+
+EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
   exit
 else
-  echo "  => data2pg database structure successfuly populated"
+  echo "  => data2pg_admin extension successfuly created"
 fi
 
 echo "Load the target databases list"
@@ -115,5 +115,5 @@ else
   echo "  => target databases successfuly loaded."
 fi
 echo ""
-echo "The data2pg database is ready"
+echo "The data2pg administration database is ready"
 echo ""

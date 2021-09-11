@@ -12,15 +12,13 @@ use Getopt::Long;
 use Time::HiRes 'sleep';
 use vars qw($VERSION $PROGRAM $APPNAME);
 
-$VERSION = '0.1';
+$VERSION = '0.2';
 $PROGRAM = 'data2pg.pl';
 $APPNAME = 'data2pg';
 
 # Constants.
 my $d2pUser = 'data2pg';               # The role name used for the data2pg administration database connection
-my $d2pSchema = 'data2pg';             # The schema holding the tables to reach in the administration database
 my $pgUser = 'data2pg';                # The role name used for the connections to the target postgres database
-my $pgSchema = 'data2pg';              # The schema holding the functions to call in the target postgres database
 
 my $checkCompletedOpDelay = 0.5;       # Maximum delay in seconds between 2 checks for completed operations
 my $sleepMinDuration = 0.01;           # Minimum sleep duration in the main loop (in second)
@@ -76,6 +74,7 @@ my $previousRunPerlIsExecuting;        # A boolean indicating whether the previo
                                        #   (when the state is not 'Completed' or 'Aborted' or 'Suspended')
 
 # Other global variables.
+my $pgSchema = 'data2pg';              # The schema holding the functions to call in the target postgres database
 my $pgMaxCnx;                          # The maximum nomber of connections configured on the target database
 my $batchType;                         # The type of the batch as defined on the target database
 my $nextMaxSessionsRefreshTime;        # The next time the maxSessions parameter stored into the run table must be read
@@ -299,7 +298,7 @@ sub logonData2pg {
 # The function opens the connection on the data2pg administration database.
     my $d2pDsn;          # The DSN to reach the data2pg administration database
     my $sql;             # SQL statement
-    my $schemaFound;     # Boolean used to check the existence of the data2pg schema on the administration database
+    my $d2pSchema;       # The schema holding the tables to reach in the administration database
     my $quotedTargetDb;  # Target database quoted to be included into a SQL statement
     my $row;             # Returned row
 
@@ -312,15 +311,18 @@ sub logonData2pg {
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
     if ($debug) {printDebug("Trying to connect on the data2pg administration database");}
     $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {AutoCommit=>0})
-          or abort("Error while logging on the data2pg administration database ($DBI::errstr).");
+          or abort("Error while logging on the Data2Pg administration database ($DBI::errstr).");
     $d2pDbh->{RaiseError} = 1;
 
-# Check that the data2pg schema exists.
+# Check that the data2pg_admin extension exists and get its installation schema.
     $sql = qq(
-        SELECT 1 FROM pg_namespace WHERE nspname = '$d2pSchema'
+        SELECT nspname
+            FROM pg_catalog.pg_extension
+                join pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
+            WHERE extname = 'data2pg_admin'
     );
-    ($schemaFound) = $d2pDbh->selectrow_array($sql)
-        or abort("The 'data2pg' schema does not exist in the data2pg administration database.");
+    ($d2pSchema) = $d2pDbh->selectrow_array($sql)
+        or abort("The 'data2pg_admin' extension does not exist in the Data2Pg administration database.");
 
 # Set the application_name and the search_path.
     $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");
@@ -608,7 +610,7 @@ sub openSession
 {
     my ($i) = @_;
     my $sql;             # SQL statement
-    my $schemaFound;     # boolean used to check the existence of the data2pg schema on the target database
+    my $pgSchema;        # The schema holding the functions to call in the target postgres database
     my $backendPid;      # pid of the postgres backend created at connection start
 
 # Try to connect
@@ -618,15 +620,18 @@ sub openSession
     $sessions[$i]->{dbh}->{RaiseError} = 1;
     $sessions[$i]->{state} = 1;
 
+# Check that the data2pg extension exists and get its installation schema.
+    $sql = qq(
+        SELECT nspname
+            FROM pg_catalog.pg_extension
+                JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
+            WHERE extname = 'data2pg'
+    );
+    ($pgSchema) = $sessions[$i]->{dbh}->selectrow_array($sql)
+        or abort("The 'data2pg' extension does not exist in the target database.");
+
 # For the first connection, perform some specific checks.
     if ($i == 1) {
-# Check that the data2pg schema exists.
-        $sql = qq(
-            SELECT 1 FROM pg_namespace WHERE nspname = 'data2pg'
-        );
-        ($schemaFound) = $sessions[$i]->{dbh}->selectrow_array($sql)
-            or abort("The 'data2pg' schema does not exist in the target database.");
-
         if (!$actionCheck) {
 # Get the maximum number of sessions that could be opened,
             $sql = qq(
@@ -1187,6 +1192,7 @@ sub abortRun {
     my $pgPidsToKill;    # Pids array of postgres backends to kill
     my $pgKilledPids;    # Pids array of effectively killed postgres backends
     my $dbh;             # A connection on the target database, to kill potential backend still in execution
+    my $pgSchema;        # The schema holding the functions to call in the target postgres database
     my $ret;             # SQL result
 
 # Check the previous run state, if any.
@@ -1220,7 +1226,17 @@ sub abortRun {
         $dbh = DBI->connect($pgDsn, $pgUser, undef, {AutoCommit=>0})
               or abort("Error while logging on the target database ($DBI::errstr).");
 
-# ... ask for the backends termination,
+# Check that the data2pg extension exists and get its installation schema.
+        $sql = qq(
+            SELECT nspname
+                FROM pg_catalog.pg_extension
+                    JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
+                WHERE extname = 'data2pg'
+        );
+        ($pgSchema) = $dbh->selectrow_array($sql)
+            or abort("The 'data2pg' extension does not exist in the target database.");
+
+# Ask for the backends termination,
         $sql = qq(
           SELECT $pgSchema.terminate_data2pg_backends('$pgPidsToKill')
         );
