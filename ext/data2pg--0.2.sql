@@ -218,17 +218,17 @@ BEGIN
         p_extension);
 -- Create the Server used to reach the source database.
     EXECUTE format(
-        'CREATE SERVER IF NOT EXISTS %s'
+        'CREATE SERVER IF NOT EXISTS %I'
         '    FOREIGN DATA WRAPPER %s'
         '    OPTIONS (%s)',
         v_serverName, p_extension, p_serverOptions);
     EXECUTE format(
-        'GRANT USAGE ON FOREIGN SERVER %s TO data2pg',
+        'GRANT USAGE ON FOREIGN SERVER %I TO data2pg',
         v_serverName);
 -- Create the User Mapping to let the data2pg role or the current superuser installing the function log on the source database.
     EXECUTE format(
         'CREATE USER MAPPING IF NOT EXISTS FOR %s'
-        '    SERVER %s'
+        '    SERVER %I'
         '    OPTIONS (%s)',
         current_user, v_serverName, p_userMappingOptions);
 -- Load additional objects depending on the selected DBMS.
@@ -282,7 +282,7 @@ BEGIN
             '   table_name VARCHAR(128),'
             '   num_rows BIGINT,'
             '   bytes BIGINT'
-            ') SERVER %s OPTIONS ( table ''%s'')',
+            ') SERVER %I OPTIONS ( table ''%s'')',
             p_serverName, v_queryTables
         );
         EXECUTE format(
@@ -290,7 +290,7 @@ BEGIN
             '   sequence_owner VARCHAR(128),'
             '   sequence_name VARCHAR(128),'
             '   last_number bigint'
-            ') SERVER %s OPTIONS ( table ''%s'')',
+            ') SERVER %I OPTIONS ( table ''%s'')',
             p_serverName, v_querySequences
         );
 
@@ -312,14 +312,14 @@ BEGIN
             '    relkind TEXT,'
             '    reltuples BIGINT,'
             '    relpages BIGINT'
-            ') SERVER %s OPTIONS (schema_name ''pg_catalog'', table_name ''pg_class'')',
+            ') SERVER %I OPTIONS (schema_name ''pg_catalog'', table_name ''pg_class'')',
             p_serverName);
         -- Create an image of the pg_namespace table.
         EXECUTE format(
             'CREATE FOREIGN TABLE @extschema@.pg_foreign_pg_namespace ('
             '    oid OID,'
             '    nspname TEXT'
-            ') SERVER %s OPTIONS (schema_name ''pg_catalog'', table_name ''pg_namespace'')',
+            ') SERVER %I OPTIONS (schema_name ''pg_catalog'', table_name ''pg_namespace'')',
             p_serverName);
         -- Populate the source_table_stat table.
         INSERT INTO @extschema@.source_table_stat
@@ -338,7 +338,7 @@ BEGIN
             '    table_name TEXT,'
             '    row_count BIGINT,'
             '    size_kb FLOAT'
-            ') SERVER %s OPTIONS (query '
+            ') SERVER %I OPTIONS (query '
             '    ''SELECT user_name,'
             '            table_name,'
             '            count AS row_count,'
@@ -444,7 +444,7 @@ BEGIN
 -- The FDW is left because it can be used for other purposes.
 -- Drop the server, if it exists.
     EXECUTE format(
-        'DROP SERVER IF EXISTS %s CASCADE',
+        'DROP SERVER IF EXISTS %I CASCADE',
         v_serverName);
 -- Delete the row from the migration table.
     DELETE FROM @extschema@.migration where mgr_name = p_migration;
@@ -735,7 +735,7 @@ BEGIN
 --    For Oracle, the source schema name is forced in upper case.
         IF p_createForeignTable THEN
             EXECUTE format(
-                'IMPORT FOREIGN SCHEMA %s LIMIT TO (%I) FROM SERVER %s INTO %I',
+                'IMPORT FOREIGN SCHEMA %s LIMIT TO (%I) FROM SERVER %I INTO %I',
                 CASE WHEN v_sourceDbms = 'Oracle' THEN '"' || v_sourceSchema || '"' ELSE quote_ident(v_sourceSchema) END,
                 r_tbl.relname, v_serverName, v_foreignSchema);
         END IF;
@@ -941,7 +941,7 @@ BEGIN
         IF v_sourceDbms = 'PostgreSQL' THEN
             EXECUTE format(
                 'CREATE FOREIGN TABLE %I.%I (last_value BIGINT, is_called BOOLEAN)'
-                '    SERVER %s OPTIONS (schema_name %L)',
+                '    SERVER %I OPTIONS (schema_name %L)',
                 v_foreignSchema, r_seq.relname, v_serverName, coalesce(p_sourceSchema, p_schema));
             EXECUTE format(
                 'ALTER FOREIGN TABLE %I.%I OWNER TO data2pg',

@@ -50,6 +50,7 @@ BEGIN TRANSACTION;
 --
 
 SELECT drop_migration('mig_all');
+SELECT drop_migration('PG''s db');
 
 select * from migration;
 select * from batch;
@@ -57,7 +58,7 @@ select * from batch;
 \dn
 
 SELECT create_migration(
-    p_migration            => 'mig_all',
+    p_migration            => 'PG''s db',
     p_sourceDbms           => 'PostgreSQL',
     p_extension            => 'postgres_fdw',
     p_serverOptions        => 'port ''5432'', dbname ''test_src'', fetch_size ''1000''',
@@ -69,13 +70,13 @@ SELECT create_migration(
 -- Register the tables and sequences
 --
 
-SELECT register_tables('mig_all', 'myschema1', '.*', NULL);
-SELECT register_tables('mig_all', 'myschema2', '.*', NULL);
-SELECT register_tables('mig_all', 'phil''s schema3', '.*', NULL);
+SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
+SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
+SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL);
 
-SELECT register_sequences('mig_all', 'myschema1', '.*', NULL);
-SELECT register_sequences('mig_all', 'myschema2', '.*', NULL);
-SELECT register_sequences('mig_all', 'phil''s schema3', '.*', NULL);
+SELECT register_sequences('PG''s db', 'myschema1', '.*', NULL);
+SELECT register_sequences('PG''s db', 'myschema2', '.*', NULL);
+SELECT register_sequences('PG''s db', 'phil''s schema3', '.*', NULL);
 
 --
 -- Register the columns transformation rules
@@ -102,9 +103,9 @@ SELECT drop_batch('BATCH0');
 SELECT drop_batch('BATCH1');
 SELECT drop_batch('COMPARE_ALL');
 
-SELECT create_batch('BATCH0','mig_all','COPY',true);
-SELECT create_batch('BATCH1','mig_all','COPY',false);
-SELECT create_batch('COMPARE_ALL','mig_all','COMPARE',null);
+SELECT create_batch('BATCH0','PG''s db','COPY',true);
+SELECT create_batch('BATCH1','PG''s db','COPY',false);
+SELECT create_batch('COMPARE_ALL','PG''s db','COMPARE',null);
 
 --
 -- Assign the tables and sequences to batches
@@ -157,7 +158,7 @@ SELECT assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl
 -- Complete the migration configuration
 --
 
-SELECT complete_migration_configuration('mig_all');
+SELECT complete_migration_configuration('PG''s db');
 
 COMMIT;
 
