@@ -633,15 +633,15 @@ BEGIN
 -- Get the clustered index columns list, if it exists.
 -- This list will be used in an ORDER BY clause in the table copy function.
         SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_sortOrder
-            FROM pg_index
-                 JOIN pg_class ON (pg_class.oid = indexrelid)
+            FROM pg_catalog.pg_index
+                 JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
             WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
               AND indisclustered;
 -- If no clustered index exists and the sort is allowed on PKey, get the primary key index columns list, if it exists.
         IF v_sortOrder IS NULL AND p_sortByPKey THEN
             SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_sortOrder
-                FROM pg_index
-                     JOIN pg_class ON (pg_class.oid = indexrelid)
+                FROM pg_catalog.pg_index
+                     JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
                 WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
                   AND indisprimary;
         END IF;
@@ -663,8 +663,8 @@ BEGIN
         SELECT array_agg(index_name), array_agg(index_def) INTO v_indexToDropNames, v_indexToDropDefs
             FROM (
                 SELECT relname AS index_name, pg_get_indexdef(pg_class.oid) AS index_def
-                    FROM pg_index
-                         JOIN pg_class ON (pg_class.oid = indexrelid)
+                    FROM pg_catalog.pg_index
+                         JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
                     WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
                       AND NOT indisclustered
                       AND NOT EXISTS(                             -- the index must not be linked to any constraint
@@ -673,7 +673,7 @@ BEGIN
                           )
                     ORDER BY relname
                  ) AS t;
--- Build the list of columns to copy and columns to compare and some indicators to store into the step table.
+-- Build the list of columns to copy and columns to compare and some indicators to store into the table_to_process table.
         v_stmt = 'SELECT array_agg(quote_ident(attname)),'
 --                           the columns list for the table comparison step, excluding the GENERATED ALWAYS AS (expression) columns
                  '       array_agg(quote_ident(attname)) FILTER (WHERE attgenerated = ''''),'
