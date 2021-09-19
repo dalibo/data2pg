@@ -1893,18 +1893,18 @@ BEGIN
     r_output.sr_value = 1;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
-    IF v_nbRows = 0 THEN
-   	    IF v_partNum IS NULL THEN
-            r_output.sr_indicator = 'EQUAL_TABLES';
-            r_output.sr_rank = 51;
-        ELSE
-            r_output.sr_indicator = 'EQUAL_TABLE_PARTS';
-            r_output.sr_rank = 53;
-        END IF;
-        r_output.sr_value = 1;
-        r_output.sr_is_main_indicator = FALSE;
-        RETURN NEXT r_output;
+--
+    IF v_partNum IS NULL THEN
+        r_output.sr_indicator = 'NON_EQUAL_TABLES';
+        r_output.sr_rank = 51;
+    ELSE
+        r_output.sr_indicator = 'NON_EQUAL_TABLE_PARTS';
+        r_output.sr_rank = 53;
     END IF;
+    r_output.sr_value = CASE WHEN v_nbRows = 0 THEN 0 ELSE 1 END;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
     r_output.sr_indicator = 'ROW_DIFFERENCES';
     r_output.sr_value = v_nbRows;
     r_output.sr_rank = 54;
@@ -1974,10 +1974,10 @@ BEGIN
     r_output.sr_rank = 60;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
-    r_output.sr_indicator = 'EQUAL_SEQUENCES';
+    r_output.sr_indicator = 'NON_EQUAL_SEQUENCES';
     r_output.sr_rank = 61;
     r_output.sr_is_main_indicator = FALSE;
-    r_output.sr_value = CASE WHEN v_areSequencesEqual THEN 1 ELSE 0 END;
+    r_output.sr_value = CASE WHEN v_areSequencesEqual THEN 0 ELSE 1 END;
     RETURN NEXT r_output;
     r_output.sr_indicator = 'SEQUENCE_DIFFERENCES';
     r_output.sr_rank = 62;
