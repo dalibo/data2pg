@@ -116,6 +116,8 @@ CREATE TABLE table_to_process (
     tbl_compare_source_exprs   TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the foreign table
     tbl_compare_dest_cols      TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the local postgres table,
                                                         --   in the same order as tbl_compare_source_exprs
+    tbl_compare_pk_cols_jb     TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the pk columns in the diff table
+    tbl_compare_other_cols_jb  TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the other columns in the diff table
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
@@ -166,8 +168,9 @@ CREATE TABLE content_diff (
     diff_relation            TEXT NOT NULL,              -- The schema of the destination table used for the comparison
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
-    diff_row                 JSON                        -- The JSON representation of the table rows or sequence characteristics
-                                                         -- that are different beetween both databases
+    diff_pkey_cols           JSON,                       -- The JSON representation of the table pk for rows that are different between both databases
+    diff_other_cols          JSON                        -- The JSON representation of the table columns not in PK for rows that are different between
+                                                         --   both databases or the sequence characteristics that are different between both databases
 );
 
 --
@@ -567,6 +570,9 @@ DECLARE
     v_constraintToDropNames  TEXT[];
     v_constraintToDropDefs   TEXT[];
     v_stmt                   TEXT;
+    v_pkColList              TEXT;
+    v_columnsInPkJB          TEXT[];
+    v_columnsNotInPkJB       TEXT[];
     v_columnsToCopy          TEXT[];
     v_columnsToCompare       TEXT[];
     v_nbGenAlwaysIdentCol    INT;
@@ -645,13 +651,14 @@ BEGIN
                 WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
                   AND indisprimary;
         END IF;
--- Build the array of constraints of type UNIQUE or EXCLUDE and their definition.
+-- Build the array of constraints to drop and their definition.
+-- These constraints are of type PKEY, UNIQUE or EXCLUDE
         SELECT array_agg(conname), array_agg(constraint_def) INTO v_constraintToDropNames, v_constraintToDropDefs
             FROM (
                 SELECT c1.conname, pg_get_constraintdef(c1.oid) AS constraint_def
                     FROM pg_catalog.pg_constraint c1
                     WHERE c1.conrelid = r_tbl.table_oid
-                      AND c1.contype IN ('u', 'x', 'p')
+                      AND c1.contype IN ('p', 'u', 'x')
 ----                      AND c1.contype IN ('u', 'x')
                       AND NOT EXISTS(                             -- the index linked to this constraint must not be linked to other constraints
                           SELECT 0 FROM pg_catalog.pg_constraint c2
@@ -659,7 +666,8 @@ BEGIN
                           )
                     ORDER BY conname
                  ) AS t;
--- Build the array of non pkey and clustered indexes and their definition.
+-- Build the array of indexes to drop and their definition.
+-- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
         SELECT array_agg(index_name), array_agg(index_def) INTO v_indexToDropNames, v_indexToDropDefs
             FROM (
                 SELECT relname AS index_name, pg_get_indexdef(pg_class.oid) AS index_def
@@ -673,11 +681,25 @@ BEGIN
                           )
                     ORDER BY relname
                  ) AS t;
+-- Get the PK columns in two formats: 
+--  * a list for the next statement
+--  * an array of expressions to build the pk json structure in the compare_table() function.
+        SELECT string_agg(quote_literal(attname), ','), array_agg(quote_literal(attname) || ',' || quote_ident(attname))
+          INTO v_pkColList, v_columnsInPkJB
+            FROM pg_catalog.pg_attribute
+                JOIN pg_catalog.pg_index ON (pg_index.indrelid = pg_attribute.attrelid)
+            WHERE attnum = ANY (indkey)
+              AND indrelid = r_tbl.table_oid
+              AND indisprimary
+              AND attnum > 0
+              AND attisdropped = FALSE;
 -- Build the list of columns to copy and columns to compare and some indicators to store into the table_to_process table.
         v_stmt = 'SELECT array_agg(quote_ident(attname)),'
---                           the columns list for the table comparison step, excluding the GENERATED ALWAYS AS (expression) columns
+--                           the columns array for the table comparison step
                  '       array_agg(quote_ident(attname)) FILTER (WHERE attgenerated = ''''),'
---                           the columns list for the table copy step, excluding the GENERATED ALWAYS AS (expression) columns
+--                           the columns array for the table copy step, excluding the GENERATED ALWAYS AS (expression) columns
+                 '       array_agg(quote_literal(attname) || '','' || quote_ident(attname)) FILTER (WHERE NOT (attname = ANY (ARRAY[%s]::TEXT[]) )),'
+--                           the array of expressions to build the non pk json structure in the compare_table() function
                  '       count(*) FILTER (WHERE attidentity = ''a''),'
 --                           the number of GENERATED ALWAYS AS IDENTITY columns
                  '       count(*) FILTER (WHERE attgenerated <> '''')'
@@ -685,14 +707,15 @@ BEGIN
                  '    FROM ('
                  '        SELECT attname, %s AS attidentity, %s AS attgenerated'
                  '            FROM pg_catalog.pg_attribute'
-                 '            WHERE attrelid = %s::regclass'
+                 '            WHERE attrelid = %s'
                  '              AND attnum > 0 AND NOT attisdropped'
                  '            ORDER BY attnum) AS t';
         EXECUTE format(v_stmt,
+                       v_pkColList,
                        CASE WHEN v_pgVersion >= 100000 THEN 'attidentity' ELSE '''''::TEXT' END,
                        CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
-                       quote_literal(quote_ident(p_schema) || '.' || quote_ident(r_tbl.relname)))
-            INTO v_columnsToCompare, v_columnsToCopy, v_nbGenAlwaysIdentCol, v_nbGenAlwaysExprCol;
+                       r_tbl.table_oid)
+            INTO v_columnsToCompare, v_columnsToCopy, v_columnsNotInPkJB, v_nbGenAlwaysIdentCol, v_nbGenAlwaysExprCol;
 -- Build both arrays of tables linked by foreign keys.
 --    The tables that are referenced by FK from this table.
         SELECT array_agg(DISTINCT nf.nspname || '.' || tf.relname ORDER BY nf.nspname || '.' || tf.relname) INTO v_referencingTables
@@ -721,14 +744,15 @@ BEGIN
                 tbl_rows, tbl_kbytes, tbl_sort_order,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
                 tbl_copy_dest_cols,
-                tbl_copy_source_exprs, tbl_compare_source_exprs, tbl_compare_dest_cols, tbl_some_gen_alw_id_col,
+                tbl_copy_source_exprs, tbl_compare_source_exprs, tbl_compare_dest_cols,
+                tbl_compare_pk_cols_jb, tbl_compare_other_cols_jb, tbl_some_gen_alw_id_col,
                 tbl_referencing_tables, tbl_referenced_tables
             ) VALUES (
                 p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
                 coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0), v_sortOrder,
                 v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
-----                CASE WHEN v_nbGenAlwaysExprCol > 0 THEN v_columnsToCopy ELSE NULL END,
-                v_columnsToCopy, v_columnsToCopy, v_columnsToCompare, v_columnsToCompare, (v_nbGenAlwaysIdentCol > 0),
+                v_columnsToCopy, v_columnsToCopy, v_columnsToCompare, v_columnsToCompare,
+                v_columnsInPkJB, v_columnsNotInPkJB, (v_nbGenAlwaysIdentCol > 0),
                 v_referencingTables, v_referencedTables
             );
 -- Create the foreign table mapped on the table in the source database.
@@ -1789,6 +1813,8 @@ DECLARE
     v_estimatedNbRows          BIGINT;
     v_sourceExprList           TEXT;
     v_destColList              TEXT;
+    v_pkJsonBuild              TEXT;
+    v_otherJsonBuild           TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
     r_output                   @extschema@.step_report_type;
@@ -1802,9 +1828,11 @@ BEGIN
     END IF;
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name,
-           array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ',')
+           array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ','),
+           array_to_string(tbl_compare_pk_cols_jb, ','), array_to_string(tbl_compare_other_cols_jb, ',')
         INTO v_foreignSchema, v_foreignTable,
-             v_sourceExprList, v_destColList
+             v_sourceExprList, v_destColList,
+             v_pkJsonBuild, v_otherJsonBuild
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
@@ -1835,17 +1863,17 @@ BEGIN
                          EXCEPT
                      SELECT %s FROM ft)
              INSERT INTO @extschema@.content_diff
-                 SELECT %L, %L, ''S'', to_json(row(source_rows))->''f1'' FROM source_rows
+                 SELECT %L, %L, ''S'', json_build_object(%s), json_build_object(%s) FROM source_rows
                      UNION ALL
-                 SELECT %L, %L, ''D'', to_json(row(destination_rows))->''f1'' FROM destination_rows',
+                 SELECT %L, %L, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_rows',
             v_destColList,
             v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
-            v_schema, v_table,
-            v_schema, v_table
+            v_schema, v_table, v_pkJsonBuild, v_otherJsonBuild,
+            v_schema, v_table, v_pkJsonBuild, v_otherJsonBuild
             );
 --raise warning '%',v_stmt;
         EXECUTE v_stmt;
@@ -1932,8 +1960,8 @@ BEGIN
     v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
     IF NOT v_areSequencesEqual THEN
         INSERT INTO @extschema@.content_diff VALUES
-            (v_schema, v_sequence, 'S', ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
-            (v_schema, v_sequence, 'D', ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
+            (v_schema, v_sequence, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
+            (v_schema, v_sequence, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
     END IF;
 -- Return the step report.
     r_output.sr_indicator = 'COMPARED_SEQUENCES';
