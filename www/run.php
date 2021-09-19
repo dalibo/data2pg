@@ -477,6 +477,9 @@ function restartRun($runId) {
 			if (preg_match('/"COPY_SLOW_DOWN": (\d+)/', $run['run_step_options'], $matches)) {
 				$copySlowDown = $matches[1];
 			}
+			if (preg_match('/"COMPARE_MAX_DIFF": (\d+)/', $run['run_step_options'], $matches)) {
+				$compareMaxDiff = $matches[1];
+			}
 
 // OK, display the form to adjust the run execution parameters, if needed. The parameters from the previous run are proposed by default.
 			mainTitle('', "Restart the run #$runId", '');
@@ -510,6 +513,9 @@ function restartRun($runId) {
 				echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0 value = $copySlowDown></div>\n";
 			}
 
+			echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_DIFF</span></div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxDiff\" size=6 min=1 value=$compareMaxDiff></div>\n";
+
 			echo "\t</div>\n";
 
 			echo "\t<p>\n";
@@ -530,6 +536,7 @@ function doRestartRun($runId) {
 	$ascSession = @$_GET["ascSession"];
 	$copyMaxRows = @$_GET["copyMaxRows"];
 	$copySlowDown = @$_GET["copySlowDown"];
+	$compareMaxDiff = @$_GET["compareMaxDiff"];
 
 // Get the run characteristics.
 	$res = sql_getRun($runId);
@@ -572,6 +579,9 @@ function doRestartRun($runId) {
 				}
 				if ($copySlowDown <> '' && $copySlowDown > 0) {
 					$stepOptions .= '\"COPY_SLOW_DOWN\":' . $copySlowDown . ',';
+				}
+				if ($compareMaxDiff <> '' && $compareMaxDiff > 0) {
+					$stepOptions .= '\"COMPARE_MAX_DIFF\":' . $compareMaxDiff . ',';
 				}
 				if ($stepOptions <> '') {
 					// Strip the last ',' and enclose with {} to get a proper JSON object.

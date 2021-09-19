@@ -26,7 +26,7 @@
 
 	// Default paralellism level when submitting a new batch run
 	$conf['max_sessions_default']	= 3;				// The suggested maximum sessions number
-	$conf['asc_sessions_default']	= 1;				// The suggested number of sessions executing steps in cost ascending order
+	$conf['asc_sessions_default']	= 0;				// The suggested number of sessions executing steps in cost ascending order
 
 	// The Data2Pg scheduler location.
 	$conf['scheduler_location'] 	= 'local';

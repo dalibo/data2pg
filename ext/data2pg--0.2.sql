@@ -1816,17 +1816,17 @@ DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
     v_partNum                  INTEGER;
-    v_partCondition            TEXT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
-    v_estimatedNbRows          BIGINT;
     v_sourceExprList           TEXT;
     v_destColList              TEXT;
     v_pkJsonBuild              TEXT;
     v_otherJsonBuild           TEXT;
     v_compareSortOrder         TEXT;
+    v_partCondition            TEXT;
+    v_maxDiff                  TEXT;
     v_stmt                     TEXT;
-    v_nbRows                   BIGINT = 0;
+    v_nbDiff                   BIGINT;
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table.
@@ -1857,6 +1857,8 @@ BEGIN
             RAISE WARNING 'compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
         END IF;
     END IF;
+-- Analyze the step options.
+    v_maxDiff = p_stepOptions->>'COMPARE_MAX_DIFF';
 --
 -- Compare processing.
 --
@@ -1869,33 +1871,48 @@ BEGIN
                   source_diff AS (
                      SELECT %s FROM ft
                          EXCEPT
-                     SELECT %s FROM %I.%I %s),
+                     SELECT %s FROM %I.%I %s
+                     LIMIT %s),
                   destination_diff AS (
                      SELECT %s FROM %I.%I %s
                          EXCEPT
-                     SELECT %s FROM ft),
+                     SELECT %s FROM ft
+                     LIMIT %s),
                   all_diff AS (
-                     SELECT %s, ''S'' AS diff_db, json_build_object(%s) AS diff_pk_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
+                     SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_pkey_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
                          UNION ALL
-                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff)
-             INSERT INTO @extschema@.content_diff
-                 (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
-                 SELECT %L, %L, dense_rank() OVER (ORDER BY %s), diff_db, diff_pk_cols, diff_other_cols
-                     FROM all_diff ORDER BY %s, diff_db DESC',
+                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff),
+                  formatted_diff AS (
+                     SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_pkey_cols, diff_other_cols
+                        FROM all_diff ORDER BY %s, diff_database DESC),
+                  inserted_diff AS (
+                     INSERT INTO @extschema@.content_diff
+                         (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
+                         SELECT * FROM formatted_diff %s
+                         RETURNING diff_rank)
+                  SELECT max(diff_rank) FROM inserted_diff',
+            -- ft CTE variables
             v_destColList,
             v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
+            -- source_diff CTE variables
             v_destColList,
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
+            coalesce (v_maxDiff, 'ALL'),
+            -- destination_diff CTE variables
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
+            coalesce (v_maxDiff, 'ALL'),
+            -- all_diff CTE variables
             v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
             v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
+            -- formatted_diff CTE variables
             v_schema, v_table, v_compareSortOrder,
-            v_compareSortOrder
+            v_compareSortOrder,
+            -- inserted_diff CTE variables
+            coalesce ('WHERE diff_rank <= ' || v_maxDiff, '')
             );
 --raise warning '%',v_stmt;
-        EXECUTE v_stmt;
-        GET DIAGNOSTICS v_nbRows = ROW_COUNT;
+        EXECUTE v_stmt INTO v_nbDiff;
     END IF;
 -- Return the step report.
     IF v_partNum IS NULL THEN
@@ -1916,12 +1933,12 @@ BEGIN
         r_output.sr_indicator = 'NON_EQUAL_TABLE_PARTS';
         r_output.sr_rank = 53;
     END IF;
-    r_output.sr_value = CASE WHEN v_nbRows = 0 THEN 0 ELSE 1 END;
+    r_output.sr_value = CASE WHEN v_nbDiff IS NULL THEN 0 ELSE 1 END;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
 --
     r_output.sr_indicator = 'ROW_DIFFERENCES';
-    r_output.sr_value = v_nbRows;
+    r_output.sr_value = coalesce(v_nbDiff, 0);
     r_output.sr_rank = 54;
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
@@ -2193,6 +2210,10 @@ BEGIN
            WHEN 'COPY_SLOW_DOWN' THEN
                IF jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'number' THEN
                    RETURN 'The value for the COPY_SLOW_DOWN step option must be a number.';
+               END IF;
+           WHEN 'COMPARE_MAX_DIFF' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' THEN
+                   RETURN 'The value for the COMPARE_MAX_DIFF step option must be a number.';
                END IF;
            ELSE
                RETURN r_key.key || ' is not a known step option.';
