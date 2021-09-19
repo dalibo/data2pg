@@ -164,6 +164,8 @@ CREATE TABLE source_table_stat (
 -- The content_diff table is populated with the result of elementary compare_table and compare_sequence steps.
 -- The table is just a report and has no pkey.
 CREATE TABLE content_diff (
+    diff_timestamp           TIMESTAMPTZ                 -- The transaction timestamp of the relation comparison
+                             DEFAULT current_timestamp,
     diff_schema              TEXT NOT NULL,              -- The name of the destination schema
     diff_relation            TEXT NOT NULL,              -- The schema of the destination table used for the comparison
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
@@ -1863,6 +1865,7 @@ BEGIN
                          EXCEPT
                      SELECT %s FROM ft)
              INSERT INTO @extschema@.content_diff
+                 (diff_schema, diff_relation, diff_database, diff_pkey_cols, diff_other_cols)
                  SELECT %L, %L, ''S'', json_build_object(%s), json_build_object(%s) FROM source_rows
                      UNION ALL
                  SELECT %L, %L, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_rows',
@@ -1959,7 +1962,9 @@ BEGIN
 -- If both sequences don't match, record it.
     v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
     IF NOT v_areSequencesEqual THEN
-        INSERT INTO @extschema@.content_diff VALUES
+        INSERT INTO @extschema@.content_diff
+            (diff_schema, diff_relation, diff_database, diff_pkey_cols, diff_other_cols)
+            VALUES
             (v_schema, v_sequence, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
             (v_schema, v_sequence, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
     END IF;
