@@ -106,18 +106,19 @@ CREATE TABLE table_to_process (
     tbl_foreign_name           TEXT NOT NULL,           -- The name of the foreign table representing the source table
     tbl_rows                   BIGINT,                  -- The approximative number of rows of the source table
     tbl_kbytes                 FLOAT,                   -- The size in K-Bytes of the source table
-    tbl_sort_order             TEXT,                    -- The ORDER BY clause if needed for the INSERT SELECT copy statement (NULL if no sort)
     tbl_constraint_names       TEXT[],                  -- The constraints to drop before copying the table data
     tbl_constraint_definitions TEXT[],                  -- The constraints to recreate after copying the table data
     tbl_index_names            TEXT[],                  -- The indexes to drop before copying the table data
     tbl_index_definitions      TEXT[],                  -- The indexes to recreate after copying the table data
     tbl_copy_source_exprs      TEXT[],                  -- For a COPY batch, the columns to select
     tbl_copy_dest_cols         TEXT[],                  -- For a COPY batch, the columns to insert, in the same order as tbl_copy_source_exprs
+    tbl_copy_sort_order        TEXT,                    -- The ORDER BY clause if needed for the INSERT SELECT copy statement (NULL if no sort)
     tbl_compare_source_exprs   TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the foreign table
     tbl_compare_dest_cols      TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the local postgres table,
                                                         --   in the same order as tbl_compare_source_exprs
     tbl_compare_pk_cols_jb     TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the pk columns in the diff table
     tbl_compare_other_cols_jb  TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the other columns in the diff table
+    tbl_compare_sort_order     TEXT,                    -- The ORDER BY clause if needed for the INSERT SELECT compare statement
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
@@ -168,6 +169,7 @@ CREATE TABLE content_diff (
                              DEFAULT current_timestamp,
     diff_schema              TEXT NOT NULL,              -- The name of the destination schema
     diff_relation            TEXT NOT NULL,              -- The schema of the destination table used for the comparison
+    diff_rank                BIGINT,                     -- A difference number
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
     diff_pkey_cols           JSON,                       -- The JSON representation of the table pk for rows that are different between both databases
@@ -566,7 +568,8 @@ DECLARE
     v_pgVersion              INT;
     v_nbTables               INT;
     v_prevMigration          TEXT;
-    v_sortOrder              TEXT;
+    v_copySortOrder          TEXT;
+    v_compareSortOrder       TEXT;
     v_indexToDropNames       TEXT[];
     v_indexToDropDefs        TEXT[];
     v_constraintToDropNames  TEXT[];
@@ -637,17 +640,17 @@ BEGIN
                             p_schema, r_tbl.relname, v_prevMigration;
         END IF;
 -- Look at the indexes associated to the table.
-        v_sortOrder = NULL;
+        v_copySortOrder = NULL;
 -- Get the clustered index columns list, if it exists.
 -- This list will be used in an ORDER BY clause in the table copy function.
-        SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_sortOrder
+        SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
             FROM pg_catalog.pg_index
                  JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
             WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
               AND indisclustered;
 -- If no clustered index exists and the sort is allowed on PKey, get the primary key index columns list, if it exists.
-        IF v_sortOrder IS NULL AND p_sortByPKey THEN
-            SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_sortOrder
+        IF v_copySortOrder IS NULL AND p_sortByPKey THEN
+            SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
                 FROM pg_catalog.pg_index
                      JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
                 WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
@@ -684,10 +687,13 @@ BEGIN
                     ORDER BY relname
                  ) AS t;
 -- Get the PK columns in two formats: 
---  * a list for the next statement
+--  * a list of literals, for the next statement
+--  * a list of identifiers, for the ORDER BY to use in the compare_table() function
 --  * an array of expressions to build the pk json structure in the compare_table() function.
-        SELECT string_agg(quote_literal(attname), ','), array_agg(quote_literal(attname) || ',' || quote_ident(attname))
-          INTO v_pkColList, v_columnsInPkJB
+        SELECT string_agg(quote_literal(attname), ','), string_agg(quote_ident(attname), ','),
+               array_agg(quote_literal(attname) || ',' || quote_ident(attname))
+          INTO v_pkColList, v_compareSortOrder,
+               v_columnsInPkJB
             FROM pg_catalog.pg_attribute
                 JOIN pg_catalog.pg_index ON (pg_index.indrelid = pg_attribute.attrelid)
             WHERE attnum = ANY (indkey)
@@ -743,17 +749,18 @@ BEGIN
 -- Register the table into the table_to_process table.
         INSERT INTO @extschema@.table_to_process (
                 tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name,
-                tbl_rows, tbl_kbytes, tbl_sort_order,
+                tbl_rows, tbl_kbytes,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
-                tbl_copy_dest_cols,
-                tbl_copy_source_exprs, tbl_compare_source_exprs, tbl_compare_dest_cols,
+                tbl_copy_dest_cols, tbl_copy_source_exprs, tbl_copy_sort_order,
+                tbl_compare_source_exprs, tbl_compare_dest_cols,  tbl_compare_sort_order,
                 tbl_compare_pk_cols_jb, tbl_compare_other_cols_jb, tbl_some_gen_alw_id_col,
                 tbl_referencing_tables, tbl_referenced_tables
             ) VALUES (
                 p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
-                coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0), v_sortOrder,
+                coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
                 v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
-                v_columnsToCopy, v_columnsToCopy, v_columnsToCompare, v_columnsToCompare,
+                v_columnsToCopy, v_columnsToCopy, v_copySortOrder,
+                v_columnsToCompare, v_columnsToCompare, coalesce(v_compareSortOrder, array_to_string(v_columnsToCompare, ',')),
                 v_columnsInPkJB, v_columnsNotInPkJB, (v_nbGenAlwaysIdentCol > 0),
                 v_referencingTables, v_referencedTables
             );
@@ -1559,7 +1566,7 @@ DECLARE
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_estimatedNbRows          BIGINT;
-    v_sortOrder                TEXT;
+    v_copySortOrder            TEXT;
     v_constraintToDropNames    TEXT[];
     v_constraintToCreateDefs   TEXT[];
     v_indexToDropNames         TEXT[];
@@ -1583,10 +1590,10 @@ BEGIN
         RAISE EXCEPTION 'copy_table: Step % not found in the step table.', p_step;
     END IF;
 -- Read the table_to_process table to get additional details.
-    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows, tbl_sort_order,
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows, tbl_copy_sort_order,
            tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
            array_to_string(tbl_copy_dest_cols, ','), array_to_string(tbl_copy_source_exprs, ','), tbl_some_gen_alw_id_col
-        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows, v_sortOrder,
+        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows, v_copySortOrder,
              v_constraintToDropNames, v_constraintToCreateDefs, v_indexToDropNames, v_indexToCreateDefs,
              v_insertColList, v_selectExprList, v_someGenAlwaysIdentCol
         FROM @extschema@.table_to_process
@@ -1640,7 +1647,7 @@ BEGIN
     IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
 -- Do not sort the source data when the table is processed with a WHERE clause or a LIMIT clause.
         IF v_partCondition IS NOT NULL OR v_copyMaxRows IS NOT NULL THEN
-            v_sortOrder = NULL;
+            v_copySortOrder = NULL;
         END IF;
 -- Copy the foreign table to the destination table.
         v_stmt = format(
@@ -1654,7 +1661,7 @@ BEGIN
             CASE WHEN v_someGenAlwaysIdentCol THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END,
             v_selectExprList, v_foreignSchema, v_foreignTable,
             coalesce('WHERE ' || v_partCondition, ''),
-            coalesce('ORDER BY ' || v_sortOrder, ''),
+            coalesce('ORDER BY ' || v_copySortOrder, ''),
             coalesce('LIMIT ' || v_copyMaxRows, '')
             );
 --raise warning '%',v_stmt;
@@ -1817,6 +1824,7 @@ DECLARE
     v_destColList              TEXT;
     v_pkJsonBuild              TEXT;
     v_otherJsonBuild           TEXT;
+    v_compareSortOrder         TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
     r_output                   @extschema@.step_report_type;
@@ -1831,10 +1839,12 @@ BEGIN
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name,
            array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ','),
-           array_to_string(tbl_compare_pk_cols_jb, ','), array_to_string(tbl_compare_other_cols_jb, ',')
+           array_to_string(tbl_compare_pk_cols_jb, ','), array_to_string(tbl_compare_other_cols_jb, ','),
+           tbl_compare_sort_order
         INTO v_foreignSchema, v_foreignTable,
              v_sourceExprList, v_destColList,
-             v_pkJsonBuild, v_otherJsonBuild
+             v_pkJsonBuild, v_otherJsonBuild,
+             v_compareSortOrder
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- If the step concerns a table part, get additional details about the part.
@@ -1856,27 +1866,32 @@ BEGIN
         v_stmt = format(
             'WITH ft (%s) AS (
                      SELECT %s FROM %I.%I %s),
-                  source_rows AS (
+                  source_diff AS (
                      SELECT %s FROM ft
                          EXCEPT
                      SELECT %s FROM %I.%I %s),
-                  destination_rows AS (
+                  destination_diff AS (
                      SELECT %s FROM %I.%I %s
                          EXCEPT
-                     SELECT %s FROM ft)
+                     SELECT %s FROM ft),
+                  all_diff AS (
+                     SELECT %s, ''S'' AS diff_db, json_build_object(%s) AS diff_pk_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
+                         UNION ALL
+                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff)
              INSERT INTO @extschema@.content_diff
-                 (diff_schema, diff_relation, diff_database, diff_pkey_cols, diff_other_cols)
-                 SELECT %L, %L, ''S'', json_build_object(%s), json_build_object(%s) FROM source_rows
-                     UNION ALL
-                 SELECT %L, %L, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_rows',
+                 (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
+                 SELECT %L, %L, dense_rank() OVER (ORDER BY %s), diff_db, diff_pk_cols, diff_other_cols
+                     FROM all_diff ORDER BY %s, diff_db DESC',
             v_destColList,
             v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_destColList,
-            v_schema, v_table, v_pkJsonBuild, v_otherJsonBuild,
-            v_schema, v_table, v_pkJsonBuild, v_otherJsonBuild
+            v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
+            v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
+            v_schema, v_table, v_compareSortOrder,
+            v_compareSortOrder
             );
 --raise warning '%',v_stmt;
         EXECUTE v_stmt;
@@ -1963,10 +1978,10 @@ BEGIN
     v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
     IF NOT v_areSequencesEqual THEN
         INSERT INTO @extschema@.content_diff
-            (diff_schema, diff_relation, diff_database, diff_pkey_cols, diff_other_cols)
+            (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
             VALUES
-            (v_schema, v_sequence, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
-            (v_schema, v_sequence, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
+            (v_schema, v_sequence, 1, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
+            (v_schema, v_sequence, 1, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
     END IF;
 -- Return the step report.
     r_output.sr_indicator = 'COMPARED_SEQUENCES';
