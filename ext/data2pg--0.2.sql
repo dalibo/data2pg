@@ -508,6 +508,10 @@ BEGIN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
             VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', 'truncate_all', 1);
     END IF;
+    IF p_batchType = 'COMPARE' THEN
+        INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
+            VALUES ('TRUNCATE_DIFF', p_batchName, 'TRUNCATE', 'truncate_content_diff', 1);
+    END IF;
 --
     RETURN 1;
 END;
@@ -1498,13 +1502,22 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
--- Process the chaining constraints related to the TRUNCATE step for the batches starting with a TRUNCATE.
+-- Process the chaining constraints related to the TRUNCATE step for the COPY batches starting with a TRUNCATE.
     UPDATE @extschema@.step
         SET stp_parents = ARRAY['TRUNCATE_' || p_migration]
         FROM @extschema@.batch
         WHERE stp_batch_name = bat_name
+          AND bat_type = 'COPY'
           AND bat_start_with_truncate
           AND stp_type IN ('TABLE', 'TABLE_PART')
+          AND stp_parents IS NULL;
+-- Process the chaining constraints related to the TRUNCATE step for the COMPARE batches starting with a TRUNCATE.
+    UPDATE @extschema@.step
+        SET stp_parents = ARRAY['TRUNCATE_DIFF']
+        FROM @extschema@.batch
+        WHERE stp_batch_name = bat_name
+          AND bat_type = 'COMPARE'
+          AND stp_type IN ('TABLE', 'TABLE_PART', 'SEQUENCE')
           AND stp_parents IS NULL;
 -- Remove duplicate steps in the all parents array of the migration.
     WITH parent_rebuild AS (
@@ -2023,7 +2036,6 @@ $compare_sequence$;
 
 -- The truncate_all() function is a generic truncate function to clean up all tables of a migration.
 -- It returns a step report including the number of truncated tables.
--- It returns 0.
 CREATE FUNCTION truncate_all(
     p_batchName                TEXT,
     p_step                     TEXT,
@@ -2066,6 +2078,39 @@ BEGIN
     RETURN;
 END;
 $truncate_all$;
+
+-- The truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
+-- The truncation is only performed when the COMPARE_TRUNCATE_DIFF step option is set to true.
+-- It returns a step report including the number of truncated tables, i.e. 1 or 0 depending on the step option parameter.
+CREATE FUNCTION truncate_content_diff(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql AS
+$truncate_content_diff$
+DECLARE
+    v_compareTruncateDiff      BOOLEAN;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Analyze the step options.
+    v_compareTruncateDiff = CAST(p_stepOptions->>'COMPARE_TRUNCATE_DIFF' AS BOOLEAN);
+-- Truncate the table, if requested.
+    IF v_compareTruncateDiff THEN
+        TRUNCATE @extschema@.content_diff;
+        r_output.sr_value = 1;
+    ELSE
+        r_output.sr_value = 0;
+    END IF;
+-- Return the step report.
+    r_output.sr_indicator = 'TRUNCATED_TABLES';
+    r_output.sr_rank = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$truncate_content_diff$;
 
 -- The check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
 -- This may not be always the case because tables are populated in replica mode.
@@ -2214,6 +2259,10 @@ BEGIN
            WHEN 'COMPARE_MAX_DIFF' THEN
                IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' THEN
                    RETURN 'The value for the COMPARE_MAX_DIFF step option must be a number.';
+               END IF;
+           WHEN 'COMPARE_TRUNCATE_DIFF' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_TRUNCATE_DIFF') <> 'boolean' THEN
+                   RETURN 'The value for the COMPARE_TRUNCATE_DIFF step option must be a boolean.';
                END IF;
            ELSE
                RETURN r_key.key || ' is not a known step option.';

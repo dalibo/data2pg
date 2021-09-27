@@ -336,6 +336,9 @@ function newRun() {
 		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_DIFF</span></div>";
 		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxDiff\" size=6 min=1></div>\n";
 
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_TRUNCATE_DIFF</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"compareTruncateDiff\"></div>\n";
+
 		echo "\t</div>\n";
 
 		echo "\t<p>\n";
@@ -358,6 +361,7 @@ function doNewRun() {
 	$copyMaxRows = @$_GET["copyMaxRows"];
 	$copySlowDown = @$_GET["copySlowDown"];
 	$compareMaxDiff = @$_GET["compareMaxDiff"];
+	$compareTruncateDiff = @$_GET["compareTruncateDiff"];
 
 // Check the state of a potential previous run for this same database and batch.
 	$res = sql_getPreviousRun($tdbId, $batch);
@@ -398,6 +402,9 @@ function doNewRun() {
 		}
 		if ($compareMaxDiff <> '' && $compareMaxDiff > 0) {
 			$stepOptions .= '\"COMPARE_MAX_DIFF\":' . $compareMaxDiff . ',';
+		}
+		if ($compareTruncateDiff <> '') {
+			$stepOptions .= '\"COMPARE_TRUNCATE_DIFF\": true' . ',';
 		}
 		if ($stepOptions <> '') {
 			// Strip the last ',' and enclose with {} to get a proper JSON object.
