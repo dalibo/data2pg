@@ -57,7 +57,7 @@ CREATE TABLE migration (
     mgr_server_name            TEXT NOT NULL,           -- The FDW server name
     mgr_server_options         TEXT NOT NULL,           -- The options for the server, like 'host ''localhost'', port ''5432'', dbname ''test1'''
     mgr_user_mapping_options   TEXT NOT NULL,           -- The user mapping options used by the data2pg role to reach the source database
-                                                        --   like 'user ''postgres'', password ''pwd'''
+                                                        --   like 'user ''postgres'', password ''pwd''', but the password is masked
     mgr_config_completed       BOOLEAN,                 -- Boolean indicating whether the migration configuration is completed or not
     PRIMARY KEY (mgr_name)
 );
@@ -215,10 +215,11 @@ BEGIN
     IF FOUND THEN
         RAISE EXCEPTION 'create_migration: The migration "%" already exists. Call the drop_migration() function to drop it, if needed.', p_migration;
     END IF;
--- Record the supplied parameters into the migration table.
+-- Record the supplied parameters into the migration table, masking the password part of the user mapping options.
     v_serverName = 'data2pg_' || p_migration || '_server';
     INSERT INTO @extschema@.migration
-        VALUES (p_migration, p_sourceDbms, p_extension, v_serverName, p_serverOptions, p_userMappingOptions);
+        VALUES (p_migration, p_sourceDbms, p_extension, v_serverName, p_serverOptions,
+                regexp_replace(p_userMappingOptions, '(password\s+'').*?('')', '\1########\2'));
 -- Create the FDW extension.
     EXECUTE format(
         'CREATE EXTENSION IF NOT EXISTS %s',
