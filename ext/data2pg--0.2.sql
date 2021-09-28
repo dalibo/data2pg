@@ -1411,7 +1411,7 @@ BEGIN
     END IF;
 -- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
     FOR r_function IN
-        SELECT DISTINCT stp_sql_function || '(TEXT, TEXT, JSONB)' AS function_prototype
+        SELECT DISTINCT '@extschema@.' || stp_sql_function || '(TEXT, TEXT, JSONB)' AS function_prototype
             FROM @extschema@.step
             WHERE stp_batch_name = ANY (v_batchArray)
     LOOP
