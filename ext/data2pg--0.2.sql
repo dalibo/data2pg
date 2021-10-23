@@ -1565,6 +1565,7 @@ CREATE FUNCTION copy_table(
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SET session_replication_role = 'replica'
+    SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $copy_table$
 DECLARE
@@ -1739,6 +1740,7 @@ CREATE FUNCTION copy_sequence(
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
 $copy_sequence$
 DECLARE
