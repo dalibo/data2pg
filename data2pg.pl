@@ -253,6 +253,7 @@ sub checkParameters
     $batchName = $cfBatchName     if (!defined($batchName) && defined($cfBatchName));
     $stepOptions = $cfStepOptions if (!defined($stepOptions) && defined($cfStepOptions));
     $maxSessions = $cfMaxSessions if (!defined($maxSessions) && defined($cfMaxSessions));
+    $ascSessions = $cfAscSessions if (!defined($ascSessions) && defined($cfAscSessions));
     $comment = $cfComment         if (!defined($comment) && defined($cfComment));
 
     # Use hard coded default values, if needed.

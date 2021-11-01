@@ -168,7 +168,7 @@ CREATE TABLE content_diff (
     diff_timestamp           TIMESTAMPTZ                 -- The transaction timestamp of the relation comparison
                              DEFAULT current_timestamp,
     diff_schema              TEXT NOT NULL,              -- The name of the destination schema
-    diff_relation            TEXT NOT NULL,              -- The schema of the destination table used for the comparison
+    diff_relation            TEXT NOT NULL,              -- The name of the destination table used for the comparison
     diff_rank                BIGINT,                     -- A difference number
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
