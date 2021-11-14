@@ -1673,9 +1673,10 @@ BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
         FROM @extschema@.step
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'copy_table: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'copy_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows, tbl_copy_sort_order,
@@ -1825,9 +1826,10 @@ BEGIN
         FROM @extschema@.step
              JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
              JOIN @extschema@.migration ON (seq_migration = mgr_name)
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'copy_sequence: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'copy_sequence: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Depending on the source DBMS, get the sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
@@ -1914,9 +1916,10 @@ BEGIN
 -- Get the identity of the table.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
         FROM @extschema@.step
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'compare_table: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'compare_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the table_to_process table to get additional details.
     SELECT tbl_foreign_schema, tbl_foreign_name,
@@ -2059,9 +2062,10 @@ BEGIN
         FROM @extschema@.step
              JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
              JOIN @extschema@.migration ON (seq_migration = mgr_name)
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'compare_sequence: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'compare_sequence: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Depending on the source DBMS, get the source sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
@@ -2123,9 +2127,10 @@ BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name INTO v_batchName
         FROM @extschema@.step
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'truncate_all: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'truncate_all: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Build the tables list of all tables of the migration.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
@@ -2204,9 +2209,10 @@ BEGIN
 -- Get the step characteristics.
     SELECT stp_schema, stp_object, stp_sub_object INTO v_schema, v_table, v_fkey
         FROM @extschema@.step
-        WHERE stp_name = p_step;
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'check_fkey: Step % not found in the step table.', p_step;
+        RAISE EXCEPTION 'check_fkey: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Analyze the step options.
     v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
