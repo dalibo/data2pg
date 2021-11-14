@@ -102,10 +102,12 @@ SELECT register_table_part('myschema2', 'mytbl1', 5, NULL, FALSE, TRUE);
 SELECT drop_batch('BATCH0');
 SELECT drop_batch('BATCH1');
 SELECT drop_batch('COMPARE_ALL');
+SELECT drop_batch('DISCOVER_ALL');
 
 SELECT create_batch('BATCH0','PG''s db','COPY',true);
 SELECT create_batch('BATCH1','PG''s db','COPY',false);
 SELECT create_batch('COMPARE_ALL','PG''s db','COMPARE',null);
+--SELECT create_batch('DISCOVER_ALL','PG''s db','DISCOVER',null);
 
 --
 -- Assign the tables and sequences to batches
@@ -129,6 +131,10 @@ SELECT assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 SELECT assign_sequences_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
 SELECT assign_sequences_to_batch('COMPARE_ALL', 'myschema2', '.*', NULL);
 SELECT assign_sequences_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
+
+--SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema1', '.*', NULL);
+--SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema2', '.*', NULL);
+--SELECT assign_tables_to_batch('DISCOVER_ALL', 'phil''s schema3', '.*', NULL);
 
 --
 -- assign the table parts to batches

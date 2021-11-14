@@ -85,10 +85,14 @@ test: test-batch-0 test-batch-1 test-batch-compare ## Test Data2Pg runs.
 test-batch-0: ## Test batch0.
 	perl data2pg.pl --conf test_pg/batch0.conf --action run
 
-.PHONY: test-batch-compare ## Test batch0.
-test-batch-compare: ## Test batch0.
-	perl data2pg.pl --conf test_pg/batch_compare.conf --action run
-
 .PHONY: test-batch-1 ## Test batch1.
 test-batch-1: ## Test batch1.
 	perl data2pg.pl --conf test_pg/batch1.conf --action run
+
+.PHONY: test-batch-compare ## Test batch_compare.
+test-batch-compare: ## Test batch_compare.
+	perl data2pg.pl --conf test_pg/batch_compare.conf --action run
+
+#.PHONY: test-batch-discover ## Test batch_discover.
+#test-batch-discover: ## Test batch_discover.
+#	perl data2pg.pl --conf test_pg/batch_discover.conf --action run

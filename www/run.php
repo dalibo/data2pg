@@ -481,6 +481,9 @@ function restartRun($runId) {
 				$compareMaxDiff = $matches[1];
 			}
 			$compareTruncateDiff = preg_match('/"COMPARE_MAX_DIFF":/', $run['run_step_options']);
+			if (preg_match('/"DISCOVER_MAX_ROWS": (\d+)/', $run['run_step_options'], $matches)) {
+				$discoverMaxRows = $matches[1];
+			}
 
 // OK, display the form to adjust the run execution parameters, if needed. The parameters from the previous run are proposed by default.
 			mainTitle('', "Restart the run #$runId", '');
@@ -524,6 +527,9 @@ function restartRun($runId) {
 			}
 			echo "></div>\n";
 
+			echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">DISCOVER_MAX_ROWS</span></div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"discoverMaxRows\" size=6 min=1 value=$discoverMaxRows></div>\n";
+
 			echo "\t</div>\n";
 
 			echo "\t<p>\n";
@@ -546,6 +552,7 @@ function doRestartRun($runId) {
 	$copySlowDown = @$_GET["copySlowDown"];
 	$compareMaxDiff = @$_GET["compareMaxDiff"];
 	$compareTruncateDiff = @$_GET["compareTruncateDiff"];
+	$discoverMaxRows = @$_GET["discoverMaxRows"];
 
 // Get the run characteristics.
 	$res = sql_getRun($runId);
@@ -595,6 +602,9 @@ function doRestartRun($runId) {
 				if ($compareTruncateDiff <> '') {
 					$stepOptions .= '\"COMPARE_TRUNCATE_DIFF\": true' . ',';
 				}
+				if ($discoverMaxRows <> '' && $discoverMaxRows > 0) {
+					$stepOptions .= '\"DISCOVER_MAX_ROWS\":' . $discoverMaxRows . ',';
+				}
 				if ($stepOptions <> '') {
 					// Strip the last ',' and enclose with {} to get a proper JSON object.
 					$stepOptions = preg_replace('/(.*).$/', '{$1}', $stepOptions);
@@ -636,5 +646,4 @@ function doRestartRun($runId) {
 		}
 	}
 }
-
 ?>

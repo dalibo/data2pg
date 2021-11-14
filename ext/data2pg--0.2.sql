@@ -67,7 +67,7 @@ CREATE TABLE batch (
     bat_name                   TEXT NOT NULL,           -- The batch name
     bat_migration              TEXT NOT NULL,           -- The migration the batch belongs to
     bat_type                   TEXT NOT NULL            -- The batch type, i.e. the type of action to perform
-                               CHECK (bat_type IN ('COPY', 'CHECK', 'COMPARE')),
+                               CHECK (bat_type IN ('COPY', 'CHECK', 'COMPARE', 'DISCOVER')),
     bat_start_with_truncate    BOOLEAN,                 -- Boolean indicating whether a truncate step has to be included in the batch working plan
                                                         --   It only concerns batches of type COPY
     PRIMARY KEY (bat_name),
@@ -177,6 +177,54 @@ CREATE TABLE content_diff (
                                                          --   both databases or the sequence characteristics that are different between both databases
 );
 
+-- The discovery_table table is populated with the result of elementary discover_table steps.
+CREATE TABLE discovery_table (
+    dscv_schema              TEXT NOT NULL,              -- The name of the schema holding the table on the source database
+    dscv_table               TEXT NOT NULL,              -- The analyzed table name on the source database
+    dscv_timestamp           TIMESTAMPTZ                 -- The transaction timestamp of the table analysis
+                             DEFAULT current_timestamp,
+    dscv_max_row             BIGINT,                     -- The DISCOVER_MAX_ROWS parameter, if set at discover_table() time.
+    dscv_nb_row              BIGINT,                     -- The number of rows in the analyzed table
+    PRIMARY KEY (dscv_schema, dscv_table)
+);
+
+-- The discovery_column table is populated with the result of elementary discover_table steps.
+CREATE TABLE discovery_column (
+    dscv_schema              TEXT NOT NULL,              -- The name of the schema holding the table on the source database
+    dscv_table               TEXT NOT NULL,              -- The analyzed table name on the source database
+    dscv_column              TEXT NOT NULL,              -- The analyzed column name
+    dscv_column_num          INTEGER,                    -- The column rank in the pg_attribute table (i.e. its attnum)
+    dscv_type                TEXT,                       -- The column data type in the foreign table
+    dscv_max_size            INTEGER,                    -- The column max size when declared as character varying
+    dscv_nb_not_null         BIGINT,                     -- The number of NOT NULL values
+    dscv_num_min             NUMERIC,                    -- The minimum value for a numeric column
+    dscv_num_max             NUMERIC,                    -- The maximum value for a numeric column
+    dscv_num_max_precision   SMALLINT,                   -- The maximum number of digits needed to represent the column
+    dscv_num_max_integ_part  SMALLINT,                   -- The maximum number of digits for the integer part of the column
+    dscv_num_max_fract_part  SMALLINT,                   -- The maximum number of digits for the fractional part of the column
+    dscv_str_min_length      INTEGER,                    -- The minimum length for a string or bytea column
+    dscv_str_max_length      INTEGER,                    -- The maximum length for a string or bytea column
+    dscv_ts_max              TEXT,                       -- The maximum value for a date/time column
+    dscv_ts_min              TEXT,                       -- The minimum value for a date/time column
+    dscv_ts_nb_date          BIGINT,                     -- The number of pure dates for a timestamp column (i.e. with time part set to 00:00:00)
+    dscv_stats_ndistinct     REAL,                       -- The ndistinct value from the pg_stats view after an ANALYZE on the foreign table
+    dscv_has_2_values        BOOLEAN,                    -- True if the column is a hidden boolean
+    PRIMARY KEY (dscv_schema, dscv_table, dscv_column),
+    FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
+);
+-- The discovery_advice table contains pieces of advice deducted from the discovery_table and discovery_column content.
+CREATE TABLE discovery_advice (
+    dscv_schema              TEXT NOT NULL,              -- The name of the schema holding the foreign table
+    dscv_table               TEXT NOT NULL,              -- The analyzed foreign table name
+    dscv_column              TEXT,                       -- The column associated to the advice, NULL for table level piece of advice
+    dscv_column_num          INTEGER,                    -- The column rank in the pg_attribute table (i.e. its attnum)
+    dscv_advice_type         TEXT NOT NULL               -- The advice type (W = Warning, A = Advice)
+                             CHECK (dscv_advice_type IN ('W', 'A')),
+    dscv_advice_code         TEXT,                       -- A coded representation of the advice, like 'INTEGER' for the message "column ... could be an INTEGER"
+    dscv_advice_msg          TEXT,                       -- The textual representation of the piece of advice that can be infered from collected data
+    FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
+);
+
 --
 -- Create functions.
 --
@@ -191,7 +239,7 @@ CREATE TABLE content_diff (
 --   * and the User Mapping to use to reach the source database.
 -- It returns the number of created migration, i.e. 1.
 CREATE FUNCTION create_migration(
-    p_migration               TEXT,
+    p_migration              TEXT,
     p_sourceDbms             TEXT,
     p_extension              TEXT,
     p_serverOptions          TEXT,
@@ -435,6 +483,19 @@ BEGIN
     IF v_schemaList IS NOT NULL THEN
         EXECUTE 'DROP SCHEMA IF EXISTS ' || v_schemaList;
     END IF;
+-- Remove rows from the discovery tables for tables belonging to the migration
+    DELETE FROM @extschema@.discovery_advice
+        USING @extschema@.table_to_process
+        WHERE dscv_schema = tbl_schema AND dscv_table = tbl_name
+          AND tbl_migration = p_migration;
+    DELETE FROM @extschema@.discovery_column
+        USING @extschema@.table_to_process
+        WHERE dscv_schema = tbl_schema AND dscv_table = tbl_name
+          AND tbl_migration = p_migration;
+    DELETE FROM @extschema@.discovery_table
+        USING @extschema@.table_to_process
+        WHERE dscv_schema = tbl_schema AND dscv_table = tbl_name
+          AND tbl_migration = p_migration;
 -- Remove table parts associated to tables belonging to the migration.
     DELETE FROM @extschema@.table_part
         USING @extschema@.table_to_process
@@ -466,12 +527,13 @@ $drop_migration$;
 CREATE FUNCTION create_batch(
     p_batchName              TEXT,                    -- Batch name
     p_migration              VARCHAR(16),             -- Migration name
-    p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK' or 'COMPARE')
+    p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK', 'COMPARE' or 'DISCOVER')
     p_startWithTruncate      BOOLEAN                  -- Boolean indicating whether a truncate step will need to be added to the batch working plan
     )
     RETURNS INTEGER LANGUAGE plpgsql AS
 $create_batch$
 DECLARE
+    v_dbms                   TEXT;
     v_firstBatch             TEXT;
 BEGIN
 -- Check that no input parameter is NULL.
@@ -486,15 +548,21 @@ BEGIN
         RAISE EXCEPTION 'create_batch: The batch "%" already exists.', p_batchName;
     END IF;
 -- Check that the migration exists and set it as 'configuration in progress'.
-    UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
+    SELECT mgr_source_dbms INTO v_dbms
+        FROM @extschema@.migration
        WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'create_batch: The migration "%" does not exist.', p_migration;
     END IF;
+    UPDATE @extschema@.migration
+       SET mgr_config_completed = FALSE
+       WHERE mgr_name = p_migration;
 -- Check the batch type.
-    IF p_batchType <> 'COPY' AND p_batchType <> 'CHECK' AND p_batchType <> 'COMPARE' THEN
-        RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY or CHECK or COMPARE.', p_batchType;
+    IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
+        RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
+    END IF;
+    IF p_batchType <> 'COPY' AND p_batchType <> 'CHECK' AND p_batchType <> 'COMPARE' AND p_batchType <> 'DISCOVER' THEN
+        RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY, CHECK, COMPARE or DISCOVER.', p_batchType;
     END IF;
 -- If the p_startWithTruncate boolean is TRUE, check that the batch is of type COPY.
     IF p_startWithTruncate AND p_batchType <> 'COPY' THEN
@@ -1074,6 +1142,7 @@ BEGIN
                     WHEN 'COPY' THEN 'copy_table'
                     WHEN 'CHECK' THEN 'check_table'
                     WHEN 'COMPARE' THEN 'compare_table'
+                    WHEN 'DISCOVER' THEN 'discover_table'
                 END,
                 r_tbl.tbl_kbytes
             );
@@ -1114,6 +1183,10 @@ BEGIN
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: batch "%" not found.', p_batchName;
+    END IF;
+-- Check that the batch type allows table parts assignments.
+    IF v_batchType = 'DISCOVER' THEN
+        RAISE EXCEPTION 'assign_table_part_to_batch: a table part cannot be assigned to a batch of type %.', v_batchType;
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
@@ -1194,9 +1267,9 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: batch "%" not found.', p_batchName;
     END IF;
--- Check taht the batch is not of type 'CHECK'.
-    IF v_batchType = 'CHECK' THEN
-        RAISE EXCEPTION 'assign_sequences_to_batch: sequences cannot be assigned to a batch of type %.', p_batchType;
+-- Check taht the batch is not of type 'CHECK' OR 'DISCOVER'.
+    IF v_batchType = 'CHECK' OR v_batchType = 'DISCOVER' THEN
+        RAISE EXCEPTION 'assign_sequences_to_batch: sequences cannot be assigned to a batch of type %.', v_batchType;
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
@@ -1417,7 +1490,7 @@ BEGIN
     LOOP
 -- If the function (or the data2pg role) does not exist, trying to check the privilege will raise a standart postgres exception.
         IF NOT has_function_privilege('data2pg', r_function.function_prototype, 'execute') THEN
-            RAISE EXCEPTION 'complete_migration_configuration: The function % will not be callable by the data2pg scheduler.', r_function.function_prototype;
+            RAISE EXCEPTION 'complete_migration_configuration: The function % will not be callable by the Data2Pg scheduler.', r_function.function_prototype;
         END IF;
     END LOOP;
 --
@@ -1551,7 +1624,7 @@ END;
 $complete_migration_configuration$;
 
 --
--- Functions called by the data2pg scheduler.
+-- Functions called by the Data2Pg scheduler.
 --
 
 -- The copy_table() function is the generic copy function that is used to processes tables.
@@ -1647,13 +1720,6 @@ BEGIN
                 );
             END LOOP;
         END IF;
-----TODO: to study in the future for the performances
------- truncate the destination table. The CASCADE clause is used to also truncate tables that are referencing this table with FKeys, these
-------   tables being supposed to be processed after this one.
-----        EXECUTE format(
-----            'TRUNCATE %I.%I CASCADE',
-----            v_schema, v_table
-----            );
     END IF;
 --
 -- Copy processing.
@@ -2184,7 +2250,412 @@ BEGIN
 END;
 $check_fkey$;
 
--- The get_batch_ids() function is called by the data2pg scheduler to get the list of all configured batches.
+-- The discover_table() function scans a foreign table to compute some statistics useful to decide the best postgres data type for its columns.
+-- Input parameters: batch and step names.
+-- It stores the result into the discovery_column table.
+-- It returns a step report including the number of analyzed columns and rows.
+CREATE OR REPLACE FUNCTION discover_table(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$discover_table$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_partNum                  INTEGER;
+    v_maxRows                  BIGINT;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_aggForeignTable          TEXT;
+    v_serverName               TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceTable              TEXT;
+    v_nbColumns                SMALLINT = 0;
+    v_colDefArray              TEXT[] = '{}';
+    v_colDefList               TEXT;
+    v_aggregatesArray          TEXT[] = '{}';
+    v_aggregatesList           TEXT;
+    v_insertCteArray           TEXT[] = '{}';
+    v_insertCteList            TEXT;
+    v_commonDscvColToInsert    TEXT;
+    v_commonDscvValToInsert    TEXT;
+    v_nbNotNullValue           TEXT;
+    v_stmt                     TEXT;
+    v_foreignTableQuery        TEXT;
+    v_nbRows                   BIGINT;
+    v_nbAdvice                 INTEGER = 0;
+    r_col                      RECORD;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the table to discover.
+    SELECT stp_schema, stp_object, stp_part_num
+        INTO v_schema, v_table, v_partNum
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'discover_table: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Read the migration table to get the FDW server name.
+    SELECT mgr_server_name
+        INTO v_serverName
+        FROM @extschema@.migration
+             JOIN @extschema@.batch ON (bat_migration = mgr_name)
+        WHERE bat_name = p_batchName;
+-- Read the table_to_process table to get the foreign schema and build the foreign table name.
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_foreign_name || '_agg'
+        INTO v_foreignSchema, v_foreignTable, v_aggForeignTable
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Analyze the step options.
+    v_maxRows = p_stepOptions->>'DISCOVER_MAX_ROWS';
+--
+-- Remove from the discovery_table, discovery_column and discovery_advice tables the previous collected data for the table to process.
+--
+    DELETE FROM @extschema@.discovery_advice
+        WHERE dscv_schema = v_schema
+          AND dscv_table = v_table;
+    DELETE FROM @extschema@.discovery_column
+        WHERE dscv_schema = v_schema
+          AND dscv_table = v_table;
+    DELETE FROM @extschema@.discovery_table
+        WHERE dscv_schema = v_schema
+          AND dscv_table = v_table;
+
+--TODO à améliorer (avoir les infos dans table_to_process ?)
+    v_sourceSchema = upper(v_schema);
+    v_sourceTable = upper(v_table);
+
+-- Depending on the column's type, build:
+--    - the columns definition for the foreign table
+--    - the aggregates to feed these columns
+--    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table
+--    v_aggregatesList = 'count(*) AS nb_row';
+--    v_unionsList = '';
+    v_colDefArray = array_append(v_colDefArray, 'nb_row BIGINT');
+    v_aggregatesArray = array_append(v_aggregatesArray, 'count(*) AS nb_row');
+    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_max_size, dscv_nb_not_null,';
+    FOR r_col IN
+        SELECT attname, attnum, typname, typcategory, CASE WHEN atttypmod >= 0 THEN atttypmod ELSE NULL END AS atttypmod, attnotnull
+            FROM pg_attribute a
+                 JOIN pg_class c ON (c.oid = a.attrelid)
+                 JOIN pg_namespace n ON (n.oid = c.relnamespace)
+                 JOIN pg_type t ON (t.oid = a.atttypid)
+            WHERE nspname = v_foreignSchema
+              AND relname = v_foreignTable
+              AND attnum > 0
+              AND NOT attisdropped
+    LOOP
+        v_nbColumns = v_nbColumns + 1;
+        v_commonDscvValToInsert = quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || quote_literal(r_col.attname)
+            || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
+-- Nullable columns.
+        IF NOT r_col.attnotnull THEN
+            v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
+            v_aggregatesArray = array_append(v_aggregatesArray, 'count(' || upper(r_col.attname) || ') AS nb_not_null_' || r_col.attnum::text);
+            v_nbNotNullValue = 'nb_not_null_' || r_col.attnum::text;
+        ELSE
+            v_nbNotNullValue = 'NULL::BIGINT';
+        END IF;
+        CASE
+            WHEN r_col.typcategory = 'N' AND r_col.typname NOT IN ('numeric', 'float4', 'float8') THEN
+-- Integer columns.
+                -- the lowest value
+                v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
+                -- the greatest value
+                v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
+
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
+            WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
+-- Numeric non integer columns.
+                -- the lowest value
+                v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
+                -- the greatest value
+                v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
+                -- the greatest needed precision
+                v_colDefArray = array_append(v_colDefArray, 'num_max_precision_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(translate(to_char(' || upper(r_col.attname) || '), ''_-.,'', ''_'')) ,0)) AS num_max_precision_' || r_col.attnum::text);
+                -- the greatest needed integer part
+                v_colDefArray = array_append(v_colDefArray, 'num_max_integ_part_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(trunc(' || upper(r_col.attname) || ')))) ,0)) AS num_max_scale_' || r_col.attnum::text);
+                -- the greatest needed fractional part
+                v_colDefArray = array_append(v_colDefArray, 'num_max_fract_part_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(' || upper(r_col.attname) || ' - trunc(' || upper(r_col.attname) || ')))) - 1 ,0)) AS num_max_fract_part_' || r_col.attnum::text);
+
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max, dscv_num_max_precision, dscv_num_max_integ_part, dscv_num_max_fract_part) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ', num_max_precision_' || r_col.attnum::text
+                    || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
+            WHEN r_col.typcategory = 'S' OR r_col.typname = 'bytea' THEN
+-- String and bytea types.
+                -- the lowest string length
+                v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'min(length(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                -- the greatest string length
+                v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(length(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+            WHEN r_col.typcategory = 'D' AND r_col.typname NOT IN ('timestamp', 'timestamptz') THEN
+-- Date or time columns.
+                -- the lowest value
+                v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
+                -- the greatest value
+                v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
+
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ' FROM aggregates),');
+            WHEN r_col.typcategory = 'D' AND r_col.typname IN ('timestamp', 'timestamptz') THEN
+-- Timestamp columns.
+                -- the lowest value
+                v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
+                -- the greatest value
+                v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
+                -- the number of timestamp values with a '00:00:00' time component (i.e. real date)
+                v_colDefArray = array_append(v_colDefArray, 'ts_nb_date_' || r_col.attnum::text || ' BIGINT');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'sum(case when to_char(' || upper(r_col.attname) || ', ''HH24:MI:SS'') = ''00:00:00'' then 1 else 0 end) AS ts_nb_date_' || r_col.attnum::text);
+
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max, dscv_ts_nb_date) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
+            ELSE CONTINUE;
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ' FROM aggregates),');
+        END CASE;
+    END LOOP;
+    v_colDefList = array_to_string(v_colDefArray, ', ');
+    v_aggregatesList = array_to_string(v_aggregatesArray, ', ');
+    v_insertCteList = array_to_string(v_insertCteArray, '');
+--
+-- Create the foreign table.
+--
+    IF v_maxRows IS NULL THEN
+	    v_foreignTableQuery := format(
+	    	'(SELECT %s FROM %I.%I)',
+	    	v_aggregatesList, v_sourceSchema, v_sourceTable
+	    );
+    ELSE
+	    v_foreignTableQuery := format(
+	    	'(SELECT %s FROM (SELECT * FROM %I.%I WHERE ROWNUM <= %s))',
+	    	v_aggregatesList, v_sourceSchema, v_sourceTable, v_maxRows
+	    );
+    END IF;
+    v_stmt = format(
+        'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS ( table %L )',
+        v_foreignSchema, v_aggForeignTable, v_colDefList, v_serverName, v_foreignTableQuery
+    );
+    EXECUTE v_stmt;
+--
+-- Analyze the Oracle table content by querying the foreign table.
+--
+    v_stmt = 'WITH aggregates AS ('
+          || '  SELECT * FROM ' || quote_ident(v_foreignSchema) || '.' || quote_ident(v_aggForeignTable)
+          || '  ), '
+          || v_insertCteList
+          || '     discovered_table AS ('
+          || '  INSERT INTO @extschema@.discovery_table (dscv_schema, dscv_table, dscv_max_row, dscv_nb_row)'
+          || '    SELECT ' || quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || coalesce(v_maxRows::TEXT, 'NULL') || ', nb_row'
+          || '        FROM aggregates'
+          || '  ) '
+          || 'SELECT nb_row FROM aggregates';
+-- Execute the first table scan. It creates a row per analyzed column into the discovery_column table
+    EXECUTE v_stmt INTO v_nbRows;
+-- Drop the foreign table, that is now useless
+    EXECUTE format(
+        'DROP FOREIGN TABLE %I.%I',
+        v_foreignSchema, v_aggForeignTable
+    );
+
+--TODO: Get information about potential boolean columns
+
+--
+-- Generate advice.
+--
+-- Warnings at table level.
+    IF v_nbRows = 0 THEN
+        INSERT INTO @extschema@.discovery_advice
+            (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+            VALUES
+            (v_schema, v_table, 'W', 'EMPTY_TABLE', 'The table ' || v_schema || '.' || v_table || ' is empty.');
+    ELSE
+        IF v_nbRows = v_maxRows THEN
+            INSERT INTO @extschema@.discovery_advice
+               (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                VALUES
+                (v_schema, v_table, 'W', 'NOT_ALL_ROWS', 'The table ' || v_schema || '.' || v_table || ' has un-analyzed rows.');
+        END IF;
+    END IF;
+-- Pieces of advice at column level.
+    IF v_nbRows > 0 THEN
+        FOR r_col IN
+            SELECT c.*, t.dscv_nb_row
+                FROM @extschema@.discovery_column c
+                     JOIN @extschema@.discovery_table t ON (t.dscv_schema = c.dscv_schema AND t.dscv_table = c.dscv_table)
+                WHERE dscv_nb_row > 0
+                  AND t.dscv_schema = v_schema
+                  AND t.dscv_table = v_table
+        LOOP
+            IF r_col.dscv_nb_not_null = 0 THEN
+-- If all values are NULL, just issue a warning
+                INSERT INTO @extschema@.discovery_advice
+                   (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                    VALUES
+                    (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'W', 'ONLY_NULL',
+                     'The column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' contains nothing but NULL.');
+            ELSE
+-- On integer columns.
+                IF r_col.dscv_num_max_fract_part = 0 THEN
+                    IF r_col.dscv_num_max_integ_part <= 4 THEN
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'SMALLINT',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type SMALLINT.');
+                    ELSIF r_col.dscv_num_max_integ_part <= 8 THEN
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'INTEGER', 
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type INTEGER.');
+                    ELSIF r_col.dscv_num_max_integ_part <= 18 THEN
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BIGINT',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type BIGINT.');
+                    ELSE
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_INTEGER',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' is a too large integer to be hold in a BIGINT column.');
+                    END IF;
+                    v_nbAdvice = v_nbAdvice + 1;
+-- On numeric but not integer columns.
+                ELSIF r_col.dscv_num_max_fract_part > 0 THEN
+                    IF r_col.dscv_num_max_precision <= 7 THEN
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'REAL_OR_NUMERIC',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type REAL or NUMERIC or ' ||
+                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
+                    ELSIF r_col.dscv_num_max_precision <= 15 THEN
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DOUBLE_OR_NUMERIC',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type DOUBLE PRECISION or NUMERIC or ' ||
+                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
+                    ELSE
+                        INSERT INTO @extschema@.discovery_advice
+                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                            VALUES
+                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NUMERIC',
+                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type NUMERIC or ' ||
+                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
+                    END IF;
+                    v_nbAdvice = v_nbAdvice + 1;
+                END IF;
+-- On DATE columns.
+                IF r_col.dscv_ts_nb_date = coalesce(r_col.dscv_nb_not_null, r_col.dscv_nb_row) THEN
+                    INSERT INTO @extschema@.discovery_advice
+                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                        VALUES
+                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DATE',
+                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type DATE.');
+                    v_nbAdvice = v_nbAdvice + 1;
+                END IF;
+-- On boolean columns.
+                IF r_col.dscv_has_2_values THEN
+                    INSERT INTO @extschema@.discovery_advice
+                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                        VALUES
+                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BOOLEAN',
+                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column
+                          || ' has less than 3 distinct values and could be transformed into BOOLEAN type.');
+                    v_nbAdvice = v_nbAdvice + 1;
+                END IF;
+-- On columns without NULL but not declared NOT NULL.
+                IF r_col.dscv_nb_not_null = least(r_col.dscv_nb_row, v_maxRows) THEN
+                    INSERT INTO @extschema@.discovery_advice
+                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                        VALUES
+                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NOT_NULL',
+                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could perhaps be declared NOT NULL.');
+                    v_nbAdvice = v_nbAdvice + 1;
+                END IF;
+-- On CHAR or VARCHAR columns whose max size is much larger (more than twice) than the maximum data content.
+                IF r_col.dscv_max_size > 0 AND r_col.dscv_str_max_length > 2 * r_col.dscv_max_size THEN
+                    INSERT INTO @extschema@.discovery_advice
+                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+                        VALUES
+                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_STRING',
+                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
+                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could perhaps be declared smaller (max size: real = '
+                         || r_col.dscv_str_max_length || '/ declared = ' || r_col.dscv_max_size || ').');
+                    v_nbAdvice = v_nbAdvice + 1;
+                END IF;
+            END IF;
+        END LOOP;
+    END IF;
+--
+-- Return the step report.
+--
+    r_output.sr_indicator = 'DISCOVERED_COLUMNS';
+    r_output.sr_value = v_nbColumns;
+    r_output.sr_rank = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'DISCOVERED_ROWS';
+    r_output.sr_value = v_nbRows;
+    r_output.sr_rank = 2;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GENERATED_ADVICE';
+    r_output.sr_value = v_nbAdvice;
+    r_output.sr_rank = 3;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$discover_table$;
+
+-- The get_batch_ids() function is called by the Data2Pg scheduler to get the list of all configured batches.
 CREATE FUNCTION get_batch_ids()
     RETURNS SETOF batch_id_type LANGUAGE sql AS
 $get_batch_ids$
@@ -2193,7 +2664,7 @@ SELECT bat_name, bat_type, bat_migration, mgr_config_completed
          JOIN @extschema@.migration ON (bat_migration = mgr_name);
 $get_batch_ids$;
 
--- The get_working_plan() function is called by the data2pg scheduler to build its working plan.
+-- The get_working_plan() function is called by the Data2Pg scheduler to build its working plan.
 -- Only the data useful for its purpose are returned, through the working_plan_type structure.
 CREATE FUNCTION get_working_plan(
     p_batchName                TEXT
@@ -2226,7 +2697,7 @@ BEGIN
 END;
 $get_working_plan$;
 
--- The check_step_options() function is called by the data2pg scheduler. It checks the content of the step_options parameter presented in TEXT format.
+-- The check_step_options() function is called by the Data2Pg scheduler. It checks the content of the step_options parameter presented in TEXT format.
 -- It verifies that the syntax is JSON compatible and that the keywords and values are valid.
 -- Input parameter: the step options, in TEXT format.
 -- Output parameter: the error message, or an empty string when no problem is detected.
@@ -2263,6 +2734,10 @@ BEGIN
                IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' THEN
                    RETURN 'The value for the COMPARE_MAX_DIFF step option must be a number.';
                END IF;
+           WHEN 'DISCOVER_MAX_ROWS' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'DISCOVER_MAX_ROWS') <> 'number' THEN
+                   RETURN 'The value for the DISCOVER_MAX_ROWS step option must be a number.';
+               END IF;
            WHEN 'COMPARE_TRUNCATE_DIFF' THEN
                IF jsonb_typeof(v_jsonStepOptions->'COMPARE_TRUNCATE_DIFF') <> 'boolean' THEN
                    RETURN 'The value for the COMPARE_TRUNCATE_DIFF step option must be a boolean.';
@@ -2276,7 +2751,7 @@ BEGIN
 END;
 $check_step_options$;
 
--- The terminate_data2pg_backends() function is called by the data2pg scheduler for its 'abort' actions.
+-- The terminate_data2pg_backends() function is called by the Data2Pg scheduler for its 'abort' actions.
 -- It terminates Postgres backends that could be still in execution.
 -- Input parameter: an array of the pids to terminate, if they are still in execution.
 -- Output parameter: an array of the pids that have been effectively terminated.
