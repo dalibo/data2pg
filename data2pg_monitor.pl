@@ -210,9 +210,9 @@ sub showRunDetails {
                    run_error_msg, run_comment, run_restart_id, run_restarted_id,
                    count(step.*) AS total_steps, sum(stp_cost) AS total_cost,
                    count(step.*) FILTER (WHERE stp_status = 'Completed') AS completed_steps,
-                   sum(stp_cost) FILTER (WHERE stp_status = 'Completed') AS completed_cost,
+                   coalesce(sum(stp_cost) FILTER (WHERE stp_status = 'Completed'), 0) AS completed_cost,
                    count(step.*) FILTER (WHERE stp_status = 'In_progress') AS in_progress_steps,
-                   sum(stp_cost) FILTER (WHERE stp_status = 'In_progress') AS in_progress_cost
+                   coalesce(sum(stp_cost) FILTER (WHERE stp_status = 'In_progress'), 0) AS in_progress_cost
                 FROM run
                      JOIN step ON (stp_run_id = run_id)
                 WHERE run_id = $run
