@@ -572,7 +572,8 @@ BEGIN
     END IF;
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration;
+       WHERE mgr_name = p_migration
+         AND mgr_config_completed;
 -- Check the batch type.
     IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
         RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
@@ -687,7 +688,8 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration;
+       WHERE mgr_name = p_migration
+         AND mgr_config_completed;
 -- Check that the schema exists.
     PERFORM 0 FROM pg_catalog.pg_namespace
         WHERE nspname = p_schema;
@@ -904,7 +906,8 @@ BEGIN
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
 -- Record the change into the table_column table.
     UPDATE @extschema@.table_column
        SET tco_copy_source_expr = p_expression,
@@ -954,7 +957,8 @@ BEGIN
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
 -- Check that the table part doesn't exist yet.
     PERFORM 0
         FROM @extschema@.table_part
@@ -1015,7 +1019,8 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration;
+       WHERE mgr_name = p_migration
+         AND mgr_config_completed;
 -- Check that the schema exists.
     PERFORM 0 FROM pg_catalog.pg_namespace
         WHERE nspname = p_schema;
@@ -1106,7 +1111,8 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
 -- Get the selected tables.
     v_nbTables = 0;
     FOR r_tbl IN
@@ -1197,7 +1203,8 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
 -- Check that the table part has been registered and get the table statistics.
     SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
         FROM @extschema@.table_part
@@ -1280,7 +1287,8 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
 -- Get the selected sequences.
     v_nbSequences = 0;
     FOR r_seq IN
@@ -1354,7 +1362,9 @@ BEGIN
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName;
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
+
 -- Check that the table exists (It may not been registered into the migration).
     PERFORM 0
        FROM pg_catalog.pg_class
