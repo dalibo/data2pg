@@ -97,7 +97,7 @@ CREATE TABLE step (
     FOREIGN KEY (stp_batch_name) REFERENCES batch (bat_name)
 );
 
--- The table_to_process table contains a row for table to process, with some useful data to migrate it.
+-- The table_to_process table contains a row for each table to process, with some useful data to migrate it.
 CREATE TABLE table_to_process (
     tbl_schema                 TEXT NOT NULL,           -- The schema of the target table
     tbl_name                   TEXT NOT NULL,           -- The name of the target table
@@ -110,20 +110,31 @@ CREATE TABLE table_to_process (
     tbl_constraint_definitions TEXT[],                  -- The constraints to recreate after copying the table data
     tbl_index_names            TEXT[],                  -- The indexes to drop before copying the table data
     tbl_index_definitions      TEXT[],                  -- The indexes to recreate after copying the table data
-    tbl_copy_source_exprs      TEXT[],                  -- For a COPY batch, the columns to select
-    tbl_copy_dest_cols         TEXT[],                  -- For a COPY batch, the columns to insert, in the same order as tbl_copy_source_exprs
-    tbl_copy_sort_order        TEXT,                    -- The ORDER BY clause if needed for the INSERT SELECT copy statement (NULL if no sort)
-    tbl_compare_source_exprs   TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the foreign table
-    tbl_compare_dest_cols      TEXT[],                  -- For a COMPARE batch, the columns/expressions to select from the local postgres table,
-                                                        --   in the same order as tbl_compare_source_exprs
-    tbl_compare_pk_cols_jb     TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the pk columns in the diff table
-    tbl_compare_other_cols_jb  TEXT[],                  -- For a COMPARE batch, the expression to build the json object representing the other columns in the diff table
-    tbl_compare_sort_order     TEXT,                    -- The ORDER BY clause if needed for the INSERT SELECT compare statement
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
     PRIMARY KEY (tbl_schema, tbl_name),
     FOREIGN KEY (tbl_migration) REFERENCES migration (mgr_name)
+);
+
+-- The table_column table contains a row for each column of the tables to process.
+CREATE TABLE table_column (
+    tco_schema                 TEXT NOT NULL,           -- The schema of the target table
+    tco_table                  TEXT NOT NULL,           -- The name of the target table
+    tco_name                   TEXT NOT NULL,           -- The name of the column in the target table
+    tco_number                 INTEGER NOT NULL,        -- The column rank in the table
+    tco_type                   TEXT NOT NULL,           -- The column type in the target table as described into the catalog
+    tco_rank_in_pk             INTEGER,                 -- The column rank in the table's primary key, NULL if the column does not belong to the PK
+    tco_copy_source_expr       TEXT,                    -- For a COPY batch, the expression to select (generaly the source column name)
+                                                        --   (NULL if the column is generated always as an expression)
+    tco_copy_dest_col          TEXT,                    -- For a COPY batch, the column to insert into (generally the source column name)
+                                                        --   (NULL if the column is generated always as an expression)
+    tco_compare_source_expr    TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the foreign table
+                                                        --   (NULL if the column is masked)
+    tco_compare_dest_col       TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the local postgres table
+                                                        --   (NULL if the column is masked)
+    PRIMARY KEY (tco_schema, tco_table, tco_name),
+    FOREIGN KEY (tco_schema, tco_table) REFERENCES table_to_process(tbl_schema, tbl_name)
 );
 
 -- The table_part table contains a row for each part of table to migrate. A row in the table_to_process table must exist.
@@ -501,6 +512,11 @@ BEGIN
         USING @extschema@.table_to_process
         WHERE prt_schema = tbl_schema AND prt_table = tbl_name
           AND tbl_migration = p_migration;
+-- Remove table columns associated to tables belonging to the migration.
+    DELETE FROM @extschema@.table_column
+        USING @extschema@.table_to_process
+        WHERE tco_schema = tbl_schema AND tco_table = tbl_name
+          AND tbl_migration = p_migration;
 -- Remove tables from the table_to_process table.
     DELETE FROM @extschema@.table_to_process
         WHERE tbl_migration = p_migration;
@@ -615,7 +631,7 @@ $drop_batch$;
 -- Two regexp filter tables to include and exclude.
 -- A foreign table is created for each table.
 -- The schema to hold foreign objects is created if needed.
--- Some characteristics of the table are recorded into the table_to_process table.
+-- Some characteristics of the table are recorded into the table_to_process and table_column tables.
 CREATE FUNCTION register_tables(
     p_migration              TEXT,               -- The migration linked to the tables
     p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
@@ -642,24 +658,20 @@ DECLARE
     v_nbTables               INT;
     v_prevMigration          TEXT;
     v_copySortOrder          TEXT;
-    v_compareSortOrder       TEXT;
     v_indexToDropNames       TEXT[];
     v_indexToDropDefs        TEXT[];
     v_constraintToDropNames  TEXT[];
     v_constraintToDropDefs   TEXT[];
-    v_stmt                   TEXT;
-    v_pkColList              TEXT;
-    v_columnsInPkJB          TEXT[];
-    v_columnsNotInPkJB       TEXT[];
-    v_columnsToCopy          TEXT[];
-    v_columnsToCompare       TEXT[];
-    v_nbGenAlwaysIdentCol    INT;
-    v_nbGenAlwaysExprCol     INT;
+    v_anyGenAlwaysIdentCol   BOOLEAN;
     v_referencingTables      TEXT[];
     v_referencedTables       TEXT[];
     v_sourceRows             BIGINT;
     v_sourceKBytes           FLOAT;
+    v_pkColsNumber           SMALLINT[];
+    v_nbColInIdx             SMALLINT;
+    v_nbColInPk              SMALLINT;
     r_tbl                    RECORD;
+    r_col                    RECORD;
 BEGIN
 -- Check that the first 3 parameters are not NULL.
     IF p_migration IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
@@ -759,44 +771,16 @@ BEGIN
                           )
                     ORDER BY relname
                  ) AS t;
--- Get the PK columns in two formats: 
---  * a list of literals, for the next statement
---  * a list of identifiers, for the ORDER BY to use in the compare_table() function
---  * an array of expressions to build the pk json structure in the compare_table() function.
-        SELECT string_agg(quote_literal(attname), ','), string_agg(quote_ident(attname), ','),
-               array_agg(quote_literal(attname) || ',' || quote_ident(attname))
-          INTO v_pkColList, v_compareSortOrder,
-               v_columnsInPkJB
-            FROM pg_catalog.pg_attribute
-                JOIN pg_catalog.pg_index ON (pg_index.indrelid = pg_attribute.attrelid)
-            WHERE attnum = ANY (indkey)
-              AND indrelid = r_tbl.table_oid
-              AND indisprimary
-              AND attnum > 0
-              AND attisdropped = FALSE;
--- Build the list of columns to copy and columns to compare and some indicators to store into the table_to_process table.
-        v_stmt = 'SELECT array_agg(quote_ident(attname)),'
---                           the columns array for the table comparison step
-                 '       array_agg(quote_ident(attname)) FILTER (WHERE attgenerated = ''''),'
---                           the columns array for the table copy step, excluding the GENERATED ALWAYS AS (expression) columns
-                 '       array_agg(quote_literal(attname) || '','' || quote_ident(attname)) FILTER (WHERE NOT (attname = ANY (ARRAY[%s]::TEXT[]) )),'
---                           the array of expressions to build the non pk json structure in the compare_table() function
-                 '       count(*) FILTER (WHERE attidentity = ''a''),'
---                           the number of GENERATED ALWAYS AS IDENTITY columns
-                 '       count(*) FILTER (WHERE attgenerated <> '''')'
---                           the number of GENERATED ALWAYS AS (expression) columns
-                 '    FROM ('
-                 '        SELECT attname, %s AS attidentity, %s AS attgenerated'
-                 '            FROM pg_catalog.pg_attribute'
-                 '            WHERE attrelid = %s'
-                 '              AND attnum > 0 AND NOT attisdropped'
-                 '            ORDER BY attnum) AS t';
-        EXECUTE format(v_stmt,
-                       v_pkColList,
-                       CASE WHEN v_pgVersion >= 100000 THEN 'attidentity' ELSE '''''::TEXT' END,
-                       CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
-                       r_tbl.table_oid)
-            INTO v_columnsToCompare, v_columnsToCopy, v_columnsNotInPkJB, v_nbGenAlwaysIdentCol, v_nbGenAlwaysExprCol;
+-- Are there any columns declared GENERATED ALWAYS AS IDENTITY in the target table?
+        IF v_pgVersion < 100000 THEN
+            v_anyGenAlwaysIdentCol = FALSE;
+        ELSE
+            v_anyGenAlwaysIdentCol = EXISTS( 
+                SELECT 1 FROM pg_catalog.pg_attribute
+                    WHERE attrelid = r_tbl.table_oid
+                      AND attnum > 0 AND NOT attisdropped
+                      AND attidentity = 'a');
+        END IF;
 -- Build both arrays of tables linked by foreign keys.
 --    The tables that are referenced by FK from this table.
         SELECT array_agg(DISTINCT nf.nspname || '.' || tf.relname ORDER BY nf.nspname || '.' || tf.relname) INTO v_referencingTables
@@ -824,19 +808,53 @@ BEGIN
                 tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name,
                 tbl_rows, tbl_kbytes,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
-                tbl_copy_dest_cols, tbl_copy_source_exprs, tbl_copy_sort_order,
-                tbl_compare_source_exprs, tbl_compare_dest_cols,  tbl_compare_sort_order,
-                tbl_compare_pk_cols_jb, tbl_compare_other_cols_jb, tbl_some_gen_alw_id_col,
+                tbl_some_gen_alw_id_col,
                 tbl_referencing_tables, tbl_referenced_tables
             ) VALUES (
                 p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
                 coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
                 v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
-                v_columnsToCopy, v_columnsToCopy, v_copySortOrder,
-                v_columnsToCompare, v_columnsToCompare, coalesce(v_compareSortOrder, array_to_string(v_columnsToCompare, ',')),
-                v_columnsInPkJB, v_columnsNotInPkJB, (v_nbGenAlwaysIdentCol > 0),
+                v_anyGenAlwaysIdentCol,
                 v_referencingTables, v_referencedTables
             );
+-- Register the columns of the target table
+--   Get the array of columns numbers composing the PK (included columns being ignored)
+        SELECT indkey, indnatts, indnkeyatts
+            INTO v_pkColsNumber, v_nbColInIdx, v_nbColInPk
+            FROM pg_catalog.pg_index
+            WHERE indrelid = r_tbl.table_oid
+              AND indisprimary;
+        IF v_nbColInIdx > v_nbColInPk THEN
+--   Remove the included columns, if any (they do not belong to the key)
+            FOR i IN v_nbColInPk + 1 .. v_nbColInIdx LOOP
+                v_pkColsNumber = array_remove(v_pkColsNumber, v_pkColsNumber[i]);
+            END LOOP;
+        END IF;
+--   Insert into the table_column table
+        EXECUTE format(
+                 'INSERT INTO @extschema@.table_column'
+                 '         (tco_schema, tco_table, tco_name, tco_number, tco_type, tco_rank_in_pk,'
+                 '          tco_copy_source_expr, tco_copy_dest_col, tco_compare_source_expr, tco_compare_dest_col)'
+                 '    SELECT %L, %L, attname, attnum,'
+                 '           CASE WHEN typname = ''bpchar'' OR typname = ''varchar'''
+                 '                  THEN typname || ''('' || atttypmod::text || '')'''
+                 '                WHEN typname = ''numeric'' AND atttypmod <> -1 '
+                 '                  THEN typname || ''('' || (((atttypmod - 4) >> 16) & 65535)::text || '','' || ((atttypmod - 4) & 65535)::text || '')'''
+                 '                ELSE typname'
+                 '           END,'                                                            -- type format
+                 '           array_position(%L, attnum) + 1,'                                 -- rank in PK
+                 '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy source expression
+                 '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy destination column
+                 '           quote_ident(attname), quote_ident(attname)'                      -- compare source expression and destination column
+                 '        FROM pg_catalog.pg_attribute'
+                 '             JOIN pg_type ON (atttypid = pg_type.oid)'
+                 '        WHERE attrelid = %s'
+                 '          AND attnum > 0 AND NOT attisdropped'
+                 '        ORDER BY attnum',
+                 p_schema, r_tbl.relname, v_pkColsNumber,
+                 CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
+                 CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
+                 r_tbl.table_oid);
 -- Create the foreign table mapped on the table in the source database.
 --    For Oracle, the source schema name is forced in upper case.
         IF p_createForeignTable THEN
@@ -871,16 +889,13 @@ CREATE FUNCTION register_column_transform_rule(
 $register_column_transform_rule$
 DECLARE
     v_migrationName          TEXT;
-    v_copyExpressions        TEXT[];
-    v_compareExpressions     TEXT[];
-    v_colPosition            INTEGER;
 BEGIN
 -- Check that no parameter is not NULL.
     IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL OR p_expression IS NULL THEN
         RAISE EXCEPTION 'register_column_transform_rule: None of the input parameters can be NULL.';
     END IF;
--- Check that the table is already registered and get its migration name and select columns array for both COPY and COMPARE steps.
-    SELECT tbl_migration, tbl_copy_source_exprs, tbl_compare_source_exprs INTO v_migrationName, v_copyExpressions, v_compareExpressions
+-- Check that the table is already registered and get its migration name.
+    SELECT tbl_migration INTO v_migrationName
         FROM @extschema@.table_to_process
         WHERE tbl_schema = p_schema AND tbl_name = p_table;
     IF NOT FOUND THEN
@@ -890,23 +905,14 @@ BEGIN
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
        WHERE mgr_name = v_migrationName;
--- Look in the tables copy column array if the source column exists, and apply the change.
-    v_colPosition = array_position(v_copyExpressions, p_column);
-    IF v_colPosition IS NULL THEN
-        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy %.', p_column, v_copyExpressions;
+-- Record the change into the table_column table.
+    UPDATE @extschema@.table_column
+       SET tco_copy_source_expr = p_expression,
+           tco_compare_source_expr = p_expression
+       WHERE tco_schema = p_schema AND tco_table = p_table AND tco_copy_source_expr = p_column;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy.', p_column;
     END IF;
-    v_copyExpressions[v_colPosition] = p_expression;
--- Look in the tables compare column array if the source column exists, and apply the change.
-    v_colPosition = array_position(v_compareExpressions, p_column);
-    IF v_colPosition IS NULL THEN
-        RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to compare %.', p_column, v_compareExpressions;
-    END IF;
-    v_compareExpressions[v_colPosition] = p_expression;
--- Record the changes.
-    UPDATE @extschema@.table_to_process
-        SET tbl_copy_source_exprs = v_copyExpressions, tbl_compare_source_exprs = v_compareExpressions
-        WHERE tbl_schema = p_schema AND tbl_name = p_table;
---
     RETURN;
 END;
 $register_column_transform_rule$;
@@ -1678,15 +1684,28 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'copy_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Read the table_to_process table to get additional details.
-    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows, tbl_copy_sort_order,
-           tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
-           array_to_string(tbl_copy_dest_cols, ','), array_to_string(tbl_copy_source_exprs, ','), tbl_some_gen_alw_id_col
-        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows, v_copySortOrder,
-             v_constraintToDropNames, v_constraintToCreateDefs, v_indexToDropNames, v_indexToCreateDefs,
-             v_insertColList, v_selectExprList, v_someGenAlwaysIdentCol
+-- Read the table_to_process table to get table related details.
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
+           tbl_constraint_names, tbl_constraint_definitions,
+           tbl_index_names, tbl_index_definitions,
+           tbl_some_gen_alw_id_col
+        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows,
+             v_constraintToDropNames, v_constraintToCreateDefs,
+             v_indexToDropNames, v_indexToCreateDefs,
+             v_someGenAlwaysIdentCol
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Read the table_column table to get details about columns
+    SELECT string_agg(tco_copy_source_expr, ','),
+           string_agg(tco_copy_dest_col, ','),
+           string_agg(quote_ident(tco_name), ',' ORDER BY tco_rank_in_pk) FILTER (WHERE tco_rank_in_pk IS NOT NULL)
+        INTO v_selectExprList, v_insertColList, v_copySortOrder
+        FROM (
+           SELECT tco_name, tco_copy_source_expr, tco_copy_dest_col, tco_rank_in_pk
+               FROM @extschema@.table_column
+               WHERE tco_schema = v_schema AND tco_table = v_table
+               ORDER BY tco_number
+             ) AS t;
 -- If the step concerns a table part, get additional details about the part.
     IF v_partNum IS NOT NULL THEN
         SELECT prt_condition, prt_is_first_step, prt_is_last_step
@@ -1921,17 +1940,27 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'compare_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Read the table_to_process table to get additional details.
-    SELECT tbl_foreign_schema, tbl_foreign_name,
-           array_to_string(tbl_compare_source_exprs, ','), array_to_string(tbl_compare_dest_cols, ','),
-           array_to_string(tbl_compare_pk_cols_jb, ','), array_to_string(tbl_compare_other_cols_jb, ','),
-           tbl_compare_sort_order
-        INTO v_foreignSchema, v_foreignTable,
-             v_sourceExprList, v_destColList,
-             v_pkJsonBuild, v_otherJsonBuild,
-             v_compareSortOrder
+-- Read the table_to_process table to get table related details.
+    SELECT tbl_foreign_schema, tbl_foreign_name
+        INTO v_foreignSchema, v_foreignTable
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Read the table_column table to get details about columns
+    SELECT string_agg(tco_compare_source_expr, ','), string_agg(tco_compare_dest_col, ','),
+           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ','),
+           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_rank_in_pk IS NOT NULL),
+           coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_rank_in_pk) FILTER (WHERE tco_rank_in_pk IS NOT NULL),
+                    string_agg(quote_ident(tco_name), ','))
+        INTO v_sourceExprList, v_destColList,
+             v_pkJsonBuild,
+             v_otherJsonBuild,
+             v_compareSortOrder
+        FROM (
+           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_col, tco_rank_in_pk
+               FROM @extschema@.table_column
+               WHERE tco_schema = v_schema AND tco_table = v_table
+               ORDER BY tco_number
+             ) AS t;
 -- If the step concerns a table part, get additional details about the part.
     IF v_partNum IS NOT NULL THEN
         SELECT prt_condition
@@ -2331,7 +2360,7 @@ BEGIN
         WHERE dscv_schema = v_schema
           AND dscv_table = v_table;
 
---TODO à améliorer (avoir les infos dans table_to_process ?)
+--TODO: store these data into the table_to_process table?
     v_sourceSchema = upper(v_schema);
     v_sourceTable = upper(v_table);
 
