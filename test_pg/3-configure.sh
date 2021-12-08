@@ -172,6 +172,7 @@ select * from step;
 select * from table_to_process;
 select * from table_part;
 select * from sequence_to_process;
+select * from table_column order by tco_schema, tco_table, tco_number;
 
 EOF
 

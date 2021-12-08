@@ -178,7 +178,7 @@ CREATE SEQUENCE mySeq1 MINVALUE 1000 MAXVALUE 2000 CYCLE;
 CREATE SEQUENCE mySeq2;
 
 --
--- Third schema (for an audit_only group)
+-- Third schema
 --
 
 DROP SCHEMA IF EXISTS "phil's schema3" CASCADE;

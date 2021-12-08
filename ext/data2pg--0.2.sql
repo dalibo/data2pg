@@ -110,6 +110,7 @@ CREATE TABLE table_to_process (
     tbl_constraint_definitions TEXT[],                  -- The constraints to recreate after copying the table data
     tbl_index_names            TEXT[],                  -- The indexes to drop before copying the table data
     tbl_index_definitions      TEXT[],                  -- The indexes to recreate after copying the table data
+    tbl_copy_sort_order        TEXT,                    -- The ORDER BY clause, if needed, for the INSERT SELECT copy statement (NULL if no sort)
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
@@ -124,7 +125,6 @@ CREATE TABLE table_column (
     tco_name                   TEXT NOT NULL,           -- The name of the column in the target table
     tco_number                 INTEGER NOT NULL,        -- The column rank in the table
     tco_type                   TEXT NOT NULL,           -- The column type in the target table as described into the catalog
-    tco_rank_in_pk             INTEGER,                 -- The column rank in the table's primary key, NULL if the column does not belong to the PK
     tco_copy_source_expr       TEXT,                    -- For a COPY batch, the expression to select (generaly the source column name)
                                                         --   (NULL if the column is generated always as an expression)
     tco_copy_dest_col          TEXT,                    -- For a COPY batch, the column to insert into (generally the source column name)
@@ -133,6 +133,7 @@ CREATE TABLE table_column (
                                                         --   (NULL if the column is masked)
     tco_compare_dest_col       TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the local postgres table
                                                         --   (NULL if the column is masked)
+    tco_compare_sort_rank      INTEGER,                 -- For a COMPARE batch, the column rank in the table sort, NULL if the column is not used for the sort
     PRIMARY KEY (tco_schema, tco_table, tco_name),
     FOREIGN KEY (tco_schema, tco_table) REFERENCES table_to_process(tbl_schema, tbl_name)
 );
@@ -183,8 +184,8 @@ CREATE TABLE content_diff (
     diff_rank                BIGINT,                     -- A difference number
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
-    diff_pkey_cols           JSON,                       -- The JSON representation of the table pk for rows that are different between both databases
-    diff_other_cols          JSON                        -- The JSON representation of the table columns not in PK for rows that are different between
+    diff_key_cols            JSON,                       -- The JSON representation of the table key, for rows that are different between both databases
+    diff_other_cols          JSON                        -- The JSON representation of the table columns not in key, for rows that are different between
                                                          --   both databases or the sequence characteristics that are different between both databases
 );
 
@@ -658,9 +659,9 @@ DECLARE
     v_pgVersion              INT;
     v_nbTables               INT;
     v_prevMigration          TEXT;
-    v_copySortOrder          TEXT;
     v_indexToDropNames       TEXT[];
     v_indexToDropDefs        TEXT[];
+    v_copySortOrder          TEXT;
     v_constraintToDropNames  TEXT[];
     v_constraintToDropDefs   TEXT[];
     v_anyGenAlwaysIdentCol   BOOLEAN;
@@ -668,9 +669,12 @@ DECLARE
     v_referencedTables       TEXT[];
     v_sourceRows             BIGINT;
     v_sourceKBytes           FLOAT;
-    v_pkColsNumber           SMALLINT[];
+    v_pkOid                  OID;
+    v_uniqueOid              OID;
+    v_copyKeyColNb           SMALLINT[];
+    v_compareKeyColNb        SMALLINT[];
     v_nbColInIdx             SMALLINT;
-    v_nbColInPk              SMALLINT;
+    v_nbColInKey              SMALLINT;
     r_tbl                    RECORD;
     r_col                    RECORD;
 BEGIN
@@ -726,23 +730,6 @@ BEGIN
             RAISE EXCEPTION 'register_tables: The table %.% is already assigned to the migration %.',
                             p_schema, r_tbl.relname, v_prevMigration;
         END IF;
--- Look at the indexes associated to the table.
-        v_copySortOrder = NULL;
--- Get the clustered index columns list, if it exists.
--- This list will be used in an ORDER BY clause in the table copy function.
-        SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
-            FROM pg_catalog.pg_index
-                 JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
-            WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-              AND indisclustered;
--- If no clustered index exists and the sort is allowed on PKey, get the primary key index columns list, if it exists.
-        IF v_copySortOrder IS NULL AND p_sortByPKey THEN
-            SELECT substring(pg_get_indexdef(pg_class.oid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
-                FROM pg_catalog.pg_index
-                     JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
-                WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-                  AND indisprimary;
-        END IF;
 -- Build the array of constraints to drop and their definition.
 -- These constraints are of type PKEY, UNIQUE or EXCLUDE
         SELECT array_agg(conname), array_agg(constraint_def) INTO v_constraintToDropNames, v_constraintToDropDefs
@@ -751,7 +738,6 @@ BEGIN
                     FROM pg_catalog.pg_constraint c1
                     WHERE c1.conrelid = r_tbl.table_oid
                       AND c1.contype IN ('p', 'u', 'x')
-----                      AND c1.contype IN ('u', 'x')
                       AND NOT EXISTS(                             -- the index linked to this constraint must not be linked to other constraints
                           SELECT 0 FROM pg_catalog.pg_constraint c2
                           WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
@@ -773,6 +759,12 @@ BEGIN
                           )
                     ORDER BY relname
                  ) AS t;
+-- Get the clustered index columns list, if it exists.
+-- This list will be used in an ORDER BY clause of the table copy function.
+        SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
+            FROM pg_catalog.pg_index
+            WHERE indrelid = r_tbl.table_oid
+              AND indisclustered;
 -- Are there any columns declared GENERATED ALWAYS AS IDENTITY in the target table?
         IF v_pgVersion < 100000 THEN
             v_anyGenAlwaysIdentCol = FALSE;
@@ -810,33 +802,65 @@ BEGIN
                 tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name,
                 tbl_rows, tbl_kbytes,
                 tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
-                tbl_some_gen_alw_id_col,
+                tbl_copy_sort_order, tbl_some_gen_alw_id_col,
                 tbl_referencing_tables, tbl_referenced_tables
             ) VALUES (
                 p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
                 coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
                 v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
-                v_anyGenAlwaysIdentCol,
+                v_copySortOrder, v_anyGenAlwaysIdentCol,
                 v_referencingTables, v_referencedTables
             );
--- Register the columns of the target table
---   Get the array of columns numbers composing the PK (included columns being ignored)
-        SELECT indkey, indnatts, indnkeyatts
-            INTO v_pkColsNumber, v_nbColInIdx, v_nbColInPk
+-- Register the columns of the target table.
+--   Look at the indexes associated to the table.
+        v_pkOid = NULL;
+        v_uniqueOid = NULL;
+--   Get the PK index id to be used to sort for a COMPARE step, if it exists.
+        SELECT indexrelid INTO v_pkOid
             FROM pg_catalog.pg_index
             WHERE indrelid = r_tbl.table_oid
               AND indisprimary;
-        IF v_nbColInIdx > v_nbColInPk THEN
---   Remove the included columns, if any (they do not belong to the key)
-            FOR i IN v_nbColInPk + 1 .. v_nbColInIdx LOOP
-                v_pkColsNumber = array_remove(v_pkColsNumber, v_pkColsNumber[i]);
-            END LOOP;
+--   If there is no PK, get a UNIQUE index id to be used to sort for a COMPARE step, if one exists.
+--     If there are several UNIQUE index, the choosen index will be the non partial index with the
+--     least number of columns and then the index defined first (i.e. having the lowest oid).
+        IF v_pkOid IS NULL THEN
+            SELECT indexrelid INTO v_uniqueOid
+                FROM pg_catalog.pg_index
+                WHERE indrelid = r_tbl.table_oid
+                  AND indisunique
+                  AND indpred IS NULL
+                ORDER BY indnatts, indexrelid
+                LIMIT 1;
+        END IF;
+--   Get the array of columns numbers composing the sort key for COMPARE steps (included columns being ignored).
+        IF coalesce(v_pkOid,v_uniqueOid) IS NOT NULL THEN
+            SELECT indkey, indnatts, indnkeyatts
+                INTO v_compareKeyColNb, v_nbColInIdx, v_nbColInKey
+                FROM pg_catalog.pg_index
+                WHERE indexrelid = coalesce(v_pkOid, v_uniqueOid);
+            IF v_nbColInIdx > v_nbColInKey THEN
+--   Remove the included columns, if any (they are at the array end and do not belong to the key).
+                FOR i IN v_nbColInKey + 1 .. v_nbColInIdx LOOP
+                    v_compareKeyColNb = array_remove(v_compareKeyColNb, v_compareKeyColNb[i]);
+                END LOOP;
+            END IF;
+        ELSE
+--   Without PK or UNIQUE index, use all columns and issue a warning.
+            SELECT array_agg(attnum ORDER BY attnum)
+                INTO v_compareKeyColNb
+                FROM pg_catalog.pg_attribute
+                WHERE attrelid = r_tbl.table_oid
+                  AND attnum > 0 AND NOT attisdropped;
+            RAISE WARNING 'register_tables: The table %.% has neither PK nor UNIQUE index.'
+                          ' All columns are used as sort key, without being sure that there will not be duplicates',
+                          p_schema, r_tbl.relname;
         END IF;
 --   Insert into the table_column table
         EXECUTE format(
                  'INSERT INTO @extschema@.table_column'
-                 '         (tco_schema, tco_table, tco_name, tco_number, tco_type, tco_rank_in_pk,'
-                 '          tco_copy_source_expr, tco_copy_dest_col, tco_compare_source_expr, tco_compare_dest_col)'
+                 '         (tco_schema, tco_table, tco_name, tco_number, tco_type,'
+                 '          tco_copy_source_expr, tco_copy_dest_col,'
+                 '          tco_compare_source_expr, tco_compare_dest_col, tco_compare_sort_rank)'
                  '    SELECT %L, %L, attname, attnum,'
                  '           CASE WHEN typname = ''bpchar'' OR typname = ''varchar'''
                  '                  THEN typname || ''('' || atttypmod::text || '')'''
@@ -844,19 +868,20 @@ BEGIN
                  '                  THEN typname || ''('' || (((atttypmod - 4) >> 16) & 65535)::text || '','' || ((atttypmod - 4) & 65535)::text || '')'''
                  '                ELSE typname'
                  '           END,'                                                            -- type format
-                 '           array_position(%L, attnum) + 1,'                                 -- rank in PK
                  '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy source expression
                  '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy destination column
-                 '           quote_ident(attname), quote_ident(attname)'                      -- compare source expression and destination column
+                 '           quote_ident(attname),'                                           -- compare source expression
+                 '           quote_ident(attname),'                                           -- compare destination column
+                 '           array_position(%L, attnum) + 1'                                  -- compare sort rank
                  '        FROM pg_catalog.pg_attribute'
                  '             JOIN pg_type ON (atttypid = pg_type.oid)'
                  '        WHERE attrelid = %s'
                  '          AND attnum > 0 AND NOT attisdropped'
                  '        ORDER BY attnum',
-                 p_schema, r_tbl.relname, v_pkColsNumber,
+                 p_schema, r_tbl.relname,
                  CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
                  CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
-                 r_tbl.table_oid);
+                 v_compareKeyColNb, r_tbl.table_oid);
 -- Create the foreign table mapped on the table in the source database.
 --    For Oracle, the source schema name is forced in upper case.
         IF p_createForeignTable THEN
@@ -1698,20 +1723,19 @@ BEGIN
     SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
            tbl_constraint_names, tbl_constraint_definitions,
            tbl_index_names, tbl_index_definitions,
-           tbl_some_gen_alw_id_col
+           tbl_copy_sort_order, tbl_some_gen_alw_id_col
         INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows,
              v_constraintToDropNames, v_constraintToCreateDefs,
              v_indexToDropNames, v_indexToCreateDefs,
-             v_someGenAlwaysIdentCol
+             v_copySortOrder, v_someGenAlwaysIdentCol
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- Read the table_column table to get details about columns
     SELECT string_agg(tco_copy_source_expr, ','),
-           string_agg(tco_copy_dest_col, ','),
-           string_agg(quote_ident(tco_name), ',' ORDER BY tco_rank_in_pk) FILTER (WHERE tco_rank_in_pk IS NOT NULL)
-        INTO v_selectExprList, v_insertColList, v_copySortOrder
+           string_agg(tco_copy_dest_col, ',')
+        INTO v_selectExprList, v_insertColList
         FROM (
-           SELECT tco_name, tco_copy_source_expr, tco_copy_dest_col, tco_rank_in_pk
+           SELECT tco_name, tco_copy_source_expr, tco_copy_dest_col
                FROM @extschema@.table_column
                WHERE tco_schema = v_schema AND tco_table = v_table
                ORDER BY tco_number
@@ -1933,7 +1957,7 @@ DECLARE
     v_foreignTable             TEXT;
     v_sourceExprList           TEXT;
     v_destColList              TEXT;
-    v_pkJsonBuild              TEXT;
+    v_keyJsonBuild             TEXT;
     v_otherJsonBuild           TEXT;
     v_compareSortOrder         TEXT;
     v_partCondition            TEXT;
@@ -1958,15 +1982,15 @@ BEGIN
 -- Read the table_column table to get details about columns
     SELECT string_agg(tco_compare_source_expr, ','), string_agg(tco_compare_dest_col, ','),
            string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ','),
-           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_rank_in_pk IS NOT NULL),
-           coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_rank_in_pk) FILTER (WHERE tco_rank_in_pk IS NOT NULL),
+           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
+           coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_compare_sort_rank) FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
                     string_agg(quote_ident(tco_name), ','))
         INTO v_sourceExprList, v_destColList,
-             v_pkJsonBuild,
+             v_keyJsonBuild,
              v_otherJsonBuild,
              v_compareSortOrder
         FROM (
-           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_col, tco_rank_in_pk
+           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_col, tco_compare_sort_rank
                FROM @extschema@.table_column
                WHERE tco_schema = v_schema AND tco_table = v_table
                ORDER BY tco_number
@@ -2003,15 +2027,15 @@ BEGIN
                      SELECT %s FROM ft
                      LIMIT %s),
                   all_diff AS (
-                     SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_pkey_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
+                     SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_key_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
                          UNION ALL
                      SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff),
                   formatted_diff AS (
-                     SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_pkey_cols, diff_other_cols
+                     SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_key_cols, diff_other_cols
                         FROM all_diff ORDER BY %s, diff_database DESC),
                   inserted_diff AS (
                      INSERT INTO @extschema@.content_diff
-                         (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
+                         (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
                          SELECT * FROM formatted_diff %s
                          RETURNING diff_rank)
                   SELECT max(diff_rank) FROM inserted_diff',
@@ -2027,8 +2051,8 @@ BEGIN
             v_destColList,
             coalesce (v_maxDiff, 'ALL'),
             -- all_diff CTE variables
-            v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
-            v_compareSortOrder, v_pkJsonBuild, v_otherJsonBuild,
+            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
+            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
             -- formatted_diff CTE variables
             v_schema, v_table, v_compareSortOrder,
             v_compareSortOrder,
@@ -2120,7 +2144,7 @@ BEGIN
     v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
     IF NOT v_areSequencesEqual THEN
         INSERT INTO @extschema@.content_diff
-            (diff_schema, diff_relation, diff_rank, diff_database, diff_pkey_cols, diff_other_cols)
+            (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
             VALUES
             (v_schema, v_sequence, 1, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
             (v_schema, v_sequence, 1, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
