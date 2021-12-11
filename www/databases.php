@@ -333,6 +333,9 @@ function newRun() {
 			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0></div>\n";
 		}
 
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_ROWS</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxRows\" size=6 min=1></div>\n";
+
 		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_DIFF</span></div>";
 		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxDiff\" size=6 min=1></div>\n";
 
@@ -363,6 +366,7 @@ function doNewRun() {
 	$ascSession = @$_GET["ascSession"];
 	$copyMaxRows = @$_GET["copyMaxRows"];
 	$copySlowDown = @$_GET["copySlowDown"];
+	$compareMaxRows = @$_GET["compareMaxRows"];
 	$compareMaxDiff = @$_GET["compareMaxDiff"];
 	$compareTruncateDiff = @$_GET["compareTruncateDiff"];
 	$discoverMaxRows = @$_GET["discoverMaxRows"];
@@ -403,6 +407,9 @@ function doNewRun() {
 		}
 		if ($copySlowDown <> '' && $copySlowDown > 0) {
 			$stepOptions .= '\"COPY_SLOW_DOWN\":' . $copySlowDown . ',';
+		}
+		if ($compareMaxRows <> '' && $compareMaxRows > 0) {
+			$stepOptions .= '\"COMPARE_MAX_ROWS\":' . $compareMaxRows . ',';
 		}
 		if ($compareMaxDiff <> '' && $compareMaxDiff > 0) {
 			$stepOptions .= '\"COMPARE_MAX_DIFF\":' . $compareMaxDiff . ',';

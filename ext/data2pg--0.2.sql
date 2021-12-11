@@ -1962,6 +1962,7 @@ DECLARE
     v_compareSortOrder         TEXT;
     v_partCondition            TEXT;
     v_maxDiff                  TEXT;
+    v_maxRows                  TEXT;
     v_stmt                     TEXT;
     v_nbDiff                   BIGINT;
     r_output                   @extschema@.step_report_type;
@@ -2007,6 +2008,7 @@ BEGIN
     END IF;
 -- Analyze the step options.
     v_maxDiff = p_stepOptions->>'COMPARE_MAX_DIFF';
+    v_maxRows = p_stepOptions->>'COMPARE_MAX_ROWS';
 --
 -- Compare processing.
 --
@@ -2015,21 +2017,26 @@ BEGIN
 -- Compare the foreign table and the destination table.
         v_stmt = format(
             'WITH ft (%s) AS (
-                     SELECT %s FROM %I.%I %s),
-                  source_diff AS (
-                     SELECT %s FROM ft
-                         EXCEPT
                      SELECT %s FROM %I.%I %s
+                     ORDER BY %s %s),
+                  t (%s) AS (
+                     SELECT %s FROM %I.%I %s
+                     ORDER BY %s %s),
+                  source_diff AS (
+                     SELECT * FROM ft
+                         EXCEPT
+                     SELECT * FROM t
                      LIMIT %s),
                   destination_diff AS (
-                     SELECT %s FROM %I.%I %s
+                     SELECT * FROM t
                          EXCEPT
-                     SELECT %s FROM ft
+                     SELECT * FROM ft
                      LIMIT %s),
                   all_diff AS (
                      SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_key_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
                          UNION ALL
-                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff),
+                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff
+                     LIMIT %s),
                   formatted_diff AS (
                      SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_key_cols, diff_other_cols
                         FROM all_diff ORDER BY %s, diff_database DESC),
@@ -2042,17 +2049,19 @@ BEGIN
             -- ft CTE variables
             v_destColList,
             v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
-            -- source_diff CTE variables
+            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
+            -- t CTE variables
             v_destColList,
             v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
+            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
+            -- source_diff CTE variables
             coalesce (v_maxDiff, 'ALL'),
             -- destination_diff CTE variables
-            v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
-            v_destColList,
             coalesce (v_maxDiff, 'ALL'),
             -- all_diff CTE variables
             v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
             v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
+            coalesce (v_maxDiff, 'ALL'),
             -- formatted_diff CTE variables
             v_schema, v_table, v_compareSortOrder,
             v_compareSortOrder,
@@ -2802,6 +2811,10 @@ BEGIN
            WHEN 'COMPARE_MAX_DIFF' THEN
                IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' THEN
                    RETURN 'The value for the COMPARE_MAX_DIFF step option must be a number.';
+               END IF;
+           WHEN 'COMPARE_MAX_ROWS' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_ROWS') <> 'number' THEN
+                   RETURN 'The value for the COMPARE_MAX_ROWS step option must be a number.';
                END IF;
            WHEN 'DISCOVER_MAX_ROWS' THEN
                IF jsonb_typeof(v_jsonStepOptions->'DISCOVER_MAX_ROWS') <> 'number' THEN
