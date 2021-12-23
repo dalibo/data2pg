@@ -890,6 +890,13 @@ BEGIN
                 CASE WHEN v_sourceDbms = 'Oracle' THEN '"' || v_sourceSchema || '"' ELSE quote_ident(v_sourceSchema) END,
                 r_tbl.relname, v_serverName, v_foreignSchema);
         END IF;
+--    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
+--    This will let the optimizer choose a proper plan for the compare_table() function, without the cost of an ANALYZE.
+        IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
+            UPDATE pg_catalog.pg_class
+                SET reltuples = coalesce(v_sourceRows, 0), relpages = coalesce(v_sourceKBytes / 8, 0)
+                WHERE oid = (quote_ident(v_foreignSchema) || '.' || quote_ident(r_tbl.relname))::regclass;
+        END IF;
     END LOOP;
 -- If no table has been selected, raise an exception.
     IF v_nbTables = 0 THEN
