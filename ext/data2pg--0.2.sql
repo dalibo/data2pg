@@ -910,7 +910,7 @@ $register_tables$;
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
 -- It allows to manage columns with different names, with different types and or with specific computation rule.
 -- The target column is defined with the schema, table and column name.
--- Several transformation rule may be applied for the same column. In this case, the p_column parameter of the second rule must be the p_expression of the first one.
+-- Several transformation rule may be applied for the same column. In this case, the last one defines the real transformation that will be applied.
 CREATE FUNCTION register_column_transform_rule(
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
@@ -944,7 +944,7 @@ BEGIN
     UPDATE @extschema@.table_column
        SET tco_copy_source_expr = p_expression,
            tco_compare_source_expr = p_expression
-       WHERE tco_schema = p_schema AND tco_table = p_table AND tco_copy_source_expr = p_column;
+       WHERE tco_schema = p_schema AND tco_table = p_table AND tco_name = p_column;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy.', p_column;
     END IF;

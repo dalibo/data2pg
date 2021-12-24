@@ -83,7 +83,7 @@ SELECT register_sequences('PG''s db', 'phil''s schema3', '.*', NULL);
 --
 
 SELECT register_column_transform_rule('myschema1','mytbl1','col11','col11_renamed');
-SELECT register_column_transform_rule('myschema1','mytbl1','col11_renamed','col11');
+SELECT register_column_transform_rule('myschema1','mytbl1','col11','col11');
 SELECT register_column_transform_rule('myschema1','mytbl1','col13','substr(col13, 1, 10)');
 
 --
