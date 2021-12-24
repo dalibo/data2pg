@@ -1156,25 +1156,27 @@ BEGIN
               AND (p_tablesToExclude IS NULL OR tbl_name !~ p_tablesToExclude)
     LOOP
         v_nbTables = v_nbTables + 1;
--- Check that the table is not already fully assigned to a batch of the same type.
-        SELECT stp_batch_name INTO v_prevBatchName
-            FROM @extschema@.step
-                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-            WHERE stp_name = p_schema || '.' || r_tbl.tbl_name
-              AND bat_type = v_batchType;
-        IF FOUND THEN
-            RAISE EXCEPTION 'assign_tables_to_batch: The table %.% is already assigned to the batch "%".',
-                            p_schema, r_tbl.tbl_name, v_prevBatchName;
-        END IF;
--- Check that the table has no table part already assigned to any batch of the same type.
-        PERFORM 0
-            FROM @extschema@.step
-                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-            WHERE stp_name LIKE p_schema || '.' || r_tbl.tbl_name || '.%'
-              AND bat_type = v_batchType;
-        IF FOUND THEN
-            RAISE EXCEPTION 'assign_tables_to_batch: The table %.% has at least 1 part already assigned to a batch of type %.',
-                            p_schema, r_tbl.tbl_name, v_batchType;
+        IF v_batchType = 'COPY' THEN
+-- For batches of type COPY, check that the table is not already fully assigned to another batch of type COPY.
+            SELECT stp_batch_name INTO v_prevBatchName
+                FROM @extschema@.step
+                     JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+                WHERE stp_name = p_schema || '.' || r_tbl.tbl_name
+                  AND bat_type = 'COPY';
+            IF FOUND THEN
+                RAISE EXCEPTION 'assign_tables_to_batch: The table %.% is already assigned to the batch "%".',
+                                p_schema, r_tbl.tbl_name, v_prevBatchName;
+            END IF;
+-- ... And check that the table has no table part already assigned to any batch of the same type.
+            PERFORM 0
+                FROM @extschema@.step
+                     JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+                WHERE stp_name LIKE p_schema || '.' || r_tbl.tbl_name || '.%'
+                  AND bat_type = 'COPY';
+            IF FOUND THEN
+                RAISE EXCEPTION 'assign_tables_to_batch: The table %.% has at least 1 part already assigned to a batch of type COPY.',
+                                p_schema, r_tbl.tbl_name;
+            END IF;
         END IF;
 -- Register the table into the step table.
         INSERT INTO @extschema@.step (
@@ -1246,25 +1248,27 @@ BEGIN
         RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% has not been registered.',
                         p_partNum, p_schema, p_table;
     END IF;
--- Check that the table part has not been already assigned to a batch of the same type.
-    SELECT stp_batch_name INTO v_prevBatchName
-        FROM @extschema@.step
-             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-        WHERE stp_name = p_schema || '.' || p_table || '.' || p_partNum
-          AND bat_type = v_batchType;
-    IF FOUND THEN
-        RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% is already assigned to the batch %.',
-                        p_partNum, p_schema, p_table, v_prevBatchName;
-    END IF;
--- Check that the table is not already fully assigned to a batch of the same type.
-    SELECT stp_batch_name INTO v_prevBatchName
-        FROM @extschema@.step
-             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-        WHERE stp_name = p_schema || '.' || p_table
-          AND bat_type = v_batchType;
-    IF FOUND THEN
-        RAISE EXCEPTION 'assign_table_part_to_batch: The table %.% is already assigned to the batch "%".',
-                        p_schema, p_table, v_prevBatchName;
+    IF v_batchType = 'COPY' THEN
+-- For batches of type COPY, check that the table part has not been already assigned to another batch of type COPY.
+        SELECT stp_batch_name INTO v_prevBatchName
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+            WHERE stp_name = p_schema || '.' || p_table || '.' || p_partNum
+              AND bat_type = 'COPY';
+        IF FOUND THEN
+            RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% is already assigned to the batch %.',
+                            p_partNum, p_schema, p_table, v_prevBatchName;
+        END IF;
+-- ... and check that the table is not already fully assigned to a batch of the same type.
+        SELECT stp_batch_name INTO v_prevBatchName
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+            WHERE stp_name = p_schema || '.' || p_table
+              AND bat_type = 'COPY';
+        IF FOUND THEN
+            RAISE EXCEPTION 'assign_table_part_to_batch: The table %.% is already assigned to the batch "%".',
+                            p_schema, p_table, v_prevBatchName;
+        END IF;
     END IF;
 -- Register the table part into the step table.
     INSERT INTO @extschema@.step (
@@ -1332,15 +1336,17 @@ BEGIN
               AND (p_sequencesToExclude IS NULL OR seq_name !~ p_sequencesToExclude)
     LOOP
         v_nbSequences = v_nbSequences + 1;
--- Check that the sequence is not already assigned to a batch of the same type.
-        SELECT stp_batch_name INTO v_prevBatchName
-            FROM @extschema@.step
-                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-            WHERE stp_name = p_schema || '.' || r_seq.seq_name
-              AND bat_type = v_batchType;
-        IF FOUND THEN
-            RAISE EXCEPTION 'assign_sequences_to_batch: The sequence %.% is already assigned to the batch %.',
-                            p_schema, r_seq.seq_name, v_prevBatchName;
+        IF v_batchType = 'COPY' THEN
+-- For batches of type COPY, check that the sequence is not already assigned to a batch of the same type.
+            SELECT stp_batch_name INTO v_prevBatchName
+                FROM @extschema@.step
+                     JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+                WHERE stp_name = p_schema || '.' || r_seq.seq_name
+                  AND bat_type = 'COPY';
+            IF FOUND THEN
+                RAISE EXCEPTION 'assign_sequences_to_batch: The sequence %.% is already assigned to the batch %.',
+                                p_schema, r_seq.seq_name, v_prevBatchName;
+            END IF;
         END IF;
 -- Register the sequence into the step table.
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sql_function, stp_cost)
