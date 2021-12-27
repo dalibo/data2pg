@@ -435,7 +435,6 @@ sub initRun {
     my $quotedTargetDb;  # TargetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $quotedStepOpt;   # Step options perperly quoted for the SQL
-    my $batchType;       # Batch type returned by the get_batch_ids() function call
     my $migrationName;   # Migration name returned by the get_batch_ids() function call
     my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
     my $stepOptionsError;# Error message, if any, reported by the check_step_options() function (empty string if no error)
@@ -1169,12 +1168,20 @@ sub finalReport {
 
 # Display the report.
     $state = 'completed'; $state = 'suspended' if ($nbSteps != $nbStepsOK);
-    print "========================================================================================\n";
-    print "The run #$runId is $state. (The operation details are available in the data2pg administration database).\n";
-    print "Run elapse time           : $elapseTime\n";
+    print "================================================================================\n";
+    print "The run #$runId is $state.\n";
+    print "Target database           : $targetDb\n";
+    print "Batch                     : $batchName (type $batchType)\n";
+    print "Step options              : ";
+    if (defined($stepOptions)) {
+       print "$stepOptions\n";
+    } else {
+       print "none\n";
+    }
     if ($state eq 'suspended') {
         print "Number of scheduled steps : $nbSteps\n";
     }
+    print "Run elapse time           : $elapseTime\n";
     print "Number of processed steps : $nbStepsOK\n";
     print "Aggregated indicators\n";
     foreach my $indicator ( @$stepResults ) {
@@ -1183,7 +1190,8 @@ sub finalReport {
     if ($actionRestart) {
       print "Number of steps processed by the previous restarted run #$previousRunId : $previousNbStepsOK\n";
     }
-    print "========================================================================================\n";
+    print "The operation details are available in the data2pg administration database.\n";
+    print "================================================================================\n";
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1274,9 +1282,9 @@ sub abortRun {
     if ($debug) {printDebug("Run #$previousRunId set to 'Aborted'.");}
 
 # Final report.
-    print "========================================================================================\n";
+    print "================================================================================\n";
     print "The run #$previousRunId has been aborted.\n";
-    print "========================================================================================\n";
+    print "================================================================================\n";
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1306,9 +1314,9 @@ sub suspendRun {
     $d2pDbh->commit();
 
 # Final report.
-    print "========================================================================================\n";
+    print "================================================================================\n";
     print "The run #$previousRunId will be set in 'Suspended' state as soon as all the steps in execution will be completed.\n";
-    print "========================================================================================\n";
+    print "================================================================================\n";
 }
 # ---------------------------------------------------------------------------------------------
 sub checkDb {
