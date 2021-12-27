@@ -2170,7 +2170,7 @@ BEGIN
         r_output.sr_rank = 50;
     ELSE
         r_output.sr_indicator = 'COMPARED_TABLE_PARTS';
-        r_output.sr_rank = 52;
+        r_output.sr_rank = 51;
     END IF;
     r_output.sr_value = 1;
     r_output.sr_is_main_indicator = FALSE;
@@ -2178,10 +2178,10 @@ BEGIN
 --
     IF v_partNum IS NULL THEN
         r_output.sr_indicator = 'NON_EQUAL_TABLES';
-        r_output.sr_rank = 51;
+        r_output.sr_rank = 60;
     ELSE
         r_output.sr_indicator = 'NON_EQUAL_TABLE_PARTS';
-        r_output.sr_rank = 53;
+        r_output.sr_rank = 61;
     END IF;
     r_output.sr_value = CASE WHEN v_nbDiff IS NULL THEN 0 ELSE 1 END;
     r_output.sr_is_main_indicator = FALSE;
@@ -2189,7 +2189,7 @@ BEGIN
 --
     r_output.sr_indicator = 'ROW_DIFFERENCES';
     r_output.sr_value = coalesce(v_nbDiff, 0);
-    r_output.sr_rank = 54;
+    r_output.sr_rank = 71;
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
 --
@@ -2255,16 +2255,11 @@ BEGIN
 -- Return the step report.
     r_output.sr_indicator = 'COMPARED_SEQUENCES';
     r_output.sr_value = 1;
-    r_output.sr_rank = 60;
+    r_output.sr_rank = 52;
     r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
-    r_output.sr_indicator = 'NON_EQUAL_SEQUENCES';
-    r_output.sr_rank = 61;
-    r_output.sr_is_main_indicator = FALSE;
-    r_output.sr_value = CASE WHEN v_areSequencesEqual THEN 0 ELSE 1 END;
     RETURN NEXT r_output;
     r_output.sr_indicator = 'SEQUENCE_DIFFERENCES';
-    r_output.sr_rank = 62;
+    r_output.sr_rank = 72;
     r_output.sr_value = CASE WHEN NOT v_areSequencesEqual THEN 1 ELSE 0 END;
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
