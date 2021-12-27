@@ -131,7 +131,7 @@ CREATE TABLE table_column (
                                                         --   (NULL if the column is generated always as an expression)
     tco_compare_source_expr    TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the foreign table
                                                         --   (NULL if the column is masked)
-    tco_compare_dest_col       TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the local postgres table
+    tco_compare_dest_expr      TEXT,                    -- For a COMPARE batch, the columns/expressions to select from the local postgres table
                                                         --   (NULL if the column is masked)
     tco_compare_sort_rank      INTEGER,                 -- For a COMPARE batch, the column rank in the table sort, NULL if the column is not used for the sort
     PRIMARY KEY (tco_schema, tco_table, tco_name),
@@ -860,7 +860,7 @@ BEGIN
                  'INSERT INTO @extschema@.table_column'
                  '         (tco_schema, tco_table, tco_name, tco_number, tco_type,'
                  '          tco_copy_source_expr, tco_copy_dest_col,'
-                 '          tco_compare_source_expr, tco_compare_dest_col, tco_compare_sort_rank)'
+                 '          tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank)'
                  '    SELECT %L, %L, attname, attnum,'
                  '           CASE WHEN typname = ''bpchar'' OR typname = ''varchar'''
                  '                  THEN typname || ''('' || atttypmod::text || '')'''
@@ -935,6 +935,14 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_column_transform_rule: Table %.% not found.', p_schema, p_table;
     END IF;
+-- Check that a comparison rule has not already been registered for the column.
+    PERFORM 0
+        FROM @extschema@.table_column
+        WHERE tco_schema = p_schema AND tco_table = p_table AND tco_name = p_column
+          AND (tco_compare_source_expr IS NULL OR tco_copy_source_expr <> tco_compare_source_expr);
+    IF FOUND THEN
+        RAISE EXCEPTION 'register_column_transform_rule: It looks like a comparison rule has already been registerd for the column %.%.%.', p_schema, p_table, p_column;
+    END IF;
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
        SET mgr_config_completed = FALSE
@@ -951,6 +959,60 @@ BEGIN
     RETURN;
 END;
 $register_column_transform_rule$;
+
+-- The register_column_comparison_rule() functions defines a specific rule in comparing a column between the source and the target databases.
+-- It allows to either simply mask the column for the COMPARE operation, or to compare the result of an expression on both source and tardet tables.
+-- The target column is defined with the schema, table and column name.
+-- The expression on the source and the target databases may be different.
+-- Several comparison rules may be applied for the same column. In this case, the last one defines the real way to compare the column.
+CREATE FUNCTION register_column_comparison_rule(
+    p_schema                 TEXT,               -- The schema name of the target table
+    p_table                  TEXT,               -- The target table name
+    p_column                 TEXT,               -- The target column name
+    p_sourceExpression       TEXT DEFAULT NULL,  -- The expression to use on the source table for the comparison operation ; a NULL simply masks the column
+    p_targetExpression       TEXT DEFAULT NULL   -- The expression to use on the target table for the comparison operation ; equals p_sourceExpression when NULL
+    )
+    RETURNS VOID LANGUAGE plpgsql AS
+$register_column_comparison_rule$
+DECLARE
+    v_migrationName          TEXT;
+    v_sortRank               INT;
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: None of the 3 first input parameters can be NULL.';
+    END IF;
+-- Check that the source expression is not NULL when the destination expression is also NOT NULL.
+    IF p_sourceExpression IS NULL AND p_targetExpression IS NOT NULL THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: If p_sourceExpression is NULL, p_targetExpression must also be NULL.';
+    END IF;
+-- Check that the table is already registered and get its migration name.
+    SELECT tbl_migration INTO v_migrationName
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = p_schema AND tbl_name = p_table;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: Table %.% not found.', p_schema, p_table;
+    END IF;
+-- Set the related migration as 'configuration in progress'.
+    UPDATE @extschema@.migration
+       SET mgr_config_completed = FALSE
+       WHERE mgr_name = v_migrationName
+         AND mgr_config_completed;
+-- Record the change into the table_column table.
+    UPDATE @extschema@.table_column
+       SET tco_compare_source_expr = p_sourceExpression,
+           tco_compare_dest_expr = coalesce(p_targetExpression, p_sourceExpression)
+       WHERE tco_schema = p_schema AND tco_table = p_table AND tco_name = p_column
+       RETURNING tco_compare_sort_rank INTO v_sortRank;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: The column % is not found in the list of columns to compare.', p_column;
+    END IF;
+    IF v_sortRank IS NOT NULL THEN
+        RAISE WARNING 'register_column_comparison_rule: The column % is used in the sorts at tables comparison time. Applying a comparison rule may have a side effect.', p_column;
+    END IF;
+    RETURN;
+END;
+$register_column_comparison_rule$;
 
 -- The register_table_part() function defines a table's subset that will be processed by its own migration step.
 -- A table part step includes 1 or 2 of the usual 3 elementary actions of a table copy:
@@ -1681,7 +1743,7 @@ $complete_migration_configuration$;
 -- Functions called by the Data2Pg scheduler.
 --
 
--- The copy_table() function is the generic copy function that is used to processes tables.
+-- The copy_table() function is the generic copy function that is used to process tables.
 -- Input parameters: batch and step names.
 -- It returns a step report including the number of copied rows.
 -- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
@@ -1951,9 +2013,17 @@ BEGIN
 END;
 $get_source_sequence$;
 
--- The compare_table() function is a generic compare function that is used to processes tables.
+-- The compare_table() function is a generic compare function that is used to process tables.
 -- Input parameters: batch and step names.
 -- It returns a step report including the number of discrepancies found.
+-- The function compares a foreign table with its related local table, using a single SQL statement.
+-- Discrepancies are inserted into the data2pg.content_diff table.
+-- In content_diff, rows content is represented in JSON format, distinguishing key columns and other columns. 
+-- The comparison takes into account column transformation rules that have been defined for the COPY processing by register_columns_transform_rule() function calls.
+-- It also takes into account additional column comparison rules defined by register_column_comparison_rule() function calls.
+-- It may be simple masking. In this case, the keyword "MASKED" replaces the column content for the comparison and in the content_diff table.
+-- It may be an computation applied on the source column and on the local column. Both may be different if needed.
+-- When a comparison rule is applied on a column, its name reported in the content_diff JSON values is enclosed by parenthesis.
 CREATE FUNCTION compare_table(
     p_batchName                TEXT,
     p_step                     TEXT,
@@ -1969,6 +2039,7 @@ DECLARE
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_sourceExprList           TEXT;
+    v_destExprList             TEXT;
     v_destColList              TEXT;
     v_keyJsonBuild             TEXT;
     v_otherJsonBuild           TEXT;
@@ -1980,7 +2051,7 @@ DECLARE
     v_nbDiff                   BIGINT;
     r_output                   @extschema@.step_report_type;
 BEGIN
--- Get the identity of the table.
+-- Get the table identity.
     SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
         FROM @extschema@.step
         WHERE stp_batch_name = p_batchName
@@ -1993,23 +2064,32 @@ BEGIN
         INTO v_foreignSchema, v_foreignTable
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
--- Read the table_column table to get details about columns
-    SELECT string_agg(tco_compare_source_expr, ','), string_agg(tco_compare_dest_col, ','),
-           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ','),
-           string_agg(quote_literal(tco_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
+-- Read the table_column table to get details about columns and build pieces of SQL that will be used by the global comparison statement below.
+    SELECT string_agg(quote_ident(tco_name), ','),
+           string_agg(coalesce(tco_compare_source_expr, quote_literal('MASKED')), ','),
+           string_agg(coalesce(tco_compare_dest_expr, quote_literal('MASKED')), ','),
+           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
+           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NULL),
            coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_compare_sort_rank) FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
                     string_agg(quote_ident(tco_name), ','))
-        INTO v_sourceExprList, v_destColList,
+        INTO v_destColList,
+             v_sourceExprList,
+             v_destExprList,
              v_keyJsonBuild,
              v_otherJsonBuild,
              v_compareSortOrder
         FROM (
-           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_col, tco_compare_sort_rank
+           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank,
+                  CASE WHEN tco_compare_source_expr = tco_name AND tco_compare_dest_expr = tco_name
+                      THEN tco_name
+                      ELSE '(' || tco_name || ')' 
+                  END AS tco_decorated_name
                FROM @extschema@.table_column
                WHERE tco_schema = v_schema AND tco_table = v_table
                ORDER BY tco_number
              ) AS t;
--- If the step concerns a table part, get additional details about the part.
+-- If the step concerns a table part, warn if no WHERE clause exists.
+--   Pre-processing or post-processing only steps are only useful for batches of type COPY.
     IF v_partNum IS NOT NULL THEN
         SELECT prt_condition
             INTO v_partCondition
@@ -2065,7 +2145,7 @@ BEGIN
             v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
             -- t CTE variables
             v_destColList,
-            v_destColList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
+            v_destExprList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
             v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
             -- source_diff CTE variables
             coalesce (v_maxDiff, 'ALL'),
@@ -2120,6 +2200,7 @@ $compare_table$;
 -- The compare_sequence() function compares the characteristics of a source and its destination sequence.
 -- Input parameters: batch and step names.
 -- It returns a step report.
+-- Discrepancies are inserted into the data2pg.content_diff table.
 CREATE FUNCTION compare_sequence(
     p_batchName                TEXT,
     p_step                     TEXT,

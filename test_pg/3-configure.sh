@@ -87,6 +87,14 @@ SELECT register_column_transform_rule('myschema1','mytbl1','col11','col11');
 SELECT register_column_transform_rule('myschema1','mytbl1','col13','substr(col13, 1, 10)');
 
 --
+-- Register the columns comparison rules
+--
+
+SELECT register_column_comparison_rule('myschema1','mytbl1','col11','col11');
+SELECT register_column_comparison_rule('myschema1','myTbl3','col32',NULL);
+SELECT register_column_comparison_rule('myschema1','myTbl3','col33','trunc(col33,1)','trunc(col33,0)');
+
+--
 -- Register the table parts
 --
 
