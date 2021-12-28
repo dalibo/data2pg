@@ -40,7 +40,7 @@ my $ascSessions;                       # Number of sessions for which the steps 
 my $comment;                           # Comment associated to the run and registered in the run table
 my $runId;                             # Run identifier
 my $help;
-my $debug;
+my $verbose;
 
 # Global variables representing the parameters read from the configuration file.
 our $cfTargetDb;                       # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
@@ -104,6 +104,7 @@ sub usage
     print "  --port         : IP port of the data2pg administration database (default = PGPORT env. var.)\n";
     print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)\n";
     print "  --conf         : configuration file (default = no configuration file)\n";
+    print "  --verbose      : display additional information during the run\n";
     print "  --target       : target database identifier (mandatory) (*)\n";
     print "  --batch        : batch name for the run (mandatory, except for the 'check' action) (*)\n";
     print "  --step_options : JSON formatted list of options sent to each step (*)\n";
@@ -115,14 +116,14 @@ sub usage
 }
 
 # ---------------------------------------------------------------------------------------------
-# Technical function to log messages into the stdout file in debug mode.
-sub printDebug
+# Technical function to log messages into the stdout file in verbose mode.
+sub printVerbose
 {
     my ($msg) = @_;
 
-    if ($debug) {
+    if ($verbose) {
         my ($sec,$min,$hour) = localtime();
-        printf("Debug (%02d:%02d:%02d): %s\n", $hour, $min, $sec, $msg);
+        printf("%02d:%02d:%02d: %s\n", $hour, $min, $sec, $msg);
     }
 }
 
@@ -166,7 +167,7 @@ sub abort
 sub parseCommandLine
 {
     $help = 0;
-    $debug = 0;
+    $verbose = 0;
 
 # Parse.
     $options = GetOptions(
@@ -182,7 +183,7 @@ sub parseCommandLine
         "asc_sessions=s" => \$ascSessions,
         "comment=s"      => \$comment,
         "run=s"          => \$runId,
-        "debug"          => \$debug,
+        "verbose"        => \$verbose,
         );
 
 # Help!
@@ -191,7 +192,7 @@ sub parseCommandLine
         exit 1;
     }
 
-    if ($debug) {printDebug("Command line parsed");}
+    if ($verbose) {printVerbose("Command line parsed");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -228,7 +229,7 @@ my %parameters = (                     # Link between the config file parameters
         use strict 'refs';
     }
     close CONF;
-    if ($debug) {printDebug("Configuration file ($confFile) properly processed");}
+    if ($verbose) {printVerbose("Configuration file ($confFile) properly processed");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -280,7 +281,7 @@ sub checkParameters
 
 #### TODO: checks directories used to manage shell scripts executions
 
-    if ($debug) {printDebug("Parameters checks OK");}
+    if ($verbose) {printVerbose("Parameters checks OK");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -310,7 +311,7 @@ sub logonData2pg {
 
 # Open the connection on the data2pg administration database.
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
-    if ($debug) {printDebug("Trying to connect on the data2pg administration database");}
+    if ($verbose) {printVerbose("Trying to connect on the data2pg administration database");}
     $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {AutoCommit=>0})
           or abort("Error while logging on the Data2Pg administration database ($DBI::errstr).");
     $d2pDbh->{RaiseError} = 1;
@@ -348,7 +349,7 @@ sub logonData2pg {
     $pgDsn .= ";host=" . $row->{'tdb_host'} if defined $row->{'tdb_host'};
     $pgDsn .= ";port=" . $row->{'tdb_port'} if defined $row->{'tdb_port'};
 
-    if ($debug) {printDebug("Connection on the data2pg administration database opened and target database found");}
+    if ($verbose) {printVerbose("Connection on the data2pg administration database opened and target database found");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -356,7 +357,7 @@ sub logoffData2pg {
 # The function closes the connection on the data2pg administration database.
 
     $d2pDbh->disconnect();
-    if ($debug) {printDebug("Connection on the data2pg administration database closed");}
+    if ($verbose) {printVerbose("Connection on the data2pg administration database closed");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -367,7 +368,7 @@ sub getPreviousRunStatus() {
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $sql;             # SQL statement
     my $row;             # SQL result row
-    my $debugMsg;        # Final message displayed in debug mode
+    my $verboseMsg;      # Final message displayed in verbose mode
 
 # Get the previous run, if any.
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
@@ -393,12 +394,12 @@ sub getPreviousRunStatus() {
         if ($previousRunState ne 'Completed' && $previousRunState ne 'Suspended' && $previousRunState ne 'Aborted') {
             $previousRunPerlIsExecuting = arePidsExecuting($previousRunPerlPid, 'data2pg.pl');
         }
-        $debugMsg = "(id = #$previousRunId, started at $previousRunStartTime, state = $previousRunState)";
+        $verboseMsg = "(id = #$previousRunId, started at $previousRunStartTime, state = $previousRunState)";
     } else {
-        $debugMsg = "(no previous run found)";
+        $verboseMsg = "(no previous run found)";
     }
 
-    if ($debug) {printDebug("Status of the previous run retrieved $debugMsg");}
+    if ($verbose) {printVerbose("Previous run status retrieved: $verboseMsg");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -531,7 +532,7 @@ sub initRun {
 # Check that the batch name exists on the target database, that its "migration" is in a correct state and that the step options are valid.
     if (defined($stepOptions)) {
         $quotedStepOpt = $d2pDbh->quote($stepOptions, { pg_type => PG_VARCHAR });
-        if ($debug) {printDebug("Checking step options: $stepOptions");}
+        if ($verbose) {printVerbose("Checking step options: $stepOptions");}
     } else {
         $quotedStepOpt = 'NULL';
     }
@@ -600,7 +601,7 @@ sub adjustSessions {
             closeSession($i);
         }
     }
-    if ($debug) {printDebug("Sessions adjusted to reach $maxSessions");}
+    if ($verbose) {printVerbose("Sessions adjusted to reach $maxSessions");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -663,7 +664,7 @@ sub openSession
         $d2pDbh->do($sql);
     }
 
-    if ($debug) {printDebug("Session $i on the target database opened");}
+    if ($verbose) {printVerbose("Session $i on the target database opened");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -685,7 +686,7 @@ sub closeSession
     );
     $d2pDbh->do($sql);
 
-    if ($debug) {printDebug("Session $i to the targeted database closed.");}
+    if ($verbose) {printVerbose("Session $i to the targeted database closed.");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -768,7 +769,7 @@ sub buildWorkingPlan {
 # Initialize the counter of successfuly completed steps.
     $nbStepsOK = 0;
 
-    if ($debug) {printDebug("Working plan registered, with $nbSteps steps");}
+    if ($verbose) {printVerbose("Working plan registered, with $nbSteps steps");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -816,7 +817,7 @@ sub copyWorkingPlan {
     ($nbStepsOK, $nbStepsReady) = $d2pDbh->selectrow_array($sql);
     $previousNbStepsOK = $nbStepsOK;
 
-    if ($debug) {printDebug("Working plan registered for the restarted session, with $nbSteps steps and $nbStepsOK already completed");}
+    if ($verbose) {printVerbose("Working plan registered for the restarted session, with $nbSteps steps and $nbStepsOK already completed");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -916,7 +917,7 @@ sub reReadMaxSessions
 # Set the timer for the next call.
     $nextMaxSessionsRefreshTime = time() + $maxSessionsRefreshDelay;
 
-    if ($debug) {printDebug("Sessions parameters refreshed (Max=$maxSessions Asc=$ascSessions)");}
+    if ($verbose) {printVerbose("Sessions parameters refreshed (Max=$maxSessions Asc=$ascSessions)");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -989,7 +990,7 @@ sub startStep
     $sessions[$session]->{step} = $step;
     $sessions[$session]->{state} = 2;
 
-    if ($debug) {printDebug("On session $session, start the step $step (cost = $cost ; cum.cost = $cumCost)");}
+    if ($verbose) {printVerbose("On session $session, start the step $step (cost = $cost ; cum.cost = $cumCost)");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -998,7 +999,7 @@ sub checkStep
 {
     my ($session) = @_;
     my $insertValues;    # The VALUES clause for the INSERT statement that records the step results.
-    my $resultsList;     # The list of the step results to display in debug mode.
+    my $resultsList;     # The list of the step results to display in verbose mode.
     my $ret;             # SQL result
     my $i;               # Result rows counter
     my $step;            # Selected step name 
@@ -1093,9 +1094,9 @@ sub checkStep
         $sessions[$session]->{step} = '';
         $nbStepsOK++;
 
-        if ($debug) {
+        if ($verbose) {
             $resultsList =~ s/ $//;                 # delete the last space
-            printDebug("On session $session, the step $step is completed ($resultsList)");
+            printVerbose("On session $session, the step $step is completed ($resultsList)");
         }
     }
 }
@@ -1134,7 +1135,7 @@ sub endRun
 # Display the summary final report.
     finalReport();
 
-    if ($debug) {printDebug("Run ended in $state state.");}
+    if ($verbose) {printVerbose("Run ended in $state state.");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1216,7 +1217,7 @@ sub abortRun {
 # If the previous run is in execution, kill it.
     if ($previousRunPerlIsExecuting) {
         `kill $previousRunPerlPid`;
-        if ($debug) {printDebug("Process perl $previousRunPerlPid killed.");}
+        if ($verbose) {printVerbose("Process perl $previousRunPerlPid killed.");}
     }
 
 # Kill the Postgres backend corresponding to the opened sessions, if any.
@@ -1250,7 +1251,7 @@ sub abortRun {
           SELECT $pgSchema.terminate_data2pg_backends('$pgPidsToKill')
         );
         ($pgKilledPids) = $dbh->selectrow_array($sql);
-        if ($debug) {printDebug("PostgreSQL backends terminated: $pgPidsToKill.");}
+        if ($verbose) {printVerbose("PostgreSQL backends terminated: $pgPidsToKill.");}
 
 # ... close the connection,
         $dbh->disconnect();
@@ -1279,7 +1280,7 @@ sub abortRun {
 # Commit the change.
     $d2pDbh->commit();
 
-    if ($debug) {printDebug("Run #$previousRunId set to 'Aborted'.");}
+    if ($verbose) {printVerbose("Run #$previousRunId set to 'Aborted'.");}
 
 # Final report.
     print "================================================================================\n";

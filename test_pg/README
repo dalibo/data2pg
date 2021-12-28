@@ -16,8 +16,8 @@ cd <your_data2pg_directory>
 ./test_pg/3-configure.sh
 
 # Migrate data in 2 steps
-perl data2pg.pl -c test_pg/batch0.conf --host localhost -p 5432 -a run -d
-perl data2pg.pl -c test_pg/batch1.conf --host localhost -p 5432 -a run -d
+perl data2pg.pl -c test_pg/batch0.conf --host localhost -p 5432 -a run -v
+perl data2pg.pl -c test_pg/batch1.conf --host localhost -p 5432 -a run -v
 
 # Compare data
-perl data2pg.pl -c test_pg/batch_compare.conf --host localhost -p 5432 -a run -d
+perl data2pg.pl -c test_pg/batch_compare.conf --host localhost -p 5432 -a run -v
