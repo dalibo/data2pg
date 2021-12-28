@@ -2890,27 +2890,33 @@ BEGIN
     LOOP
         CASE r_key.key
            WHEN 'COPY_MAX_ROWS' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'number' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'null' THEN
                    RETURN 'The value for the COPY_MAX_ROWS step option must be a number.';
                END IF;
            WHEN 'COPY_SLOW_DOWN' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'number' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'null' THEN
                    RETURN 'The value for the COPY_SLOW_DOWN step option must be a number.';
                END IF;
            WHEN 'COMPARE_MAX_DIFF' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_DIFF') <> 'null' THEN
                    RETURN 'The value for the COMPARE_MAX_DIFF step option must be a number.';
                END IF;
            WHEN 'COMPARE_MAX_ROWS' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_ROWS') <> 'number' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_ROWS') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'COMPARE_MAX_ROWS') <> 'null' THEN
                    RETURN 'The value for the COMPARE_MAX_ROWS step option must be a number.';
                END IF;
            WHEN 'DISCOVER_MAX_ROWS' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'DISCOVER_MAX_ROWS') <> 'number' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'DISCOVER_MAX_ROWS') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'DISCOVER_MAX_ROWS') <> 'null' THEN
                    RETURN 'The value for the DISCOVER_MAX_ROWS step option must be a number.';
                END IF;
            WHEN 'COMPARE_TRUNCATE_DIFF' THEN
-               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_TRUNCATE_DIFF') <> 'boolean' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COMPARE_TRUNCATE_DIFF') <> 'boolean' AND
+                  jsonb_typeof(v_jsonStepOptions->'COMPARE_TRUNCATE_DIFF') <> 'null' THEN
                    RETURN 'The value for the COMPARE_TRUNCATE_DIFF step option must be a boolean.';
                END IF;
            ELSE
