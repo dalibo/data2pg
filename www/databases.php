@@ -320,6 +320,9 @@ function newRun() {
 		echo "\t\t<div class=\"form-label\">Comment</div>";
 		echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60></div>\n";
 
+		echo "\t\t<div class=\"form-label\">Reference run for steps cost estimates</div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"refRunId\" size=5></div>\n";
+
 		echo "\t</div>\n";
 		echo "\t<p>Step options</p>";
 
@@ -333,14 +336,14 @@ function newRun() {
 			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0></div>\n";
 		}
 
-		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_ROWS</span></div>";
-		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxRows\" size=6 min=1></div>\n";
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_TRUNCATE_DIFF</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"compareTruncateDiff\"></div>\n";
 
 		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_DIFF</span></div>";
 		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxDiff\" size=6 min=1></div>\n";
 
-		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_TRUNCATE_DIFF</span></div>";
-		echo "\t\t<div class=\"form-input\"><input type=\"checkbox\" name=\"compareTruncateDiff\"></div>\n";
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COMPARE_MAX_ROWS</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"compareMaxRows\" size=6 min=1></div>\n";
 
 		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">DISCOVER_MAX_ROWS</span></div>";
 		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"discoverMaxRows\" size=6 min=1></div>\n";
@@ -361,9 +364,10 @@ function doNewRun() {
 	global $conf, $tdbId;
 
 	$batch = @$_GET["batch"];
-	$comment = @$_GET["comment"];
 	$maxSession = @$_GET["maxSession"];
 	$ascSession = @$_GET["ascSession"];
+	$comment = @$_GET["comment"];
+	$refRunId = @$_GET["refRunId"];
 	$copyMaxRows = @$_GET["copyMaxRows"];
 	$copySlowDown = @$_GET["copySlowDown"];
 	$compareMaxRows = @$_GET["compareMaxRows"];
@@ -377,6 +381,21 @@ function doNewRun() {
 		$prevRun = pg_fetch_assoc($res);
 		if ($prevRun['run_status'] <> 'Completed' && $prevRun['run_status'] <> 'Suspended' && $prevRun['run_status'] <> 'Aborted') {
 			displayDb("Error: A previous run (<a href=\"run.php?a=runDetails&runId=${prevRun['run_id']}\">#${prevRun['run_id']}</a>) for the database '$tdbId' and batch '$batch' is in '${prevRun['run_status']}' state.");
+			exit;
+		}
+	}
+
+// Check the reference run if, if supplied.
+	if ($refRunId <> '') {
+		$res = sql_getReferenceRun($tdbId, $batch, $refRunId);
+		if (pg_num_rows($res) > 0) {
+			$refRun = pg_fetch_assoc($res);
+			if ($refRun['run_status'] <> 'Completed') {
+				displayDb("Error: The reference run (<a href=\"run.php?a=runDetails&runId=$refRunId\">#$refRunId</a>) is in '${refRun['run_status']}' state.");
+				exit;
+			}
+		} else {
+			displayDb("Error: No reference run #$refRunId has been found for the database '$tdbId' and batch '$batch'.");
 			exit;
 		}
 	}
@@ -436,8 +455,11 @@ function doNewRun() {
 			// Add a \ before ", if any
 			$bashCmd .= ' --comment "' . str_replace('"', '\"', $comment) . '"';
 		}
+		if ($refRunId <> '') {
+			$bashCmd .= ' --ref_run ' . $refRunId;
+		}
 		if ($conf['development_mode']) {
-			$bashCmd .= ' --debug';
+			$bashCmd .= ' --verbose';
 		}
 		// Add a \ before any \ and " in the command to spawn
 		$cmd = 'nohup bash -c "' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $bashCmd) . '" 1>' . $logFile . ' 2>&1 &';

@@ -182,6 +182,18 @@ function sql_getPreviousRun($tdbId, $batch) {
 	return $res;
 }
 
+// The sql_getReferenceRun() function returns the status about a reference run id for a given target database and batch.
+function sql_getReferenceRun($tdbId, $batch, $runId) {
+	global $conn;
+
+	$sql = "SELECT run_status
+			FROM run
+			WHERE run_id = $1 AND run_database = $2 AND run_batch_name = $3";
+	$res = pg_query_params($conn, $sql, array($runId, $tdbId, $batch))
+		or die(pg_last_error());
+	return $res;
+}
+
 // The sql_getAllRuns() function returns a synthesis of all runs.
 function sql_getAllRuns(){
 	global $conn;

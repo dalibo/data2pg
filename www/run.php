@@ -156,10 +156,17 @@ function runDetails($runId, $msg = '') {
 		echo "\t</p>\n";
 		echo "\t<p>Batch = <span class=\"bold\">" . htmlspecialchars($run['run_batch_name']) . "</span>" .
 			"&nbsp;(type " . htmlspecialchars($run['run_batch_type']) . ")";
-		if ($run['run_step_options'] != '') {
-			echo "&nbsp;&nbsp;Step options = " . htmlspecialchars($run['run_step_options']);
+		if ($run['run_ref_id'] == '') {
+			echo "&nbsp;&nbsp;Estimated costs built from tables sizes";
+		} else {
+			echo "&nbsp;&nbsp;Estimated costs built from run <a href=\"run.php?a=runDetails&runId=${run['run_ref_id']}\">" .
+				htmlspecialchars($run['run_ref_id']) . "</a> steps durations";
 		}
 		echo "\t</p>\n";
+
+		if ($run['run_step_options'] != '') {
+			echo "\t</p>\nStep options = " . htmlspecialchars($run['run_step_options']) . "\t</p>\n";
+		}
 
 		if ($run['run_comment'] != '') {
 			echo "\t<p>Comment = " . htmlspecialchars($run['run_comment']) . "</p>\n";
