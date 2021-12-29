@@ -52,6 +52,7 @@ CREATE TABLE run (
     run_init_asc_ses           INT                      -- The ASC_SESSIONS parameter from the configuration file (at least 0)
                                  CHECK (run_init_max_ses >= 0),
     run_comment                TEXT,                    -- Comment entered at run start
+    run_ref_id                 INT,                     -- Run id whose steps durations are used as reference for the estimated costs
     run_start_ts               TIMESTAMPTZ NOT NULL     -- Start date and time of the run
                                  DEFAULT current_timestamp,
     run_end_ts                 TIMESTAMPTZ,             -- End date and time of the run

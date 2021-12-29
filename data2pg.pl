@@ -38,6 +38,7 @@ my $stepOptions;                       # A JSON formatted list of options that w
 my $maxSessions;                       # Maximum number of sessions to open on the target database
 my $ascSessions;                       # Number of sessions for which the steps will be assigned in estimated cost ascending order
 my $comment;                           # Comment associated to the run and registered in the run table
+my $refRun;                            # Run id used as reference for the steps duration (instead of estimated costs based on tables size)
 my $runId;                             # Run identifier
 my $help;
 my $verbose;
@@ -49,6 +50,7 @@ our $cfStepOptions;                    # A JSON formatted list of options that w
 our $cfMaxSessions;                    # Maximum number of sessions to open on the target database
 our $cfAscSessions;                    # Number of sessions for which the steps will be assigned in estimated cost ascending order
 our $cfComment;                        # Comment associated to the run and registered in the run table
+our $cfRefRun;                         # Run id used as reference for the steps duration
 
 # Global variables to manage the sessions and the statements to the databases.
 my $pgDsn;                             # DSN to reach the target database
@@ -111,6 +113,7 @@ sub usage
     print "  --sessions     : number of parallel sessions (default = 1) (*)\n";
     print "  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)\n";
     print "  --comment      : comment describing the run (between single or double quotes to include spaces) (*)\n";
+    print "  --ref_run      : id of a run used as a reference for the steps duration, instead of tables size (default = no reference run) (*)\n";
     print "  --run          : run_id supplied by external tools (should not be used for manual run start)\n";
     print "(*) the option may also be set in the configuration file. The command line parameters overide the configuration file content, if any\n";
 }
@@ -182,6 +185,7 @@ sub parseCommandLine
         "sessions=s"     => \$maxSessions,
         "asc_sessions=s" => \$ascSessions,
         "comment=s"      => \$comment,
+        "ref_run=s"      => \$refRun,
         "run=s"          => \$runId,
         "verbose"        => \$verbose,
         );
@@ -207,6 +211,7 @@ my %parameters = (                     # Link between the config file parameters
     'MAX_SESSIONS'       => 'cfMaxSessions',
     'ASC_SESSIONS'       => 'cfAscSessions',
     'COMMENT'            => 'cfComment',
+    'REFERENCE_RUN'      => 'cfRefRun',
     );
 
     # Open the configuration file and process each line.
@@ -271,10 +276,14 @@ sub checkParameters
 
     # Check numeric values.
     if ($actionRun || $actionRestart) {
-        # Check that the MAX_SESSIONS and MASC_SC_SESSIONS parameters are an integer.
+        # Check that the MAX_SESSIONS, MASC_SC_SESSIONS and RUN parameters are an integer.
         if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
         if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
         if (defined($runId) && $runId !~ /^\d+$/) { abort("The --run option must be an integer."); }
+    }
+    if ($actionRun) {
+        # Check that the REFERENCE_RUN parameter is an integer.
+        if (defined($refRun) && $refRun !~ /^\d+$/) { abort("The 'REFERENCE_RUN' parameter or the --ref_run option must be an integer."); }
     }
 
     # The step_options content checks will be performed later, during the run/restart initilization.
@@ -329,6 +338,8 @@ sub logonData2pg {
 # Set the application_name and the search_path.
     $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");
 
+    if ($verbose) {printVerbose("Log on the data2pg administration database successful");}
+
 # Get the connection parameters for the target database.
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $sql = qq(
@@ -349,7 +360,22 @@ sub logonData2pg {
     $pgDsn .= ";host=" . $row->{'tdb_host'} if defined $row->{'tdb_host'};
     $pgDsn .= ";port=" . $row->{'tdb_port'} if defined $row->{'tdb_port'};
 
-    if ($verbose) {printVerbose("Connection on the data2pg administration database opened and target database found");}
+# If a reference run is provided, check its id. The run must exist and be in a completed state.
+    if (defined($refRun)) {
+        $sql = qq(
+            SELECT run_status
+                FROM run
+                WHERE run_id = $refRun
+        );
+        $row = $d2pDbh->selectrow_hashref($sql)
+            or abort("The reference run id $refRun has not been found.");
+# Check that the migration lock is not set on the database
+        if ($row->{'run_status'} ne 'Completed') {
+            abort("The run $refRun status is '$row->{'run_status'}'. It should be 'Completed' to be used as reference.");
+        }
+    }
+
+    if ($verbose) {printVerbose("Checks based on the data2pg administration database content are OK");}
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -436,6 +462,7 @@ sub initRun {
     my $quotedTargetDb;  # TargetDb properly quoted for the SQL
     my $quotedBatchName; # Batch name properly quoted for the SQL
     my $quotedStepOpt;   # Step options perperly quoted for the SQL
+    my $nullableRefRun;  # Reference run id to feed the SQL statement ; set to NULL if not defined
     my $migrationName;   # Migration name returned by the get_batch_ids() function call
     my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
     my $stepOptionsError;# Error message, if any, reported by the check_step_options() function (empty string if no error)
@@ -489,12 +516,13 @@ sub initRun {
     $quotedComment = $d2pDbh->quote($comment, { pg_type => PG_VARCHAR });
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $quotedBatchName = $d2pDbh->quote($batchName, { pg_type => PG_VARCHAR });
+    $nullableRefRun = defined($refRun) ? $refRun : 'NULL';
 
     $sql = qq(
         INSERT INTO run
-              (run_id, run_database, run_batch_name, run_init_max_ses, run_init_asc_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment)
+              (run_id, run_database, run_batch_name, run_init_max_ses, run_init_asc_ses, run_perl_pid, run_max_sessions, run_asc_sessions, run_comment, run_ref_id)
         VALUES
-              ($runId, $quotedTargetDb, $quotedBatchName, $maxSessions, $ascSessions, $$, $maxSessions, $ascSessions, $quotedComment)
+              ($runId, $quotedTargetDb, $quotedBatchName, $maxSessions, $ascSessions, $$, $maxSessions, $ascSessions, $quotedComment, $nullableRefRun)
         RETURNING run_id
     );
     ($runId) = $d2pDbh->selectrow_array($sql);
@@ -728,6 +756,19 @@ sub buildWorkingPlan {
 # Check that there is at least 1 step to execute.
     if ($nbSteps == 0) {
         abort("There is no step to execute.");
+    }
+
+# If a reference run has been provided, replace the stp_cost by the steps durations (in ms) of this reference run.
+    if (defined($refRun)) {
+        $sql = qq(
+            UPDATE step s
+                SET stp_cost = extract (epoch from (r.stp_end_ts - r.stp_start_ts)) * 1000
+                FROM step r
+                WHERE s.stp_run_id = $runId
+                  AND r.stp_run_id = $refRun
+                  AND s.stp_name = r.stp_name;
+        );
+        $d2pDbh->do($sql);
     }
 
 # Compute the total cumulative cost for each step, taking into account the cost of all children steps for each parent step.

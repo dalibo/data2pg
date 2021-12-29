@@ -245,7 +245,7 @@ function sql_getRun($runId) {
 	global $conn;
 
 	$sql = "SELECT run_id, run_database, run_batch_name, run_batch_type, run_step_options,
-				   run_init_max_ses, run_init_asc_ses, run_comment,
+				   run_init_max_ses, run_init_asc_ses, run_comment, run_ref_id,
 				   to_char(run_start_ts, 'YYYY-MM-DD HH24:MI:SS') as run_start_ts,
 				   to_char(run_end_ts, 'YYYY-MM-DD HH24:MI:SS') as run_end_ts,
 				   CASE WHEN coalesce(run_end_ts, current_timestamp) - run_start_ts < '1 DAY'

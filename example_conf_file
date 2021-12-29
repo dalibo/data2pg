@@ -17,6 +17,13 @@ BATCH_NAME         = MY_BATCH               # case sensitive, must match the dat
 # Comment for the run
 #COMMENT            = My comment             # No default
 
+# Run id whose step durations are used as step estimated costs instead of table size.
+#REFERENCE_RUN      = 5                      # Default = no reference run
+
 # Step options, in JSON format. They are forwarded to each elementary step of the batch to adjust their behaviour.
 #STEP_OPTIONS = {"COPY_MAX_ROWS":1000}       # Default is no step option
-#                                            # Available options are: COPY_MAX_ROWS to limit the number of copied rows per table or table part.
+                                            # Available options are:
+                                            #   COPY_MAX_ROWS to limit the number of copied rows per table or table part.
+                                            #   COMPARE_TRUNCATE_DIFF to truncate the content_diff table that collects the reported differences.
+                                            #   COMPARE_MAX_DIFF to limit the number of differences per table reported by a batch of type COMPARE.
+                                            #   COMPARE_MAX_ROWS to limit the number of compared rows for a table for a batch of type COMPARE.
