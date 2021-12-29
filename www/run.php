@@ -126,11 +126,11 @@ function runDetails($runId, $msg = '') {
 // Display additional buttons on the right div title, depending on the run status.
 		$rightTitle = '';
 		if ($conf['read_only'] == 0) {
+			$rightTitle .= "\t\t<a href=\"run.php?a=alterRun&runId=$runId\" class=\"button mainButton\">Alter</a>\n";
 			if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
 				if ($conf['exec_command'] <> 0) {
 					$rightTitle .= "\t\t<a href=\"run.php?a=checkRun&runId=$runId\" class=\"button mainButton\">Check</a>\n";
 				}
-				$rightTitle .= "\t\t<a href=\"run.php?a=alterRun&runId=$runId\" class=\"button mainButton\">Alter</a>\n";
 				if ($conf['exec_command'] <> 0) {
 					$rightTitle .= "\t\t<a href=\"run.php?a=abortRun&runId=$runId\" class=\"button mainButton\">Abort</a>\n";
 				}
@@ -357,15 +357,20 @@ function alterRun($runId) {
 		echo "\t\t<input type=\"hidden\" name=\"a\" value=\"doAlterRun\">\n";
 	
 		echo "\t\t<input type=\"hidden\" name=\"runId\" value=\"$runId\">\n";
-	
-		echo "\t\t<div class=\"form-label\">Max sessions (0 to suspend the run)</div>";
-		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"maxSession\" size=3 min=0 max=999 value=${run['run_max_sessions']}></div>\n";
-	
-		echo "\t\t<div class=\"form-label\">Sessions in cost ascending order</div>";
-		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"ascSession\" size=3 min=0 max=999 value=${run['run_asc_sessions']}></div>\n";
-	
+
+		if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
+			echo "\t\t<div class=\"form-label\">Max sessions (0 to suspend the run)</div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"maxSession\" size=3 min=0 max=999 value=${run['run_max_sessions']}></div>\n";
+		
+			echo "\t\t<div class=\"form-label\">Sessions in cost ascending order</div>";
+			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"ascSession\" size=3 min=0 max=999 value=${run['run_asc_sessions']}></div>\n";
+		} else {
+			echo "\t\t<input type=\"hidden\" name=\"maxSession\" value=${run['run_max_sessions']}>\n";
+			echo "\t\t<input type=\"hidden\" name=\"ascSession\" value=${run['run_asc_sessions']}>\n";
+		}
+
 		echo "\t\t<div class=\"form-label\">Comment</div>";
-		echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60 value=\"${run['run_comment']}\"></div>\n";
+		echo "\t\t<div class=\"form-input\"><input name=\"comment\" size=60 value=\"" . htmlspecialchars($run['run_comment']) . "\"></div>\n";
 
 		echo "\t</div>\n";
 		echo "\t<p>\n";
