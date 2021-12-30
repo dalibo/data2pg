@@ -169,6 +169,12 @@ SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl4', 'mytbl4_col4
 SELECT assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl4_col44_fkey');
 
 --
+-- Add manual steps dependancies
+--
+
+SELECT add_step_parent('BATCH1', 'myschema1.mytbl1', 'myschema1.mytbl2');
+
+--
 -- Complete the migration configuration
 --
 

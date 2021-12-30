@@ -92,7 +92,8 @@ CREATE TABLE step (
     stp_shell_script           TEXT,                    -- A shell script to execute (for specific purpose only)
     stp_cost                   BIGINT,                  -- A relative cost indication used to plan the run
                                                         --   (generally built with the row count and the table size)
-    stp_parents                TEXT[],                  -- A set of parent steps that need to be completed to allow the step to start
+    stp_added_parents          TEXT[],                  -- Some additional parent steps created by add_step_parent() before building the final stp_parents array
+    stp_parents                TEXT[],                  -- The set of parent steps that need to be completed to allow the step to start
     PRIMARY KEY (stp_batch_name, stp_name),
     FOREIGN KEY (stp_batch_name) REFERENCES batch (bat_name)
 );
@@ -270,8 +271,8 @@ BEGIN
     END IF;
 -- Check that the migration does not exist yet.
     PERFORM 0
-       FROM @extschema@.migration
-       WHERE mgr_name = p_migration;
+        FROM @extschema@.migration
+        WHERE mgr_name = p_migration;
     IF FOUND THEN
         RAISE EXCEPTION 'create_migration: The migration "%" already exists. Call the drop_migration() function to drop it, if needed.', p_migration;
     END IF;
@@ -559,22 +560,22 @@ BEGIN
     END IF;
 -- Check that the batch does not exist yet.
     PERFORM 0
-       FROM @extschema@.batch
-       WHERE bat_name = p_batchName;
+        FROM @extschema@.batch
+        WHERE bat_name = p_batchName;
     IF FOUND THEN
         RAISE EXCEPTION 'create_batch: The batch "%" already exists.', p_batchName;
     END IF;
 -- Check that the migration exists and set it as 'configuration in progress'.
     SELECT mgr_source_dbms INTO v_dbms
         FROM @extschema@.migration
-       WHERE mgr_name = p_migration;
+        WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'create_batch: The migration "%" does not exist.', p_migration;
     END IF;
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = p_migration
+          AND mgr_config_completed;
 -- Check the batch type.
     IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
         RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
@@ -691,9 +692,9 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = p_migration
+          AND mgr_config_completed;
 -- Check that the schema exists.
     PERFORM 0 FROM pg_catalog.pg_namespace
         WHERE nspname = p_schema;
@@ -945,14 +946,14 @@ BEGIN
     END IF;
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Record the change into the table_column table.
     UPDATE @extschema@.table_column
-       SET tco_copy_source_expr = p_expression,
-           tco_compare_source_expr = p_expression
-       WHERE tco_schema = p_schema AND tco_table = p_table AND tco_name = p_column;
+        SET tco_copy_source_expr = p_expression,
+            tco_compare_source_expr = p_expression
+        WHERE tco_schema = p_schema AND tco_table = p_table AND tco_name = p_column;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy.', p_column;
     END IF;
@@ -995,9 +996,9 @@ BEGIN
     END IF;
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Record the change into the table_column table.
     UPDATE @extschema@.table_column
        SET tco_compare_source_expr = p_sourceExpression,
@@ -1050,9 +1051,9 @@ BEGIN
     END IF;
 -- Set the related migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Check that the table part doesn't exist yet.
     PERFORM 0
         FROM @extschema@.table_part
@@ -1112,9 +1113,9 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = p_migration
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = p_migration
+          AND mgr_config_completed;
 -- Check that the schema exists.
     PERFORM 0 FROM pg_catalog.pg_namespace
         WHERE nspname = p_schema;
@@ -1204,9 +1205,9 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Get the selected tables.
     v_nbTables = 0;
     FOR r_tbl IN
@@ -1298,9 +1299,9 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Check that the table part has been registered and get the table statistics.
     SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
         FROM @extschema@.table_part
@@ -1384,9 +1385,9 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Get the selected sequences.
     v_nbSequences = 0;
     FOR r_seq IN
@@ -1461,16 +1462,15 @@ BEGIN
     END IF;
 -- Set the migration as 'configuration in progress'.
     UPDATE @extschema@.migration
-       SET mgr_config_completed = FALSE
-       WHERE mgr_name = v_migrationName
-         AND mgr_config_completed;
-
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
 -- Check that the table exists (It may not been registered into the migration).
     PERFORM 0
-       FROM pg_catalog.pg_class
-            JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-       WHERE nspname = p_schema
-         AND relname = p_table;
+        FROM pg_catalog.pg_class
+             JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
+        WHERE nspname = p_schema
+          AND relname = p_table;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: table %.% not found.', p_schema, p_table;
     END IF;
@@ -1534,6 +1534,62 @@ BEGIN
     RETURN v_nbFKey;
 END;
 $assign_fkey_checks_to_batch$;
+
+-- The add_step_parent() function creates an additional dependancy between 2 steps.
+-- It is the user's responsability to set appropriate dependancy and avoid create loops between steps.
+CREATE FUNCTION add_step_parent(
+    p_batchName              TEXT,
+    p_step                   TEXT,
+    p_parent_step            TEXT
+    )
+    RETURNS INT LANGUAGE plpgsql AS          -- returns the number of effectively assigned parent, ie. 1
+$add_step_parent$
+DECLARE
+    v_migrationName          TEXT;
+BEGIN
+-- Check that the first 3 parameters are not NULL.
+    IF p_batchName IS NULL OR p_step IS NULL OR p_parent_step IS NULL THEN
+        RAISE EXCEPTION 'add_step_parent: The input parameters cannot be NULL.';
+    END IF;
+-- Check that the batch exists abd get its migration id.
+    SELECT bat_migration INTO v_migrationName
+        FROM @extschema@.batch
+        WHERE bat_name = p_batchName;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'add_step_parent: batch "%" not found.', p_batchName;
+    END IF;
+-- Check that both steps exist and are different.
+    IF p_step = p_parent_step THEN
+        RAISE EXCEPTION 'add_step_parent: both step and parent step must be different';
+    END IF;
+    PERFORM 0
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'add_step_parent: step % in batch % not found.', p_step, p_batchName;
+    END IF;
+    PERFORM 0
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_parent_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'add_step_parent: step % in batch % not found.', p_parent_step, p_batchName;
+    END IF;
+-- Set the migration as 'configuration in progress'.
+    UPDATE @extschema@.migration
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = v_migrationName
+          AND mgr_config_completed;
+-- Register the new parent.
+    UPDATE @extschema@.step
+        SET stp_added_parents = array_append(stp_added_parents, p_parent_step)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+--
+    RETURN 1;
+END;
+$add_step_parent$;
 
 -- The complete_migration_configuration() function is the final function in migration's configuration.
 -- It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
@@ -1709,6 +1765,12 @@ BEGIN
           AND bat_type = 'COMPARE'
           AND stp_type IN ('TABLE', 'TABLE_PART', 'SEQUENCE')
           AND stp_parents IS NULL;
+-- Move the parents registered by add_step_parent() function calls.
+    UPDATE @extschema@.step
+        SET stp_parents = array_cat(stp_parents, stp_added_parents)
+        FROM @extschema@.batch
+        WHERE stp_batch_name = bat_name
+          AND stp_added_parents IS NOT NULL;
 -- Remove duplicate steps in the all parents array of the migration.
     WITH parent_rebuild AS (
         SELECT step_batch, step_name, array_agg(step_parent ORDER BY step_parent) AS unique_parents
@@ -1730,7 +1792,6 @@ BEGIN
         SET stp_cost = (
              SELECT 10 * count(*)
                  FROM @extschema@.table_to_process
-
                  WHERE tbl_migration = p_migration
                        )
         WHERE stp_name = 'TRUNCATE_' || p_migration;
