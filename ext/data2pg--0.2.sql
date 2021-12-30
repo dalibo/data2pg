@@ -50,7 +50,7 @@ CREATE TYPE step_report_type AS (
 
 -- The migration table contains a row per migration, i.e. a connection to a remote source database.
 CREATE TABLE migration (
-    mgr_name                   VARCHAR(16) NOT NULL,    -- The migration name
+    mgr_name                   TEXT NOT NULL,           -- The migration name
     mgr_source_dbms            TEXT NOT NULL            -- The RDBMS as source database
                                CHECK (mgr_source_dbms IN ('Oracle', 'SQLServer', 'Sybase_ASA', 'PostgreSQL')),
     mgr_extension              TEXT NOT NULL,           -- Extension name
@@ -102,7 +102,7 @@ CREATE TABLE step (
 CREATE TABLE table_to_process (
     tbl_schema                 TEXT NOT NULL,           -- The schema of the target table
     tbl_name                   TEXT NOT NULL,           -- The name of the target table
-    tbl_migration              VARCHAR(16) NOT NULL,    -- The migration the table is linked to
+    tbl_migration              TEXT NOT NULL,           -- The migration the table is linked to
     tbl_foreign_schema         TEXT NOT NULL,           -- The schema of the schema containing the foreign table representing the source table
     tbl_foreign_name           TEXT NOT NULL,           -- The name of the foreign table representing the source table
     tbl_rows                   BIGINT,                  -- The approximative number of rows of the source table
@@ -156,7 +156,7 @@ CREATE TABLE table_part (
 CREATE TABLE sequence_to_process (
     seq_name                   TEXT NOT NULL,           -- The name of the target sequence
     seq_schema                 TEXT NOT NULL,           -- The schema of the target sequence
-    seq_migration              VARCHAR(16) NOT NULL,    -- The migration the sequence is linked to
+    seq_migration              TEXT NOT NULL,           -- The migration the sequence is linked to
     seq_foreign_schema         TEXT NOT NULL,           -- The schema of the schema containing the foreign table representing the source sequence
     seq_foreign_name           TEXT NOT NULL,           -- The name of the foreign table representing the source sequence
     seq_source_schema          TEXT NOT NULL,           -- The schema or user owning the sequence in the source database
@@ -435,7 +435,7 @@ $load_dbms_specific_objects$;
 -- by all subsequent functions that assigned tables, sequences to batches.
 -- It returns the number of dropped foreign tables.
 CREATE FUNCTION drop_migration(
-    p_migration               VARCHAR(16)
+    p_migration               TEXT
     )
     RETURNS INTEGER LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -544,7 +544,7 @@ $drop_migration$;
 -- It returns the number of created batch, i.e. 1.
 CREATE FUNCTION create_batch(
     p_batchName              TEXT,                    -- Batch name
-    p_migration              VARCHAR(16),             -- Migration name
+    p_migration              TEXT,                    -- Migration name
     p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK', 'COMPARE' or 'DISCOVER')
     p_startWithTruncate      BOOLEAN                  -- Boolean indicating whether a truncate step will need to be added to the batch working plan
     )
@@ -565,17 +565,8 @@ BEGIN
     IF FOUND THEN
         RAISE EXCEPTION 'create_batch: The batch "%" already exists.', p_batchName;
     END IF;
--- Check that the migration exists and set it as 'configuration in progress'.
-    SELECT mgr_source_dbms INTO v_dbms
-        FROM @extschema@.migration
-        WHERE mgr_name = p_migration;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'create_batch: The migration "%" does not exist.', p_migration;
-    END IF;
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = p_migration
-          AND mgr_config_completed;
+-- Check the supplied migration and get its DBMS.
+    SELECT p_sourceDbms INTO v_dbms FROM @extschema@.check_migration(p_migration);
 -- Check the batch type.
     IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
         RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
@@ -683,24 +674,10 @@ BEGIN
     IF p_migration IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
         RAISE EXCEPTION 'register_tables: None of the first 3 input parameters can be NULL.';
     END IF;
--- Check that the migration exists and get its server name and source DBMS.
-    SELECT mgr_server_name, mgr_source_dbms INTO v_serverName, v_sourceDbms
-        FROM @extschema@.migration
-        WHERE mgr_name = p_migration;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'register_tables: Migration "%" not found.', p_migration;
-    END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = p_migration
-          AND mgr_config_completed;
+-- Check the supplied migration and get its server name and source DBMS.
+    SELECT p_serverName, p_sourceDbms INTO v_serverName, v_sourceDbms FROM @extschema@.check_migration(p_migration);
 -- Check that the schema exists.
-    PERFORM 0 FROM pg_catalog.pg_namespace
-        WHERE nspname = p_schema;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'register_tables: Schema "%" not found.', p_schema;
-    END IF;
+    PERFORM @extschema@.check_schema(p_schema);
 -- Create the foreign schema if it does not exist.
     v_foreignSchema = 'srcdb_' || p_schema;
     EXECUTE format(
@@ -1104,24 +1081,10 @@ BEGIN
     IF p_migration IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
         RAISE EXCEPTION 'register_sequences: The first 3 input parameters cannot be NULL.';
     END IF;
--- Check that the migration exists and get its server name and source DBMS.
-    SELECT mgr_server_name, mgr_source_dbms INTO v_serverName, v_sourceDbms
-        FROM @extschema@.migration
-        WHERE mgr_name = p_migration;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'register_sequences: Migration "%" not found.', p_migration;
-    END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = p_migration
-          AND mgr_config_completed;
+-- Check the supplied migration and get its server name and source DBMS.
+    SELECT p_serverName, p_sourceDbms INTO v_serverName, v_sourceDbms FROM @extschema@.check_migration(p_migration);
 -- Check that the schema exists.
-    PERFORM 0 FROM pg_catalog.pg_namespace
-        WHERE nspname = p_schema;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'register_sequences: Schema % not found.', p_schema;
-    END IF;
+    PERFORM @extschema@.check_schema(p_schema);
 -- Create the foreign schema if it does not exist.
     v_foreignSchema = 'srcdb_' || p_schema;
     EXECUTE format(
@@ -1196,18 +1159,8 @@ BEGIN
     IF p_batchName IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
         RAISE EXCEPTION 'assign_tables_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
--- Check that the batch exists and get its migration name.
-    SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM @extschema@.batch
-        WHERE bat_name = p_batchName;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'assign_tables_to_batch: batch "%" not found.', p_batchName;
-    END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = v_migrationName
-          AND mgr_config_completed;
+-- Check that the batch exists, get its migration name and set the migration as in-progress.
+    SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
 -- Get the selected tables.
     v_nbTables = 0;
     FOR r_tbl IN
@@ -1276,7 +1229,6 @@ CREATE FUNCTION assign_table_part_to_batch(
     RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned table part, ie. 1
 $assign_table_part_to_batch$
 DECLARE
-    v_migrationName          TEXT;
     v_batchType              TEXT;
     v_rows                   BIGINT;
     v_kbytes                 FLOAT;
@@ -1286,22 +1238,12 @@ BEGIN
     IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_partNum IS NULL THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: No input parameter can be NULL.';
     END IF;
--- Check that the batch exists and get its migration name.
-    SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM @extschema@.batch
-        WHERE bat_name = p_batchName;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'assign_table_part_to_batch: batch "%" not found.', p_batchName;
-    END IF;
+-- Check that the batch exists, get its type and set its migration as in-progress.
+    SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
 -- Check that the batch type allows table parts assignments.
     IF v_batchType = 'DISCOVER' THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: a table part cannot be assigned to a batch of type %.', v_batchType;
     END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = v_migrationName
-          AND mgr_config_completed;
 -- Check that the table part has been registered and get the table statistics.
     SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
         FROM @extschema@.table_part
@@ -1372,22 +1314,12 @@ BEGIN
     IF p_batchName IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
--- Check that the batch exists and get its migration name.
-    SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM @extschema@.batch
-        WHERE bat_name = p_batchName;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'assign_sequences_to_batch: batch "%" not found.', p_batchName;
-    END IF;
--- Check taht the batch is not of type 'CHECK' OR 'DISCOVER'.
+-- Check that the batch exists, get its migration name and set the migration as in-progress.
+    SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
+-- Check that the batch is not of type 'CHECK' OR 'DISCOVER'.
     IF v_batchType = 'CHECK' OR v_batchType = 'DISCOVER' THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: sequences cannot be assigned to a batch of type %.', v_batchType;
     END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = v_migrationName
-          AND mgr_config_completed;
 -- Get the selected sequences.
     v_nbSequences = 0;
     FOR r_seq IN
@@ -1437,7 +1369,6 @@ CREATE FUNCTION assign_fkey_checks_to_batch(
     RETURNS INT LANGUAGE plpgsql AS              -- returns the number of effectively assigned fkey check steps
 $assign_fkey_checks_to_batch$
 DECLARE
-    v_migrationName          TEXT;
     v_batchType              TEXT;
     v_tableKbytes            FLOAT;
     v_refTableKbytes         FLOAT;
@@ -1450,21 +1381,12 @@ BEGIN
     IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: The first 3 input parameters cannot be NULL.';
     END IF;
--- Check that the batch exists and is of type COPY and get its migration name.
-    SELECT bat_migration, bat_type INTO v_migrationName, v_batchType
-        FROM @extschema@.batch
-        WHERE bat_name = p_batchName;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" not found.', p_batchName;
-    END IF;
+-- Check that the batch exists and set its migration as in-progress.
+    SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
+-- Check that the batch is of type COPY.
     IF v_batchType <> 'COPY' THEN
         RAISE EXCEPTION 'assign_fkey_checks_to_batch: batch "%" is of type %. FK ckecks can only be assigned to batches of type COPY.', p_batchName, v_batchType;
     END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = v_migrationName
-          AND mgr_config_completed;
 -- Check that the table exists (It may not been registered into the migration).
     PERFORM 0
         FROM pg_catalog.pg_class
@@ -1544,20 +1466,13 @@ CREATE FUNCTION add_step_parent(
     )
     RETURNS INT LANGUAGE plpgsql AS          -- returns the number of effectively assigned parent, ie. 1
 $add_step_parent$
-DECLARE
-    v_migrationName          TEXT;
 BEGIN
 -- Check that the first 3 parameters are not NULL.
     IF p_batchName IS NULL OR p_step IS NULL OR p_parent_step IS NULL THEN
         RAISE EXCEPTION 'add_step_parent: The input parameters cannot be NULL.';
     END IF;
--- Check that the batch exists abd get its migration id.
-    SELECT bat_migration INTO v_migrationName
-        FROM @extschema@.batch
-        WHERE bat_name = p_batchName;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'add_step_parent: batch "%" not found.', p_batchName;
-    END IF;
+-- Check that the batch exists and set the migration as in-progress.
+    PERFORM @extschema@.check_batch(p_batchName);
 -- Check that both steps exist and are different.
     IF p_step = p_parent_step THEN
         RAISE EXCEPTION 'add_step_parent: both step and parent step must be different';
@@ -1576,11 +1491,6 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'add_step_parent: step % in batch % not found.', p_parent_step, p_batchName;
     END IF;
--- Set the migration as 'configuration in progress'.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = FALSE
-        WHERE mgr_name = v_migrationName
-          AND mgr_config_completed;
 -- Register the new parent.
     UPDATE @extschema@.step
         SET stp_added_parents = array_append(stp_added_parents, p_parent_step)
@@ -1594,7 +1504,7 @@ $add_step_parent$;
 -- The complete_migration_configuration() function is the final function in migration's configuration.
 -- It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
 CREATE FUNCTION complete_migration_configuration(
-    p_migration              VARCHAR(16)
+    p_migration              TEXT
     )
     RETURNS VOID LANGUAGE plpgsql AS
 $complete_migration_configuration$
@@ -1800,8 +1710,80 @@ BEGIN
 END;
 $complete_migration_configuration$;
 
+-- The check_migration() function checks that a given migration name exists, set it as in-progress and returns its server name and RDBMS.
+CREATE FUNCTION check_migration(
+    p_migration               TEXT,
+    OUT p_serverName          TEXT,
+    OUT p_sourceDbms          TEXT
+    )
+    LANGUAGE plpgsql AS
+$check_migration$
+BEGIN
+-- Check that the migration exists and get its server name and source DBMS.
+    SELECT mgr_server_name, mgr_source_dbms INTO p_serverName, p_sourceDbms
+        FROM @extschema@.migration
+        WHERE mgr_name = p_migration;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'check_migration: The migration "%" is unknown.', p_migration;
+    END IF;
+-- Set the migration as 'configuration in progress'.
+    UPDATE @extschema@.migration
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = p_migration
+          AND mgr_config_completed;
+--
+    RETURN;
+END;
+$check_migration$;
+
+-- The check_schema() function checks that a given schema exists.
+CREATE FUNCTION check_schema(
+    p_schema                  TEXT
+    )
+    RETURNS void LANGUAGE plpgsql AS
+$check_schema$
+BEGIN
+-- Check that the supplied schema exists.
+    PERFORM 0 FROM pg_catalog.pg_namespace
+        WHERE nspname = p_schema;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'check_schema: The schema % is unknown.', p_schema;
+    END IF;
+--
+    RETURN;
+END;
+$check_schema$;
+
+-- The check_batch() function checks that a given migration name exists, set it as in-progress and returns its server name and RDBMS.
+CREATE FUNCTION check_batch(
+    p_batchName               TEXT,
+    OUT p_migrationName       TEXT,
+    OUT p_batchType           TEXT
+    )
+    LANGUAGE plpgsql AS
+$check_batch$
+BEGIN
+-- Check that the batch exists and get its migration name.
+    SELECT bat_migration, bat_type INTO p_migrationName, p_batchType
+        FROM @extschema@.batch
+        WHERE bat_name = p_batchName;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'check_batch: the batch "%" is unknown.', p_batchName;
+    END IF;
+-- Set the migration as 'configuration in progress'.
+    UPDATE @extschema@.migration
+        SET mgr_config_completed = FALSE
+        WHERE mgr_name = p_migrationName
+          AND mgr_config_completed;
+--
+    RETURN;
+END;
+$check_batch$;
+
+--
 --
 -- Functions called by the Data2Pg scheduler.
+--
 --
 
 -- The copy_table() function is the generic copy function that is used to process tables.
