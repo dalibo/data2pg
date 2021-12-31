@@ -1,6 +1,6 @@
 # Data2Pg core extension
 comment = 'Data2Pg core'
-default_version = '0.2'
+default_version = '0.3'
 module_pathname = '$libdir/data2pg'
 superuser = yes
 relocatable = no

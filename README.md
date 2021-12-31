@@ -3,7 +3,7 @@ Data2Pg
 
 Data2Pg is a tools framework that helps migrating non-PostgreSQL database contents into PostgreSQL.
 
-Version: 0.2
+Version: 0.3
 
 License
 -------
@@ -44,13 +44,13 @@ make PG_CONFIG=<path/to/pg_config> install
 On the administration database which stores migrations projects, install the `data2pg_admin` extension.
 
 ```sql
-CREATE EXTENSION data2pg_admin;
+CREATE EXTENSION data2pg_admin SCHEMA data2pg;
 ```
 
 On target databases, deploy the `data2pg` extension.
 
 ```sql
-CREATE EXTENSION data2pg;
+CREATE EXTENSION data2pg SCHEMA data2pg;
 ```
 
 The scheduler and the monitor clients are written in perl and use the DBI and DBD::Postgres modules. These components may need to be installed on your machine.
