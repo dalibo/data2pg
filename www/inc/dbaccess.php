@@ -16,7 +16,7 @@ function sql_connect() {
 		or die ("Problem while connecting to the data2pg administration database. You may have to adjust the 'data2pgDsn' configuration value.");
 
 	// Verify that the data2pg_admin extension exists and get its installation schema.
-	$sql = "SELECT nspname
+	$sql = "SELECT quote_ident(nspname)
 				FROM pg_catalog.pg_extension
 					JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
 				WHERE extname = '${const['d2pExtName']}'";

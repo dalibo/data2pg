@@ -148,7 +148,7 @@ sub abort
         # Update the in-progress run,
         $quotedMsg = $d2pDbh->quote($msg, { pg_type => PG_VARCHAR });
         $sql = qq(
-          UPDATE data2pg.run
+          UPDATE run
               SET run_status = 'Aborted', run_end_ts = clock_timestamp(), run_error_msg = $quotedMsg
               WHERE run_id = $runId
         );
@@ -327,7 +327,7 @@ sub logonData2pg {
 
 # Check that the data2pg_admin extension exists and get its installation schema.
     $sql = qq(
-        SELECT nspname
+        SELECT quote_ident(nspname)
             FROM pg_catalog.pg_extension
                 join pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
             WHERE extname = 'data2pg_admin'
@@ -504,7 +504,7 @@ sub initRun {
 # If the run_id is supplied, check that the id does not already exist.
     if (defined($runId)) {
         $sql = qq(
-            SELECT 1 FROM data2pg.run WHERE run_id = $runId
+            SELECT 1 FROM run WHERE run_id = $runId
         );
         ($runFound) = $d2pDbh->selectrow_array($sql)
             and abort("The new run to start ($runId) already exists.");
@@ -566,8 +566,8 @@ sub initRun {
     }
 
     $sql = qq(
-        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed, data2pg.check_step_options($quotedStepOpt)
-            FROM data2pg.get_batch_ids()
+        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed, check_step_options($quotedStepOpt)
+            FROM get_batch_ids()
             WHERE bi_batch_name = $quotedBatchName
     );
     ($batchType, $migrationName, $isMigCompleted, $stepOptionsError) = $sessions[1]->{dbh}->selectrow_array($sql);
@@ -651,7 +651,7 @@ sub openSession
 
 # Check that the data2pg extension exists and get its installation schema.
     $sql = qq(
-        SELECT nspname
+        SELECT quote_ident(nspname)
             FROM pg_catalog.pg_extension
                 JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
             WHERE extname = 'data2pg'
@@ -675,11 +675,11 @@ sub openSession
         }
     }
 
-    if (!$actionCheck) {
 # Set the application_name and the search_path to the just opened session.
-        $sql = qq(SET application_name = $APPNAME; SET search_path TO $pgSchema);
-        $sessions[$i]->{dbh}->do($sql);
+    $sql = qq(SET application_name = $APPNAME; SET search_path TO $pgSchema);
+    $sessions[$i]->{dbh}->do($sql);
 
+    if (!$actionCheck) {
 # Get the pid of the Postgres backend and register the session into the data2pg administration database.
         $backendPid = $sessions[$i]->{dbh}->{pg_pid};
         $sql = qq(
@@ -1376,7 +1376,7 @@ sub checkDb {
 # Get the configured batches.
     $sql = qq(
         SELECT bi_mgr_name, bi_batch_name, bi_batch_type, CASE bi_mgr_config_completed WHEN TRUE THEN 'Yes' ELSE 'No' END AS mgr_is_ready
-            FROM data2pg.get_batch_ids()
+            FROM get_batch_ids()
             ORDER BY bi_mgr_name, bi_batch_name
     );
     $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}});

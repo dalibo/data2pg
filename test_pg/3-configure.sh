@@ -6,9 +6,10 @@ echo "==================================================="
 echo "Prepare the data2pg test with Postgres databases"
 echo "==================================================="
 
+# Environment variables to setup
+PGHOST_DEFAULT_VALUE=localhost
 PGPORT_DEFAULT_VALUE=5432
 PGDATABASE_DEFAULT_VALUE=test_dest
-PGHOST_DEFAULT_VALUE=localhost
 
 if [ -z ${PGHOST+x} ];
 then
@@ -37,11 +38,14 @@ else
   echo "Environment variable PGPORT is already defined to ${PGDATABASE}."
 fi
 
-psql -U data2pg -a <<EOF
+psql -U data2pg -a<<EOF
 
 \set ON_ERROR_STOP ON
 
-SET search_path TO data2pg;
+-- set the search_path to the data2pg extension installation schema
+SELECT set_config('search_path', nspname, false)
+    FROM pg_extension JOIN pg_namespace ON (pg_namespace.oid = extnamespace)
+    WHERE extname = 'data2pg';
 
 BEGIN TRANSACTION;
 

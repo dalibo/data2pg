@@ -126,7 +126,7 @@ sub logonData2pg {
 
 # Check that the data2pg_admin extension exists and get its installation schema.
     $sql = qq(
-        SELECT nspname
+        SELECT quote_ident(nspname)
             FROM pg_catalog.pg_extension
                 JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
             WHERE extname = 'data2pg_admin'

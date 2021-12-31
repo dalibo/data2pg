@@ -10,7 +10,10 @@ echo "=================================================="
 PGHOST_DEFAULT_VALUE=localhost
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
+DATA2PG_ADMIN_SCHEMA_DEFAULT_VALUE=data2pg
 TARGET_DB_FILE_DEFAULT_VALUE=target_database.dat
+
+DATA2PG_ADMIN_SCHEMA='data2pg03'
 
 if [ -z ${PGHOST+x} ];
 then
@@ -37,6 +40,15 @@ then
   export PGUSER=${PGUSER_DEFAULT_VALUE}
 else
   echo "Environment variable PGUSER is already defined to ${PGUSER}."
+fi
+
+if [ -z ${DATA2PG_ADMIN_SCHEMA+x} ];
+then
+  echo "Environment variable DATA2PG_ADMIN_SCHEMA is not defined."
+  echo "  => Setting DATA2PG_ADMIN_SCHEMA to ${DATA2PG_ADMIN_SCHEMA_DEFAULT_VALUE}."
+  export DATA2PG_ADMIN_SCHEMA=${DATA2PG_ADMIN_SCHEMA_DEFAULT_VALUE}
+else
+  echo "Environment variable DATA2PG_ADMIN_SCHEMA is already defined to ${DATA2PG_ADMIN_SCHEMA}."
 fi
 
 if [ -z ${TARGET_DB_FILE+x} ];
@@ -85,14 +97,14 @@ fi
 echo "Create the data2pg administration extension"
 echo "-------------------------------------------"
 
-psql data2pg -U data2pg<<EOF 
+psql data2pg -U data2pg -v admin_schema=$DATA2PG_ADMIN_SCHEMA<<EOF
 \set ON_ERROR_STOP ON
 
 DROP EXTENSION IF EXISTS data2pg_admin;
-DROP SCHEMA IF EXISTS data2pg CASCADE;
+DROP SCHEMA IF EXISTS :admin_schema CASCADE;
 
-CREATE SCHEMA data2pg;
-CREATE EXTENSION data2pg_admin SCHEMA data2pg;
+CREATE SCHEMA :admin_schema;
+CREATE EXTENSION data2pg_admin SCHEMA :admin_schema;
 
 EOF
 
@@ -106,7 +118,7 @@ fi
 echo "Load the target databases list"
 echo "------------------------------"
 
-psql data2pg -U data2pg -c "\copy data2pg.target_database FROM $TARGET_DB_FILE CSV HEADER"
+psql data2pg -U data2pg -c "\copy ${DATA2PG_ADMIN_SCHEMA}.target_database FROM $TARGET_DB_FILE CSV HEADER"
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"

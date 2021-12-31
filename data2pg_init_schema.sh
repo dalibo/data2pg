@@ -6,11 +6,14 @@ echo "==========================================================================
 echo "Create the data2pg role on the instance and the schema on the target database"
 echo "======================================================================================"
 
-# The 4 following constants must be adjusted before execution.
+# Environment variables to setup
+PGHOST_DEFAULT_VALUE=localhost
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
 PGDATABASE_DEFAULT_VALUE=test_dest
-PGHOST_DEFAULT_VALUE=localhost
+DATA2PG_SCHEMA_DEFAULT_VALUE=data2pg
+
+DATA2PG_SCHEMA='data2pg03'
 
 if [ -z ${PGHOST+x} ];
 then
@@ -46,6 +49,15 @@ then
   export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
 else
   echo "Environment variable PGDATABASE is already defined to ${PGDATABASE}."
+fi
+
+if [ -z ${DATA2PG_SCHEMA+x} ];
+then
+  echo "Environment variable DATA2PG_SCHEMA is not defined."
+  echo "  => Setting DATA2PG_SCHEMA to ${DATA2PG_SCHEMA_DEFAULT_VALUE}."
+  export DATA2PG_SCHEMA=${DATA2PG_SCHEMA_DEFAULT_VALUE}
+else
+  echo "Environment variable DATA2PG_SCHEMA is already defined to ${DATA2PG_SCHEMA}."
 fi
 
 echo "Create the role, if needed"
@@ -91,14 +103,14 @@ fi
 echo "Create the data2pg extension in the $PGDATABASE database"
 echo "--------------------------------------------------------"
 
-psql<<EOF
+psql -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
 \set ON_ERROR_STOP ON
 
-DROP EXTENSION IF EXISTS data2pg;
-DROP SCHEMA IF EXISTS data2pg CASCADE;
+DROP EXTENSION IF EXISTS :data2pg_schema;
+DROP SCHEMA IF EXISTS :data2pg_schema CASCADE;
 
-CREATE SCHEMA data2pg;
-CREATE EXTENSION data2pg;
+CREATE SCHEMA :data2pg_schema;
+CREATE EXTENSION data2pg SCHEMA :data2pg_schema;
 
 EOF
 
