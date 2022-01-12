@@ -123,3 +123,4 @@ SELECT pg_catalog.pg_extension_config_dump('run', '');
 SELECT pg_catalog.pg_extension_config_dump('run_run_id_seq', '');
 SELECT pg_catalog.pg_extension_config_dump('session', '');
 SELECT pg_catalog.pg_extension_config_dump('step', '');
+SELECT pg_catalog.pg_extension_config_dump('step_result', '');
