@@ -697,6 +697,7 @@ BEGIN
               AND relkind = 'r'
               AND relname ~ p_tablesToInclude
               AND (p_tablesToExclude IS NULL OR relname !~ p_tablesToExclude)
+            ORDER BY relname
     LOOP
         v_nbTables = v_nbTables + 1;
 -- Check that the table is not already registered for another migration.
@@ -1100,6 +1101,7 @@ BEGIN
               AND relkind = 'S'
               AND relname ~ p_sequencesToInclude
               AND (p_sequencesToExclude IS NULL OR relname !~ p_sequencesToExclude)
+            ORDER BY relname
     LOOP
         v_nbSequences = v_nbSequences + 1;
 -- Check that the sequence is not already assigned to another migration.
