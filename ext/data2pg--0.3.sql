@@ -2588,7 +2588,12 @@ BEGIN
 -- Nullable columns.
         IF NOT r_col.attnotnull THEN
             v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
-            v_aggregatesArray = array_append(v_aggregatesArray, 'count(' || upper(r_col.attname) || ') AS nb_not_null_' || r_col.attnum::text);
+            IF r_col.typname NOT IN ('text', 'bytea') THEN
+                v_aggregatesArray = array_append(v_aggregatesArray, 'count(' || upper(r_col.attname) || ') AS nb_not_null_' || r_col.attnum::text);
+            ELSE
+-- There is a special Oracle syntax for CLOB and BLOB columns !!!
+                v_aggregatesArray = array_append(v_aggregatesArray, 'count(CASE WHEN ' || upper(r_col.attname) || ' IS NULL THEN NULL ELSE 1 END) AS nb_not_null_' || r_col.attnum::text);
+            END IF;
             v_nbNotNullValue = 'nb_not_null_' || r_col.attnum::text;
         ELSE
             v_nbNotNullValue = 'NULL::BIGINT';
@@ -2630,8 +2635,8 @@ BEGIN
                     || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
                     || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ', num_max_precision_' || r_col.attnum::text
                     || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typcategory = 'S' OR r_col.typname = 'bytea' THEN
--- String and bytea types.
+            WHEN r_col.typcategory = 'S' AND r_col.typname <> 'text' THEN
+-- String types other than CLOB.
                 -- the lowest string length
                 v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
                 v_aggregatesArray = array_append(v_aggregatesArray, 'min(length(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
@@ -2639,6 +2644,18 @@ BEGIN
                 v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
                 v_aggregatesArray = array_append(v_aggregatesArray, 'max(length(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
 
+                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                    || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+            WHEN r_col.typname IN ('text', 'bytea') THEN
+-- Text (representing CLOB) and bytea (representing BLOB) columns.
+                -- the lowest string length
+                v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'min(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                -- the greatest string length
+                v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
+                v_aggregatesArray = array_append(v_aggregatesArray, 'max(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
                 v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
                     || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
                     || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
@@ -2673,10 +2690,10 @@ BEGIN
                     || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
                     || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
             ELSE CONTINUE;
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ' FROM aggregates),');
+----                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+----                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
+----                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+----                    || ' FROM aggregates),');
         END CASE;
     END LOOP;
     v_colDefList = array_to_string(v_colDefArray, ', ');
