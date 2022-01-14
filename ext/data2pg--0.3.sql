@@ -217,8 +217,8 @@ CREATE TABLE discovery_column (
     dscv_num_max_fract_part  SMALLINT,                   -- The maximum number of digits for the fractional part of the column
     dscv_str_min_length      INTEGER,                    -- The minimum length for a string or bytea column
     dscv_str_max_length      INTEGER,                    -- The maximum length for a string or bytea column
-    dscv_ts_max              TEXT,                       -- The maximum value for a date/time column
     dscv_ts_min              TEXT,                       -- The minimum value for a date/time column
+    dscv_ts_max              TEXT,                       -- The maximum value for a date/time column
     dscv_ts_nb_date          BIGINT,                     -- The number of pure dates for a timestamp column (i.e. with time part set to 00:00:00)
     dscv_stats_ndistinct     REAL,                       -- The ndistinct value from the pg_stats view after an ANALYZE on the foreign table
     dscv_has_2_values        BOOLEAN,                    -- True if the column is a hidden boolean
@@ -2514,6 +2514,8 @@ DECLARE
     v_insertCteArray           TEXT[] = '{}';
     v_insertCteList            TEXT;
     v_commonDscvColToInsert    TEXT;
+    v_skippedColumnsArray      TEXT[] = '{}';
+    v_skippedColumnsList       TEXT;
     v_commonDscvValToInsert    TEXT;
     v_nbNotNullValue           TEXT;
     v_stmt                     TEXT;
@@ -2566,8 +2568,6 @@ BEGIN
 --    - the columns definition for the foreign table
 --    - the aggregates to feed these columns
 --    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table
---    v_aggregatesList = 'count(*) AS nb_row';
---    v_unionsList = '';
     v_colDefArray = array_append(v_colDefArray, 'nb_row BIGINT');
     v_aggregatesArray = array_append(v_aggregatesArray, 'count(*) AS nb_row');
     v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_max_size, dscv_nb_not_null,';
@@ -2582,123 +2582,126 @@ BEGIN
               AND attnum > 0
               AND NOT attisdropped
     LOOP
-        v_nbColumns = v_nbColumns + 1;
-        v_commonDscvValToInsert = quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || quote_literal(r_col.attname)
-            || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
--- Nullable columns.
-        IF NOT r_col.attnotnull THEN
-            v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
-            IF r_col.typname NOT IN ('text', 'bytea') THEN
-                v_aggregatesArray = array_append(v_aggregatesArray, 'count(' || upper(r_col.attname) || ') AS nb_not_null_' || r_col.attnum::text);
-            ELSE
--- There is a special Oracle syntax for CLOB and BLOB columns !!!
-                v_aggregatesArray = array_append(v_aggregatesArray, 'count(CASE WHEN ' || upper(r_col.attname) || ' IS NULL THEN NULL ELSE 1 END) AS nb_not_null_' || r_col.attnum::text);
-            END IF;
-            v_nbNotNullValue = 'nb_not_null_' || r_col.attnum::text;
+        IF cardinality(v_aggregatesArray) > 993 THEN
+-- If there are too many columns in the foreign table statement definition, don't analyze the remaining columns of the source table
+--   and just keep the information to report it.
+            v_skippedColumnsArray = array_append(v_skippedColumnsArray, r_col.attname::text);
         ELSE
-            v_nbNotNullValue = 'NULL::BIGINT';
-        END IF;
-        CASE
-            WHEN r_col.typcategory = 'N' AND r_col.typname NOT IN ('numeric', 'float4', 'float8') THEN
+            v_nbColumns = v_nbColumns + 1;
+            v_commonDscvValToInsert = quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || quote_literal(r_col.attname)
+                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
+-- Nullable columns.
+            IF NOT r_col.attnotnull THEN
+                v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
+                IF r_col.typname NOT IN ('text', 'bytea') THEN
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'count(' || upper(r_col.attname) || ') AS nb_not_null_' || r_col.attnum::text);
+                ELSE
+-- There is a special Oracle syntax for CLOB and BLOB columns !!!
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'count(CASE WHEN ' || upper(r_col.attname) || ' IS NULL THEN NULL ELSE 1 END) AS nb_not_null_' || r_col.attnum::text);
+                END IF;
+                v_nbNotNullValue = 'nb_not_null_' || r_col.attnum::text;
+            ELSE
+                v_nbNotNullValue = 'NULL::BIGINT';
+            END IF;
+            CASE
+                WHEN r_col.typcategory = 'N' AND r_col.typname NOT IN ('numeric', 'float4', 'float8') THEN
 -- Integer columns.
-                -- the lowest value
-                v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
-                -- the greatest value
-                v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
-
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
+                    -- the lowest value
+                    v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
+                    -- the greatest value
+                    v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
+    
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
 -- Numeric non integer columns.
-                -- the lowest value
-                v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
-                -- the greatest value
-                v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
-                -- the greatest needed precision
-                v_colDefArray = array_append(v_colDefArray, 'num_max_precision_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(translate(to_char(' || upper(r_col.attname) || '), ''_-.,'', ''_'')) ,0)) AS num_max_precision_' || r_col.attnum::text);
-                -- the greatest needed integer part
-                v_colDefArray = array_append(v_colDefArray, 'num_max_integ_part_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(trunc(' || upper(r_col.attname) || ')))) ,0)) AS num_max_scale_' || r_col.attnum::text);
-                -- the greatest needed fractional part
-                v_colDefArray = array_append(v_colDefArray, 'num_max_fract_part_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(' || upper(r_col.attname) || ' - trunc(' || upper(r_col.attname) || ')))) - 1 ,0)) AS num_max_fract_part_' || r_col.attnum::text);
+                    -- the lowest value
+                    v_colDefArray = array_append(v_colDefArray, 'num_min_' || r_col.attnum::text || ' NUMERIC');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(' || upper(r_col.attname) || ') AS num_min_' || r_col.attnum::text);
+                    -- the greatest value
+                    v_colDefArray = array_append(v_colDefArray, 'num_max_' || r_col.attnum::text || ' NUMERIC');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(' || upper(r_col.attname) || ') AS num_max_' || r_col.attnum::text);
+                    -- the greatest needed precision
+                    v_colDefArray = array_append(v_colDefArray, 'num_max_precision_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(translate(to_char(' || upper(r_col.attname) || '), ''_-.,'', ''_'')) ,0)) AS num_max_precision_' || r_col.attnum::text);
+                    -- the greatest needed integer part
+                    v_colDefArray = array_append(v_colDefArray, 'num_max_integ_part_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(trunc(' || upper(r_col.attname) || ')))) ,0)) AS num_max_scale_' || r_col.attnum::text);
+                    -- the greatest needed fractional part
+                    v_colDefArray = array_append(v_colDefArray, 'num_max_fract_part_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(coalesce(length(to_char(abs(' || upper(r_col.attname) || ' - trunc(' || upper(r_col.attname) || ')))) - 1 ,0)) AS num_max_fract_part_' || r_col.attnum::text);
 
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max, dscv_num_max_precision, dscv_num_max_integ_part, dscv_num_max_fract_part) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ', num_max_precision_' || r_col.attnum::text
-                    || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typcategory = 'S' AND r_col.typname <> 'text' THEN
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max, dscv_num_max_precision, dscv_num_max_integ_part, dscv_num_max_fract_part) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ', num_max_precision_' || r_col.attnum::text
+                        || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typcategory = 'S' AND r_col.typname <> 'text' THEN
 -- String types other than CLOB.
-                -- the lowest string length
-                v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'min(length(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
-                -- the greatest string length
-                v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(length(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+                    -- the lowest string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(length(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                    -- the greatest string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(length(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
 
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typname IN ('text', 'bytea') THEN
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typname IN ('text', 'bytea') THEN
 -- Text (representing CLOB) and bytea (representing BLOB) columns.
-                -- the lowest string length
-                v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'min(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
-                -- the greatest string length
-                v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'max(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typcategory = 'D' AND r_col.typname NOT IN ('timestamp', 'timestamptz') THEN
+                    -- the lowest string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                    -- the greatest string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typcategory = 'D' AND r_col.typname NOT IN ('timestamp', 'timestamptz') THEN
 -- Date or time columns.
-                -- the lowest value
-                v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
-                -- the greatest value
-                v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
-
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ' FROM aggregates),');
-            WHEN r_col.typcategory = 'D' AND r_col.typname IN ('timestamp', 'timestamptz') THEN
+                    -- the lowest value
+                    v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
+                    -- the greatest value
+                    v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
+	    
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typcategory = 'D' AND r_col.typname IN ('timestamp', 'timestamptz') THEN
 -- Timestamp columns.
-                -- the lowest value
-                v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
-                -- the greatest value
-                v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
-                -- the number of timestamp values with a '00:00:00' time component (i.e. real date)
-                v_colDefArray = array_append(v_colDefArray, 'ts_nb_date_' || r_col.attnum::text || ' BIGINT');
-                v_aggregatesArray = array_append(v_aggregatesArray, 'sum(case when to_char(' || upper(r_col.attname) || ', ''HH24:MI:SS'') = ''00:00:00'' then 1 else 0 end) AS ts_nb_date_' || r_col.attnum::text);
+                    -- the lowest value
+                    v_colDefArray = array_append(v_colDefArray, 'ts_min_' || r_col.attnum::text || ' TEXT');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(min(' || upper(r_col.attname) || ')) AS ts_min_' || r_col.attnum::text);
+                    -- the greatest value
+                    v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
+                    -- the number of timestamp values with a '00:00:00' time component (i.e. real date)
+                    v_colDefArray = array_append(v_colDefArray, 'ts_nb_date_' || r_col.attnum::text || ' BIGINT');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'sum(case when to_char(' || upper(r_col.attname) || ', ''HH24:MI:SS'') = ''00:00:00'' then 1 else 0 end) AS ts_nb_date_' || r_col.attnum::text);
 
-                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max, dscv_ts_nb_date) '
-                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                    || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
-            ELSE CONTINUE;
-----                v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-----                    || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_num_min, dscv_num_max) '
-----                    || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-----                    || ' FROM aggregates),');
-        END CASE;
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max, dscv_ts_nb_date) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
+                ELSE CONTINUE;
+            END CASE;
+        END IF;
     END LOOP;
     v_colDefList = array_to_string(v_colDefArray, ', ');
     v_aggregatesList = array_to_string(v_aggregatesArray, ', ');
     v_insertCteList = array_to_string(v_insertCteArray, '');
+    v_skippedColumnsList = array_to_string(v_skippedColumnsArray, ', ');
 --
 -- Create the foreign table.
 --
@@ -2757,6 +2760,12 @@ BEGIN
                 VALUES
                 (v_schema, v_table, 'W', 'NOT_ALL_ROWS', 'The table ' || v_schema || '.' || v_table || ' has un-analyzed rows.');
         END IF;
+    END IF;
+    IF v_skippedColumnsList <> '' THEN
+        INSERT INTO @extschema@.discovery_advice
+            (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+            VALUES
+            (v_schema, v_table, 'W', 'SKIPPED_COLUMNS', 'For the table ' || v_schema || '.' || v_table || ', columns ' || v_skippedColumnsList || 'have not been analyzed.');
     END IF;
 -- Pieces of advice at column level.
     IF v_nbRows > 0 THEN
