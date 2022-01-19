@@ -103,8 +103,10 @@ CREATE TABLE table_to_process (
     tbl_schema                 TEXT NOT NULL,           -- The schema of the target table
     tbl_name                   TEXT NOT NULL,           -- The name of the target table
     tbl_migration              TEXT NOT NULL,           -- The migration the table is linked to
-    tbl_foreign_schema         TEXT NOT NULL,           -- The schema of the schema containing the foreign table representing the source table
+    tbl_foreign_schema         TEXT NOT NULL,           -- The schema containing the foreign table representing the source table
     tbl_foreign_name           TEXT NOT NULL,           -- The name of the foreign table representing the source table
+    tbl_source_schema          TEXT NOT NULL,           -- The schema name in the source database
+    tbl_source_name            TEXT NOT NULL,           -- The table name in the source table
     tbl_rows                   BIGINT,                  -- The approximative number of rows of the source table
     tbl_kbytes                 FLOAT,                   -- The size in K-Bytes of the source table
     tbl_constraint_names       TEXT[],                  -- The constraints to drop before copying the table data
@@ -215,8 +217,9 @@ CREATE TABLE discovery_column (
     dscv_num_max_precision   SMALLINT,                   -- The maximum number of digits needed to represent the column
     dscv_num_max_integ_part  SMALLINT,                   -- The maximum number of digits for the integer part of the column
     dscv_num_max_fract_part  SMALLINT,                   -- The maximum number of digits for the fractional part of the column
-    dscv_str_min_length      INTEGER,                    -- The minimum length for a string or bytea column
+    dscv_str_avg_length      INTEGER,                    -- The average length for a string or bytea column
     dscv_str_max_length      INTEGER,                    -- The maximum length for a string or bytea column
+    dscv_str_nul_char        INTEGER,                    -- The number of fields containing \x00 characters
     dscv_ts_min              TEXT,                       -- The minimum value for a date/time column
     dscv_ts_max              TEXT,                       -- The maximum value for a date/time column
     dscv_ts_nb_date          BIGINT,                     -- The number of pure dates for a timestamp column (i.e. with time part set to 00:00:00)
@@ -648,6 +651,7 @@ DECLARE
     v_sourceDbms             TEXT;
     v_sourceSchema           TEXT;
     v_foreignSchema          TEXT;
+    v_sourceTable            TEXT;
     v_pgVersion              INT;
     v_tablesArray            TEXT[];
     v_tablesList             TEXT;
@@ -731,6 +735,8 @@ BEGIN
                   AND relname = ANY(v_tablesArray)
                 ORDER BY relname
         LOOP
+-- TODO: improve naming adjustment for other RDBMS or if the table names differ between the source and the target database
+            v_sourceTable = CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END;
 -- Build the array of constraints to drop and their definition.
 -- These constraints are of type PKEY, UNIQUE or EXCLUDE
             SELECT array_agg(conname), array_agg(constraint_def) INTO v_constraintToDropNames, v_constraintToDropDefs
@@ -793,20 +799,18 @@ BEGIN
             EXECUTE format (
                 'SELECT stat_rows, stat_kbytes
                     FROM @extschema@.%I
-                    WHERE stat_schema = %L
-                      AND stat_table = %L',
-                p_sourceTableStatLoc, v_sourceSchema,
-                CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END)
+                    WHERE stat_schema = %L AND stat_table = %L',
+                p_sourceTableStatLoc, v_sourceSchema, v_sourceTable)
                 INTO v_sourceRows, v_sourceKBytes;
 -- Register the table into the table_to_process table.
             INSERT INTO @extschema@.table_to_process (
-                    tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name,
+                    tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name,
                     tbl_rows, tbl_kbytes,
                     tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
                     tbl_copy_sort_order, tbl_some_gen_alw_id_col,
                     tbl_referencing_tables, tbl_referenced_tables
                 ) VALUES (
-                    p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname,
+                    p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname, v_sourceSchema, v_sourceTable,
                     coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
                     v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
                     v_copySortOrder, v_anyGenAlwaysIdentCol,
@@ -2541,8 +2545,8 @@ BEGIN
              JOIN @extschema@.batch ON (bat_migration = mgr_name)
         WHERE bat_name = p_batchName;
 -- Read the table_to_process table to get the foreign schema and build the foreign table name.
-    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_foreign_name || '_agg'
-        INTO v_foreignSchema, v_foreignTable, v_aggForeignTable
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name, tbl_foreign_name || '_agg'
+        INTO v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable, v_aggForeignTable
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- Analyze the step options.
@@ -2559,11 +2563,6 @@ BEGIN
     DELETE FROM @extschema@.discovery_table
         WHERE dscv_schema = v_schema
           AND dscv_table = v_table;
-
---TODO: store these data into the table_to_process table?
-    v_sourceSchema = upper(v_schema);
-    v_sourceTable = upper(v_table);
-
 -- Depending on the column's type, build:
 --    - the columns definition for the foreign table
 --    - the aggregates to feed these columns
@@ -2642,29 +2641,51 @@ BEGIN
                         || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
                 WHEN r_col.typcategory = 'S' AND r_col.typname <> 'text' THEN
 -- String types other than CLOB.
-                    -- the lowest string length
-                    v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
-                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(length(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                    -- the average string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_avg_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'round(avg(length(' || upper(r_col.attname) || '))) AS str_avg_len_' || r_col.attnum::text);
                     -- the greatest string length
                     v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
                     v_aggregatesArray = array_append(v_aggregatesArray, 'max(length(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+                    -- the number of values with \x00 characters
+                    v_colDefArray = array_append(v_colDefArray, 'str_nul_char_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'sum(case when instr(' || upper(r_col.attname) || ', chr(0)) > 0 then 1 else 0 end) AS str_nul_char_' || r_col.attnum::text);
 
                     v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_avg_length, dscv_str_max_length, dscv_str_nul_char) '
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                        || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
-                WHEN r_col.typname IN ('text', 'bytea') THEN
--- Text (representing CLOB) and bytea (representing BLOB) columns.
-                    -- the lowest string length
-                    v_colDefArray = array_append(v_colDefArray, 'str_min_len_' || r_col.attnum::text || ' INTEGER');
-                    v_aggregatesArray = array_append(v_aggregatesArray, 'min(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_min_len_' || r_col.attnum::text);
+                        || ', str_avg_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text
+                        || ', str_nul_char_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typname = 'text' THEN
+-- TEXT representing CLOB columns.
+                    -- the average string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_avg_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'round(avg(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || '))) AS str_avg_len_' || r_col.attnum::text);
                     -- the greatest string length
                     v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
                     v_aggregatesArray = array_append(v_aggregatesArray, 'max(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+                    -- the number of values with \x00 characters
+                    v_colDefArray = array_append(v_colDefArray, 'str_nul_char_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'sum(case when instr(' || upper(r_col.attname) || ', chr(0)) > 0 then 1 else 0 end) AS str_nul_char_' || r_col.attnum::text);
+
                     v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
-                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_min_length, dscv_str_max_length) '
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_avg_length, dscv_str_max_length, dscv_str_nul_char) '
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
-                        || ', str_min_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+                        || ', str_avg_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text
+                        || ', str_nul_char_' || r_col.attnum::text || ' FROM aggregates),');
+                WHEN r_col.typname = 'bytea' THEN
+-- BYTEA representing BLOB columns.
+                    -- the average string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_avg_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'round(avg(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || '))) AS str_avg_len_' || r_col.attnum::text);
+                    -- the greatest string length
+                    v_colDefArray = array_append(v_colDefArray, 'str_max_len_' || r_col.attnum::text || ' INTEGER');
+                    v_aggregatesArray = array_append(v_aggregatesArray, 'max(DBMS_LOB.GETLENGTH(' || upper(r_col.attname) || ')) AS str_max_len_' || r_col.attnum::text);
+
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_str_avg_length, dscv_str_max_length) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', str_avg_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
                 WHEN r_col.typcategory = 'D' AND r_col.typname NOT IN ('timestamp', 'timestamptz') THEN
 -- Date or time columns.
                     -- the lowest value
