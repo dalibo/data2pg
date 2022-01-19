@@ -193,7 +193,13 @@ sub showRunDetails {
     my $sth;             # Statement handle
     my $ret;             # SQL result
     my $row;             # Result row
-    my $previousStatus;  # The status of the previous step 
+    my $previousStatus;  # The status of the previous step
+    my $pctNbCompleted;  # The percentage of completed steps
+    my $pctCostCompleted;# The percentage of completed costs
+    my $pctNbRunning;    # The percentage of in-progress steps
+    my $pctCostRunning;  # The percentage of in-progress costs
+    my $pctNbOther;      # The percentage of other steps
+    my $pctCostOther;    # The percentage of other costs
 
 # Loop every delay seconds.
     $loop = 1;
@@ -247,7 +253,7 @@ sub showRunDetails {
             $currLine++;
 #### TODO: count newlines from the error message.
         }
-# 
+#
         printf("Status: '%s'    Start: %-19.19s",
                 $row->{'run_status'}, $row->{'run_start_ts'});
         if (defined($row->{'run_end_ts'})) {
@@ -257,21 +263,26 @@ sub showRunDetails {
             printf("   Elapse:%-19.19s", $row->{'run_elapse'});
         }
         print "\n"; $currLine++;
-#
+# Display global counters about the steps
+        $pctNbCompleted = $row->{'completed_steps'} * 100 / $row->{'total_steps'};
+        $pctCostCompleted = $row->{'completed_cost'} * 100 / $row->{'total_cost'};
         printf("Steps Total: %d  Completed: %d (%d%%/%d%%)",
-               $row->{'total_steps'}, $row->{'completed_steps'},
-               $row->{'completed_steps'}*100/$row->{'total_steps'},
-               $row->{'completed_cost'}*100/$row->{'total_cost'}
-              );
+               $row->{'total_steps'}, $row->{'completed_steps'}, $pctNbCompleted, $pctCostCompleted);
         if ($row->{run_status} eq "In_progress") {
+            if ($row->{'completed_steps'} + $row->{'in_progress_steps'} < $row->{'total_steps'}) {
+                $pctNbRunning = floor($row->{'in_progress_steps'} * 100 / $row->{'total_steps'});
+                $pctCostRunning = floor($row->{'in_progress_cost'} * 100 / $row->{'total_cost'});
+                $pctNbOther = 100 - floor($row->{'completed_steps'} * 100 / $row->{'total_steps'}) - floor($row->{'in_progress_steps'} * 100 / $row->{'total_steps'});
+                $pctCostOther = 100 - floor($row->{'completed_cost'} * 100 / $row->{'total_cost'}) - floor($row->{'in_progress_cost'} * 100 / $row->{'total_cost'});
+            } else {
+                $pctNbRunning = 100 - floor($row->{'completed_steps'} * 100 / $row->{'total_steps'});
+                $pctCostRunning = 100 - floor($row->{'completed_cost'} * 100 / $row->{'total_cost'});
+                $pctNbOther = 0;
+                $pctCostOther = 0;
+            }
             printf("  In_progress: %d (%d%%/%d%%)  Other: %d (%d%%/%d%%)",
-                   $row->{'in_progress_steps'},
-                   $row->{'in_progress_steps'}*100/$row->{'total_steps'},
-                   floor($row->{'in_progress_cost'}*100/$row->{'total_cost'}),
-                   floor($row->{'total_steps'} - $row->{'completed_steps'} - $row->{'in_progress_steps'}),
-                   100 - floor($row->{'completed_steps'}*100/$row->{'total_steps'}) - floor($row->{'in_progress_steps'}*100/$row->{'total_steps'}),
-                   100 - floor($row->{'completed_cost'}*100/$row->{'total_cost'}) - floor($row->{'in_progress_cost'}*100/$row->{'total_cost'}),
-                  );
+                   $row->{'in_progress_steps'}, $pctNbRunning, $pctCostRunning,
+                   $row->{'total_steps'} - $row->{'completed_steps'} - $row->{'in_progress_steps'}, $pctNbOther, $pctCostOther);
         }
         print "\n"; $currLine++;
 
