@@ -276,7 +276,7 @@ sub checkParameters
 
     # Check numeric values.
     if ($actionRun || $actionRestart) {
-        # Check that the MAX_SESSIONS, MASC_SC_SESSIONS and RUN parameters are an integer.
+        # Check that the MAX_SESSIONS, ASC_SESSIONS and RUN parameters are an integer.
         if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
         if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
         if (defined($runId) && $runId !~ /^\d+$/) { abort("The --run option must be an integer."); }
