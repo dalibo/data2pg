@@ -331,6 +331,9 @@ function newRun() {
 		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_MAX_ROWS</span></div>";
 		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copyMaxRows\" size=6 min=1></div>\n";
 
+		echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_PCT_ROWS</span></div>";
+		echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copyPctRows\" size=6 min=0 step=\"any\"></div>\n";
+
 		if ($conf['development_mode']) {
 			echo "\t\t<div class=\"form-label\"><span class=\"stepOption\">COPY_SLOW_DOWN (µs/row)</span></div>";
 			echo "\t\t<div class=\"form-input\"><input type=\"number\" name=\"copySlowDown\" size=6 min=0></div>\n";
@@ -369,6 +372,7 @@ function doNewRun() {
 	$comment = @$_GET["comment"];
 	$refRunId = @$_GET["refRunId"];
 	$copyMaxRows = @$_GET["copyMaxRows"];
+	$copyPctRows = @$_GET["copyPctRows"];
 	$copySlowDown = @$_GET["copySlowDown"];
 	$compareMaxRows = @$_GET["compareMaxRows"];
 	$compareMaxDiff = @$_GET["compareMaxDiff"];
@@ -423,6 +427,9 @@ function doNewRun() {
 		$stepOptions = '';
 		if ($copyMaxRows <> '' && $copyMaxRows > 0) {
 			$stepOptions .= '\"COPY_MAX_ROWS\":' . $copyMaxRows . ',';
+		}
+		if ($copyPctRows <> '') {
+			$stepOptions .= '\"COPY_PCT_ROWS\":' . $copyPctRows . ',';
 		}
 		if ($copySlowDown <> '' && $copySlowDown > 0) {
 			$stepOptions .= '\"COPY_SLOW_DOWN\":' . $copySlowDown . ',';

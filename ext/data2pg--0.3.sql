@@ -1836,6 +1836,7 @@ DECLARE
     v_isFirstStep              BOOLEAN = TRUE;
     v_isLastStep               BOOLEAN = TRUE;
     v_copyMaxRows              BIGINT;
+    v_copyPctRows              REAL;
     v_copySlowDown             BIGINT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
@@ -1894,7 +1895,15 @@ BEGIN
     END IF;
 -- Analyze the step options.
     v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
+    v_copyPctRows = p_stepOptions->>'COPY_PCT_ROWS';
     v_copySlowDown = p_stepOptions->>'COPY_SLOW_DOWN';
+-- Compute the maximum number of rows to copy, depending on both COPY_MAX_ROWS and COPY_PCT_ROWS option values.
+-- When the COPY_PCT_ROWS is set, apply this percentage to the estimated number of rows from the table statistics, rounded to the next integer.
+-- If both COPY_MAX_ROWS and COPY_PCT_ROWS options are set, keep the least computed number of rows.
+    IF v_copyPctRows IS NOT NULL AND
+      (v_copyMaxRows IS NULL OR v_copyMaxRows > v_estimatedNbRows * v_copyPctRows / 100) THEN
+       v_copyMaxRows = 1 + v_estimatedNbRows * v_copyPctRows / 100;
+    END IF;
 --
 -- Pre-processing.
 --
@@ -3006,6 +3015,15 @@ BEGIN
                IF jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'number' AND
                   jsonb_typeof(v_jsonStepOptions->'COPY_MAX_ROWS') <> 'null' THEN
                    RETURN 'The value for the COPY_MAX_ROWS step option must be a number.';
+               END IF;
+           WHEN 'COPY_PCT_ROWS' THEN
+               IF jsonb_typeof(v_jsonStepOptions->'COPY_PCT_ROWS') <> 'number' AND
+                  jsonb_typeof(v_jsonStepOptions->'COPY_PCT_ROWS') <> 'null' THEN
+                   RETURN 'The value for the COPY_PCT_ROWS step option must be a number.';
+               END IF;
+               IF (v_jsonStepOptions->>'COPY_PCT_ROWS')::real < 0 OR
+                  (v_jsonStepOptions->>'COPY_PCT_ROWS')::real > 100 THEN
+                   RETURN 'The value for the COPY_PCT_ROWS step option must be a real between 0 and 100.';
                END IF;
            WHEN 'COPY_SLOW_DOWN' THEN
                IF jsonb_typeof(v_jsonStepOptions->'COPY_SLOW_DOWN') <> 'number' AND
