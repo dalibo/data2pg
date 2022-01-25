@@ -66,7 +66,8 @@ SELECT create_migration(
     p_sourceDbms           => 'PostgreSQL',
     p_extension            => 'postgres_fdw',
     p_serverOptions        => 'port ''5432'', dbname ''test_src'', fetch_size ''1000''',
-    p_userMappingOptions   => 'user ''postgres'', password ''postgres'''
+    p_userMappingOptions   => 'user ''postgres'', password ''postgres''',
+    p_importSchemaOptions  => 'import_default ''false'''
 );
 
 

@@ -58,6 +58,7 @@ CREATE TABLE migration (
     mgr_server_options         TEXT NOT NULL,           -- The options for the server, like 'host ''localhost'', port ''5432'', dbname ''test1'''
     mgr_user_mapping_options   TEXT NOT NULL,           -- The user mapping options used by the data2pg role to reach the source database
                                                         --   like 'user ''postgres'', password ''pwd''', but the password is masked
+    mgr_import_schema_options  TEXT,                    -- The options added to the IMPORT FOREIGN SCHEMA statement when registering tables
     mgr_config_completed       BOOLEAN,                 -- Boolean indicating whether the migration configuration is completed or not
     PRIMARY KEY (mgr_name)
 );
@@ -260,7 +261,8 @@ CREATE FUNCTION create_migration(
     p_extension              TEXT,
     p_serverOptions          TEXT,
     p_userMappingOptions     TEXT,
-    p_userHasPrivileges      BOOLEAN DEFAULT false
+    p_userHasPrivileges      BOOLEAN DEFAULT false,
+    p_importSchemaOptions    TEXT DEFAULT NULL
     )
     RETURNS INTEGER LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -283,7 +285,8 @@ BEGIN
     v_serverName = 'data2pg_' || p_migration || '_server';
     INSERT INTO @extschema@.migration
         VALUES (p_migration, p_sourceDbms, p_extension, v_serverName, p_serverOptions,
-                regexp_replace(p_userMappingOptions, '(password\s+'').*?('')', '\1########\2'));
+                regexp_replace(p_userMappingOptions, '(password\s+'').*?('')', '\1########\2'),
+                p_importSchemaOptions);
 -- Create the FDW extension.
     EXECUTE format(
         'CREATE EXTENSION IF NOT EXISTS %s',
@@ -649,6 +652,7 @@ $register_tables$
 DECLARE
     v_serverName             TEXT;
     v_sourceDbms             TEXT;
+    v_importSchemaOptClause  TEXT;
     v_sourceSchema           TEXT;
     v_foreignSchema          TEXT;
     v_sourceTable            TEXT;
@@ -682,7 +686,9 @@ BEGIN
         RAISE EXCEPTION 'register_tables: None of the first 3 input parameters can be NULL.';
     END IF;
 -- Check the supplied migration and get its server name and source DBMS.
-    SELECT p_serverName, p_sourceDbms INTO v_serverName, v_sourceDbms FROM @extschema@.check_migration(p_migration);
+    SELECT p_serverName, p_sourceDbms, coalesce('OPTIONS (' || p_importSchemaOptions || ')', '')
+       INTO v_serverName, v_sourceDbms, v_importSchemaOptClause
+       FROM @extschema@.check_migration(p_migration);
 -- Check that the schema exists.
     PERFORM @extschema@.check_schema(p_schema);
 -- Create the foreign schema if it does not exist.
@@ -722,9 +728,9 @@ BEGIN
             SELECT string_agg(quote_ident(relname), ',') INTO v_foreingTablesList
                 FROM (SELECT unnest(v_tablesArray) AS relname) AS t;
             EXECUTE format(
-                'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I',
+                'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I %s',
                 CASE WHEN v_sourceDbms = 'Oracle' THEN '"' || v_sourceSchema || '"' ELSE quote_ident(v_sourceSchema) END,
-                v_foreingTablesList, v_serverName, v_foreignSchema);
+                v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
         END IF;
 -- Next step of the tables processing. Tables are processed one by one.
         FOR r_tbl IN
@@ -1737,17 +1743,20 @@ BEGIN
 END;
 $complete_migration_configuration$;
 
--- The check_migration() function checks that a given migration name exists, set it as in-progress and returns its server name and RDBMS.
+-- The check_migration() function checks that a given migration name exists, set it as in-progress
+--   and returns its server name, RDBMS and import schema options.
 CREATE FUNCTION check_migration(
     p_migration               TEXT,
     OUT p_serverName          TEXT,
-    OUT p_sourceDbms          TEXT
+    OUT p_sourceDbms          TEXT,
+    OUT p_importSchemaOptions TEXT
     )
     LANGUAGE plpgsql AS
 $check_migration$
 BEGIN
 -- Check that the migration exists and get its server name and source DBMS.
-    SELECT mgr_server_name, mgr_source_dbms INTO p_serverName, p_sourceDbms
+    SELECT mgr_server_name, mgr_source_dbms, mgr_import_schema_options
+        INTO p_serverName, p_sourceDbms, p_importSchemaOptions
         FROM @extschema@.migration
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
