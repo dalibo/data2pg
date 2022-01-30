@@ -629,7 +629,7 @@ $drop_batch$;
 
 -- The register_tables() function links a set of tables from a single schema to a migration.
 -- Two regexp filter tables to include and exclude.
--- A foreign table is created for each table.
+-- A foreign table is created for each table if requested.
 -- The schema to hold foreign objects is created if needed.
 -- Some characteristics of the table are recorded into the table_to_process and table_column tables.
 CREATE FUNCTION register_tables(
@@ -643,6 +643,10 @@ CREATE FUNCTION register_tables(
                              DEFAULT 'source_table_stat',
     p_createForeignTable     BOOLEAN             -- Boolean indicating whether the FOREIGN TABLE have to be created
                              DEFAULT TRUE,       --   (if FALSE, an external operation must create them before launching a migration)
+    p_ForeignTableOptions    TEXT                -- A specific directive to apply to the created foreign tables
+                             DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
+                                                 --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
+                                                 --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
     p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
                              DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
     )
@@ -691,6 +695,17 @@ BEGIN
        FROM @extschema@.check_migration(p_migration);
 -- Check that the schema exists.
     PERFORM @extschema@.check_schema(p_schema);
+-- Check the p_ForeignTableOptions parameter.
+    IF p_ForeignTableOptions IS NOT NULL THEN
+-- Check a simple profile
+        IF p_ForeignTableOptions !~* 'OPTIONS\s*\(' THEN
+            RAISE EXCEPTION 'register_tables: The p_ForeignTableOptions parameter must be a valid ALTER FOREIGN TABLE clause, with an OPTIONS() clause.';
+        END IF;
+-- Check the p_ForeignTableOptions and p_createForeignTable consistency.
+        IF p_ForeignTableOptions IS NOT NULL AND NOT p_createForeignTable THEN
+            RAISE EXCEPTION 'register_tables: Foreign table options cannot be specified if the foreign tables are not to be created.';
+        END IF;
+    END IF;
 -- Create the foreign schema if it does not exist.
     v_foreignSchema = 'srcdb_' || p_schema;
     EXECUTE format(
@@ -743,8 +758,14 @@ BEGIN
         LOOP
 -- TODO: improve naming adjustment for other RDBMS or if the table names differ between the source and the target database
             v_sourceTable = CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END;
+-- Alter the foreign table with the provided options.
+            IF p_ForeignTableOptions IS NOT NULL THEN
+                EXECUTE format(
+                    'ALTER FOREIGN TABLE %I.%I %s',
+                    v_foreignSchema, r_tbl.relname, p_ForeignTableOptions);
+            END IF;
 -- Build the array of constraints to drop and their definition.
--- These constraints are of type PKEY, UNIQUE or EXCLUDE
+-- These constraints are of type PKEY, UNIQUE or EXCLUDE.
             SELECT array_agg(conname), array_agg(constraint_def) INTO v_constraintToDropNames, v_constraintToDropDefs
                 FROM (
                     SELECT c1.conname, pg_get_constraintdef(c1.oid) AS constraint_def

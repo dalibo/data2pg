@@ -77,7 +77,8 @@ SELECT create_migration(
 
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
-SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL);
+SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL,
+       p_ForeignTableOptions => 'OPTIONS(updatable ''false'')', p_createForeignTable => true);
 
 SELECT register_sequences('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_sequences('PG''s db', 'myschema2', '.*', NULL);
