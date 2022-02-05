@@ -110,10 +110,6 @@ CREATE TABLE table_to_process (
     tbl_source_name            TEXT NOT NULL,           -- The table name in the source table
     tbl_rows                   BIGINT,                  -- The approximative number of rows of the source table
     tbl_kbytes                 FLOAT,                   -- The size in K-Bytes of the source table
-    tbl_constraint_names       TEXT[],                  -- The constraints to drop before copying the table data
-    tbl_constraint_definitions TEXT[],                  -- The constraints to recreate after copying the table data
-    tbl_index_names            TEXT[],                  -- The indexes to drop before copying the table data
-    tbl_index_definitions      TEXT[],                  -- The indexes to recreate after copying the table data
     tbl_copy_sort_order        TEXT,                    -- The ORDER BY clause, if needed, for the INSERT SELECT copy statement (NULL if no sort)
     tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
@@ -140,6 +136,19 @@ CREATE TABLE table_column (
     tco_compare_sort_rank      INTEGER,                 -- For a COMPARE batch, the column rank in the table sort, NULL if the column is not used for the sort
     PRIMARY KEY (tco_schema, tco_table, tco_name),
     FOREIGN KEY (tco_schema, tco_table) REFERENCES table_to_process(tbl_schema, tbl_name)
+);
+
+-- The table_index table contains a row for each index or constraint.
+CREATE TABLE table_index (
+    tic_schema                 TEXT NOT NULL,           -- The schema of the target table
+    tic_table                  TEXT NOT NULL,           -- The table name
+    tic_object                 TEXT NOT NULL,           -- The name of the index or constraint
+    tic_type                   CHAR(1) NOT NULL         -- The object type (I for index / C for constraint)
+                               CHECK (tic_type IN ('C', 'I')),
+    tic_definition             TEXT NOT NULL,           -- The index or constraint definition
+    tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
+    PRIMARY KEY (tic_schema, tic_table, tic_object),
+    FOREIGN KEY (tic_schema, tic_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
 
 -- The table_part table contains a row for each part of table to migrate. A row in the table_to_process table must exist.
@@ -515,15 +524,20 @@ BEGIN
         USING @extschema@.table_to_process
         WHERE dscv_schema = tbl_schema AND dscv_table = tbl_name
           AND tbl_migration = p_migration;
--- Remove table parts associated to tables belonging to the migration.
-    DELETE FROM @extschema@.table_part
-        USING @extschema@.table_to_process
-        WHERE prt_schema = tbl_schema AND prt_table = tbl_name
-          AND tbl_migration = p_migration;
 -- Remove table columns associated to tables belonging to the migration.
     DELETE FROM @extschema@.table_column
         USING @extschema@.table_to_process
         WHERE tco_schema = tbl_schema AND tco_table = tbl_name
+          AND tbl_migration = p_migration;
+-- Remove indexes and constraints associated to tables belonging to the migration.
+    DELETE FROM @extschema@.table_index
+        USING @extschema@.table_to_process
+        WHERE prt_schema = tic_schema AND prt_table = tic_table
+          AND tbl_migration = p_migration;
+-- Remove table parts associated to tables belonging to the migration.
+    DELETE FROM @extschema@.table_part
+        USING @extschema@.table_to_process
+        WHERE prt_schema = tbl_schema AND prt_table = tbl_name
           AND tbl_migration = p_migration;
 -- Remove tables from the table_to_process table.
     DELETE FROM @extschema@.table_to_process
@@ -631,7 +645,7 @@ $drop_batch$;
 -- Two regexp filter tables to include and exclude.
 -- A foreign table is created for each table if requested.
 -- The schema to hold foreign objects is created if needed.
--- Some characteristics of the table are recorded into the table_to_process and table_column tables.
+-- Some characteristics of the table are recorded into the table_to_process, table_index and table_column tables.
 CREATE FUNCTION register_tables(
     p_migration              TEXT,               -- The migration linked to the tables
     p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
@@ -666,11 +680,7 @@ DECLARE
     v_foreingTablesList      TEXT;
     v_nbTables               INT;
     v_prevMigration          TEXT;
-    v_indexToDropNames       TEXT[];
-    v_indexToDropDefs        TEXT[];
     v_copySortOrder          TEXT;
-    v_constraintToDropNames  TEXT[];
-    v_constraintToDropDefs   TEXT[];
     v_anyGenAlwaysIdentCol   BOOLEAN;
     v_referencingTables      TEXT[];
     v_referencedTables       TEXT[];
@@ -682,6 +692,7 @@ DECLARE
     v_compareKeyColNb        SMALLINT[];
     v_nbColInIdx             SMALLINT;
     v_nbColInKey             SMALLINT;
+    v_rowsThreshold          CONSTANT BIGINT = 10000;      -- The estimated number of rows limit to drop and recreate indexes and constraints
     r_tbl                    RECORD;
     r_col                    RECORD;
 BEGIN
@@ -764,35 +775,6 @@ BEGIN
                     'ALTER FOREIGN TABLE %I.%I %s',
                     v_foreignSchema, r_tbl.relname, p_ForeignTableOptions);
             END IF;
--- Build the array of constraints to drop and their definition.
--- These constraints are of type PKEY, UNIQUE or EXCLUDE.
-            SELECT array_agg(conname), array_agg(constraint_def) INTO v_constraintToDropNames, v_constraintToDropDefs
-                FROM (
-                    SELECT c1.conname, pg_get_constraintdef(c1.oid) AS constraint_def
-                        FROM pg_catalog.pg_constraint c1
-                        WHERE c1.conrelid = r_tbl.table_oid
-                          AND c1.contype IN ('p', 'u', 'x')
-                          AND NOT EXISTS(                             -- the index linked to this constraint must not be linked to other constraints
-                              SELECT 0 FROM pg_catalog.pg_constraint c2
-                              WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
-                              )
-                        ORDER BY conname
-                     ) AS t;
--- Build the array of indexes to drop and their definition.
--- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
-            SELECT array_agg(index_name), array_agg(index_def) INTO v_indexToDropNames, v_indexToDropDefs
-                FROM (
-                    SELECT relname AS index_name, pg_get_indexdef(pg_class.oid) AS index_def
-                        FROM pg_catalog.pg_index
-                             JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
-                        WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-                          AND NOT indisclustered
-                          AND NOT EXISTS(                             -- the index must not be linked to any constraint
-                              SELECT 0 FROM pg_catalog.pg_constraint
-                              WHERE pg_constraint.conindid = pg_class.oid
-                              )
-                        ORDER BY relname
-                     ) AS t;
 -- Get the clustered index columns list, if it exists.
 -- This list will be used in an ORDER BY clause of the table copy function.
             SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
@@ -833,13 +815,11 @@ BEGIN
             INSERT INTO @extschema@.table_to_process (
                     tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name,
                     tbl_rows, tbl_kbytes,
-                    tbl_constraint_names, tbl_constraint_definitions, tbl_index_names, tbl_index_definitions,
                     tbl_copy_sort_order, tbl_some_gen_alw_id_col,
                     tbl_referencing_tables, tbl_referenced_tables
                 ) VALUES (
                     p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname, v_sourceSchema, v_sourceTable,
                     coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
-                    v_constraintToDropNames, v_constraintToDropDefs, v_indexToDropNames, v_indexToDropDefs,
                     v_copySortOrder, v_anyGenAlwaysIdentCol,
                     v_referencingTables, v_referencedTables
                 );
@@ -914,6 +894,34 @@ BEGIN
                      CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
                      CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
                      v_compareKeyColNb, r_tbl.table_oid);
+-- Insert the indexes and constraints into the table_index table.
+-- Start with PKEY, UNIQUE or EXCLUDE constraints.
+            INSERT INTO @extschema@.table_index
+                    (tic_schema, tic_table, tic_object, tic_type, tic_definition,
+                     tic_drop_for_copy)
+                SELECT p_schema, r_tbl.relname, c1.conname, 'C', pg_get_constraintdef(c1.oid),
+                       coalesce(v_sourceRows > v_rowsThreshold, TRUE)
+                    FROM pg_catalog.pg_constraint c1
+                    WHERE c1.conrelid = r_tbl.table_oid
+                      AND c1.contype IN ('p', 'u', 'x')
+                      AND NOT EXISTS(                             -- the index linked to this constraint must not be linked to other constraints
+                          SELECT 0 FROM pg_catalog.pg_constraint c2
+                          WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
+                          );
+-- Continue with indexes
+-- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
+            INSERT INTO @extschema@.table_index
+                    (tic_schema, tic_table, tic_object, tic_type, tic_definition,
+                     tic_drop_for_copy)
+                SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
+                       coalesce(v_sourceRows > v_rowsThreshold, TRUE) AND NOT indisclustered
+                    FROM pg_catalog.pg_index
+                         JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
+                    WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
+                      AND NOT EXISTS(                             -- the index must not be linked to any constraint
+                          SELECT 0 FROM pg_catalog.pg_constraint
+                          WHERE pg_constraint.conindid = pg_class.oid
+                          );
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
 --    This will let the optimizer choose a proper plan for the compare_table() function, without the cost of an ANALYZE.
             IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
@@ -1858,7 +1866,6 @@ CREATE FUNCTION copy_table(
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $copy_table$
 DECLARE
-    v_rowsThreshold            CONSTANT BIGINT = 10000;      -- The estimated number of rows limit to drop and recreate the secondary indexes
     v_schema                   TEXT;
     v_table                    TEXT;
     v_partNum                  INTEGER;
@@ -1872,10 +1879,6 @@ DECLARE
     v_foreignTable             TEXT;
     v_estimatedNbRows          BIGINT;
     v_copySortOrder            TEXT;
-    v_constraintToDropNames    TEXT[];
-    v_constraintToCreateDefs   TEXT[];
-    v_indexToDropNames         TEXT[];
-    v_indexToCreateDefs        TEXT[];
     v_insertColList            TEXT;
     v_selectExprList           TEXT;
     v_someGenAlwaysIdentCol    BOOLEAN;
@@ -1885,6 +1888,7 @@ DECLARE
     v_indexDef                 TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
+    r_obj                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table.
@@ -1897,12 +1901,8 @@ BEGIN
     END IF;
 -- Read the table_to_process table to get table related details.
     SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
-           tbl_constraint_names, tbl_constraint_definitions,
-           tbl_index_names, tbl_index_definitions,
            tbl_copy_sort_order, tbl_some_gen_alw_id_col
         INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows,
-             v_constraintToDropNames, v_constraintToCreateDefs,
-             v_indexToDropNames, v_indexToCreateDefs,
              v_copySortOrder, v_someGenAlwaysIdentCol
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
@@ -1939,25 +1939,33 @@ BEGIN
 --
     IF v_isFirstStep THEN
 -- Drop the constraints known as 'to be dropped' (unique, exclude).
-        IF v_constraintToDropNames IS NOT NULL AND v_estimatedNbRows > v_rowsThreshold THEN
-            FOREACH v_constraint IN ARRAY v_constraintToDropNames
-            LOOP
-                EXECUTE format(
-                    'ALTER TABLE %I.%I DROP CONSTRAINT %I',
-                    v_schema, v_table, v_constraint
-                );
-            END LOOP;
-        END IF;
--- Drop the non pkey or clustered indexes if it is worth to o it, i.e. there are more than v_rowsThreshold rows to process.
-        IF v_indexToDropNames IS NOT NULL AND v_estimatedNbRows > v_rowsThreshold THEN
-            FOREACH v_index IN ARRAY v_indexToDropNames
-            LOOP
-                EXECUTE format(
-                    'DROP INDEX %I.%I',
-                    v_schema, v_index
-                );
-            END LOOP;
-        END IF;
+        FOR r_obj IN
+            SELECT tic_object
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'C'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+                v_schema, v_table, r_obj.tic_object
+            );
+        END LOOP;
+-- Drop the indexes known as "to be dropped" during the copy processing.
+        FOR r_obj IN
+            SELECT tic_object
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'I'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE format(
+                'DROP INDEX %I.%I',
+                v_schema, r_obj.tic_object
+            );
+        END LOOP;
     END IF;
 --
 -- Copy processing.
@@ -1992,22 +2000,30 @@ BEGIN
 --
     IF v_isLastStep THEN
 -- Recreate the constraints that have been previously dropped.
-        IF v_constraintToCreateDefs IS NOT NULL AND v_estimatedNbRows > v_rowsThreshold THEN
-            FOR v_i IN 1 .. array_length(v_constraintToCreateDefs, 1)
-            LOOP
-                EXECUTE format(
-                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
-                    v_schema, v_table, v_constrainttoDropNames[v_i], v_constraintToCreateDefs[v_i]
-                );
-            END LOOP;
-        END IF;
--- Recreate the non pkey or clustered index indexes that have been previously dropped.
-        IF v_indexToCreateDefs IS NOT NULL AND v_estimatedNbRows > v_rowsThreshold THEN
-            FOREACH v_indexDef IN ARRAY v_indexToCreateDefs
-            LOOP
-                EXECUTE v_indexDef;
-            END LOOP;
-        END IF;
+        FOR r_obj IN
+            SELECT tic_object, tic_definition
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'C'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
+                v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
+            );
+        END LOOP;
+-- Recreate the indexes that have been previously dropped.
+        FOR r_obj IN
+            SELECT tic_definition
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'I'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE r_obj.tic_definition;
+        END LOOP;
 -- Get the statistics (and let the autovacuum do its job).
         EXECUTE format(
             'ANALYZE %I.%I',
