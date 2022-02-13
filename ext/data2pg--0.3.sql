@@ -82,7 +82,7 @@ CREATE TABLE step (
                                                         --   By construction it contains the schema, the table or sequence names
                                                         --   and the table part number if any
     stp_type                   TEXT  NOT NULL           -- step type
-                               CHECK (stp_type IN ('TRUNCATE', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'FOREIGN_KEY')),
+                               CHECK (stp_type IN ('TRUNCATE', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'FOREIGN_KEY', 'CUSTOM')),
     stp_schema                 TEXT,                    -- Schema name of the sequence or table to process,
                                                         --   NULL if the step is not related to a sequence or a table
     stp_object                 TEXT,                    -- Object name, typically the sequence or table to process,
@@ -147,6 +147,7 @@ CREATE TABLE table_index (
                                CHECK (tic_type IN ('C', 'I')),
     tic_definition             TEXT NOT NULL,           -- The index or constraint definition
     tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
+    tic_separate_creation_step BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the index or constraint has to be created by a separate step
     PRIMARY KEY (tic_schema, tic_table, tic_object),
     FOREIGN KEY (tic_schema, tic_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
@@ -532,7 +533,7 @@ BEGIN
 -- Remove indexes and constraints associated to tables belonging to the migration.
     DELETE FROM @extschema@.table_index
         USING @extschema@.table_to_process
-        WHERE prt_schema = tic_schema AND prt_table = tic_table
+        WHERE tic_schema = tbl_schema AND tic_table = tbl_name
           AND tbl_migration = p_migration;
 -- Remove table parts associated to tables belonging to the migration.
     DELETE FROM @extschema@.table_part
@@ -1999,7 +2000,7 @@ BEGIN
 -- Post processing.
 --
     IF v_isLastStep THEN
--- Recreate the constraints that have been previously dropped.
+-- Recreate the constraints that have been previously dropped and that are not marked as "to be created by a separate step".
         FOR r_obj IN
             SELECT tic_object, tic_definition
                 FROM @extschema@.table_index
@@ -2007,6 +2008,7 @@ BEGIN
                   AND tic_table = v_table
                   AND tic_type = 'C'
                   AND tic_drop_for_copy
+                  AND NOT tic_separate_creation_step
         LOOP
             EXECUTE format(
                 'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
@@ -2021,6 +2023,7 @@ BEGIN
                   AND tic_table = v_table
                   AND tic_type = 'I'
                   AND tic_drop_for_copy
+                  AND NOT tic_separate_creation_step
         LOOP
             EXECUTE r_obj.tic_definition;
         END LOOP;
@@ -3138,6 +3141,7 @@ SELECT pg_catalog.pg_extension_config_dump('batch', '');
 SELECT pg_catalog.pg_extension_config_dump('step', '');
 SELECT pg_catalog.pg_extension_config_dump('table_to_process', '');
 SELECT pg_catalog.pg_extension_config_dump('table_column', '');
+SELECT pg_catalog.pg_extension_config_dump('table_index', '');
 SELECT pg_catalog.pg_extension_config_dump('table_part', '');
 SELECT pg_catalog.pg_extension_config_dump('sequence_to_process', '');
 SELECT pg_catalog.pg_extension_config_dump('source_table_stat', '');
