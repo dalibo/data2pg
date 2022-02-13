@@ -1589,7 +1589,7 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'complete_migration_configuration: Migration "%" not found.', p_migration;
     END IF;
--- Get the list of related batches and check that the number of batches marked as the first one is exactly 1.
+-- Get the list of related batches and raise a warning if there are several batches marked as starting with a tables TRUNCATE.
     SELECT array_agg(bat_name), count(bat_name) FILTER (WHERE bat_start_with_truncate)
         INTO v_batchArray, v_countStartWithTruncate
         FROM @extschema@.batch
