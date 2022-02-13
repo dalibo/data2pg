@@ -1889,6 +1889,8 @@ DECLARE
     v_indexDef                 TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
+    v_nbDroppedIndex           SMALLINT = 0;
+    v_nbCreatedIndex           SMALLINT = 0;
     r_obj                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -1952,6 +1954,7 @@ BEGIN
                 'ALTER TABLE %I.%I DROP CONSTRAINT %I',
                 v_schema, v_table, r_obj.tic_object
             );
+            v_nbDroppedIndex = v_nbDroppedIndex + 1;
         END LOOP;
 -- Drop the indexes known as "to be dropped" during the copy processing.
         FOR r_obj IN
@@ -1966,6 +1969,7 @@ BEGIN
                 'DROP INDEX %I.%I',
                 v_schema, r_obj.tic_object
             );
+            v_nbDroppedIndex = v_nbDroppedIndex + 1;
         END LOOP;
     END IF;
 --
@@ -2014,6 +2018,7 @@ BEGIN
                 'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
                 v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
             );
+            v_nbCreatedIndex = v_nbCreatedIndex + 1;
         END LOOP;
 -- Recreate the indexes that have been previously dropped.
         FOR r_obj IN
@@ -2026,6 +2031,7 @@ BEGIN
                   AND NOT tic_separate_creation_step
         LOOP
             EXECUTE r_obj.tic_definition;
+            v_nbCreatedIndex = v_nbCreatedIndex + 1;
         END LOOP;
 -- Get the statistics (and let the autovacuum do its job).
         EXECUTE format(
@@ -2049,6 +2055,20 @@ BEGIN
     r_output.sr_rank = 11;
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
+    IF v_nbDroppedIndex > 0 THEN
+        r_output.sr_indicator = 'DROPPED_INDEXES';
+        r_output.sr_value = v_nbDroppedIndex;
+        r_output.sr_rank = 12;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    IF v_nbCreatedIndex > 0 THEN
+        r_output.sr_indicator = 'RECREATED_INDEXES';
+        r_output.sr_value = v_nbCreatedIndex;
+        r_output.sr_rank = 13;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
 --
     RETURN;
 END;
