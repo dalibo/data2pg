@@ -76,7 +76,8 @@ SELECT create_migration(
 --
 
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
-SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
+SELECT register_tables('PG''s db', 'myschema2', '.*', '^myTbl3$');
+SELECT register_tables('PG''s db', 'myschema2', '^myTbl3$', NULL, p_separateCreateIndex => true);
 SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL,
        p_ForeignTableOptions => 'OPTIONS(updatable ''false'')', p_createForeignTable => true);
 
@@ -110,6 +111,9 @@ SELECT register_table_part('myschema2', 'mytbl1', 3, 'col11 >= 50000 and col12 =
 SELECT register_table_part('myschema2', 'mytbl1', 4, 'col11 >= 50000 and col12 = ''GHI''', FALSE, FALSE);
 SELECT register_table_part('myschema2', 'mytbl1', 5, NULL, FALSE, TRUE);
 
+SELECT register_table_part('myschema2', 'myTbl3', 1, 'TRUE', TRUE, FALSE);  -- copy all rows in a single step
+SELECT register_table_part('myschema2', 'myTbl3', 2, NULL, FALSE, TRUE);    -- but separate the post-processing to separate index creations
+
 --
 -- Build the batches
 --
@@ -129,7 +133,7 @@ SELECT create_batch('COMPARE_ALL','PG''s db','COMPARE',null);
 
 SELECT assign_tables_to_batch('BATCH1', 'myschema1', '.*', NULL);
 --select assign_tables_to_batch('BATCH1', 'myschema1', '.*', '^mytbl2b$');
-SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^mytbl1$');
+SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^mytbl1|myTbl3$');
 SELECT assign_tables_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
 --select assign_tables_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
@@ -160,10 +164,19 @@ SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 3);
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 4);
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 5);
 
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'myTbl3', 1);
+SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'myTbl3', 2);
+
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 1);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 2);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 3);
 SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
+
+--
+-- Assign the index creations
+--
+
+SELECT assign_index_to_batch('BATCH1', tic_schema, tic_table, tic_object) FROM table_index WHERE tic_separate_creation_step;
 
 --
 -- Assign FK checks
@@ -188,7 +201,7 @@ SELECT complete_migration_configuration('PG''s db');
 
 COMMIT;
 
-select * from step;
+select * from step order by stp_batch_name, stp_name;
 select * from table_to_process;
 select * from table_part;
 select * from sequence_to_process;

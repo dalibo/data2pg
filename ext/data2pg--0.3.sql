@@ -82,7 +82,7 @@ CREATE TABLE step (
                                                         --   By construction it contains the schema, the table or sequence names
                                                         --   and the table part number if any
     stp_type                   TEXT  NOT NULL           -- step type
-                               CHECK (stp_type IN ('TRUNCATE', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'FOREIGN_KEY', 'CUSTOM')),
+                               CHECK (stp_type IN ('TRUNCATE', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'INDEX', 'FOREIGN_KEY', 'CUSTOM')),
     stp_schema                 TEXT,                    -- Schema name of the sequence or table to process,
                                                         --   NULL if the step is not related to a sequence or a table
     stp_object                 TEXT,                    -- Object name, typically the sequence or table to process,
@@ -143,11 +143,12 @@ CREATE TABLE table_index (
     tic_schema                 TEXT NOT NULL,           -- The schema of the target table
     tic_table                  TEXT NOT NULL,           -- The table name
     tic_object                 TEXT NOT NULL,           -- The name of the index or constraint
-    tic_type                   CHAR(1) NOT NULL         -- The object type (I for index / C for constraint)
-                               CHECK (tic_type IN ('C', 'I')),
+    tic_type                   VARCHAR(2) NOT NULL      -- The object type (I for index / Cp pour PKEY, Cu for UNIQUE constraint
+                                                        --   or Cx for EXCLUDE constraint)
+                               CHECK (tic_type IN ('I', 'Cp', 'Cu', 'Cx')),
     tic_definition             TEXT NOT NULL,           -- The index or constraint definition
     tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
-    tic_separate_creation_step BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the index or constraint has to be created by a separate step
+    tic_separate_creation_step BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the index has to be created by a separate step
     PRIMARY KEY (tic_schema, tic_table, tic_object),
     FOREIGN KEY (tic_schema, tic_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
@@ -408,7 +409,7 @@ BEGIN
             p_serverName);
         -- Populate the source_table_stat table.
         INSERT INTO @extschema@.source_table_stat
-            SELECT p_migration, nspname, relname, reltuples, relpages * 8
+            SELECT p_migration, nspname, relname, CASE WHEN reltuples = -1 THEN NULL ELSE reltuples::bigint END, relpages * 8
                 FROM @extschema@.pg_foreign_pg_class
                      JOIN @extschema@.pg_foreign_pg_namespace ON (relnamespace = pg_foreign_pg_namespace.oid)
                 WHERE relkind = 'r'
@@ -662,6 +663,8 @@ CREATE FUNCTION register_tables(
                              DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
                                                  --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
                                                  --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
+    p_separateCreateIndex    BOOLEAN             -- Boolean indicating whether the indexes of these tables have to be created by
+                             DEFAULT FALSE,      --   separate steps (to speed-up index rebuild for large tables with a lof of indexes)
     p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
                              DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
     )
@@ -897,32 +900,45 @@ BEGIN
                      v_compareKeyColNb, r_tbl.table_oid);
 -- Insert the indexes and constraints into the table_index table.
 -- Start with PKEY, UNIQUE or EXCLUDE constraints.
+-- Constraints will be dropped and recreated only if there are enough rows to justify it and if they are not linked to another constraint (like a FK).
             INSERT INTO @extschema@.table_index
                     (tic_schema, tic_table, tic_object, tic_type, tic_definition,
                      tic_drop_for_copy)
-                SELECT p_schema, r_tbl.relname, c1.conname, 'C', pg_get_constraintdef(c1.oid),
-                       coalesce(v_sourceRows > v_rowsThreshold, TRUE)
+                SELECT p_schema, r_tbl.relname, c1.conname, 'C' || c1.contype, pg_get_constraintdef(c1.oid),
+                       coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
+                           AND NOT EXISTS(
+                                           SELECT 0 FROM pg_catalog.pg_constraint c2
+                                           WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
+                                          )
                     FROM pg_catalog.pg_constraint c1
                     WHERE c1.conrelid = r_tbl.table_oid
-                      AND c1.contype IN ('p', 'u', 'x')
-                      AND NOT EXISTS(                             -- the index linked to this constraint must not be linked to other constraints
-                          SELECT 0 FROM pg_catalog.pg_constraint c2
-                          WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
-                          );
+                      AND c1.contype IN ('p', 'u', 'x');
 -- Continue with indexes
 -- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
+-- Indexes will be dropped and recreated only if there are enough rows to justify it, if it is not a cluster index
+--   and if they are not linked to another constraint (like a FK).
             INSERT INTO @extschema@.table_index
                     (tic_schema, tic_table, tic_object, tic_type, tic_definition,
                      tic_drop_for_copy)
                 SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
-                       coalesce(v_sourceRows > v_rowsThreshold, TRUE) AND NOT indisclustered
+                       coalesce(v_sourceRows > v_rowsThreshold, TRUE)
+                           AND NOT indisclustered
+                           AND NOT EXISTS(
+                                           SELECT 0 FROM pg_catalog.pg_constraint
+                                           WHERE pg_constraint.conindid = pg_class.oid
+                                          )
                     FROM pg_catalog.pg_index
                          JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
                     WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-                      AND NOT EXISTS(                             -- the index must not be linked to any constraint
-                          SELECT 0 FROM pg_catalog.pg_constraint
-                          WHERE pg_constraint.conindid = pg_class.oid
-                          );
+                ON CONFLICT DO NOTHING;
+-- For dropable indexes/constraints, set the tic_separate_creation_step to TRUE if requested.
+            IF p_separateCreateIndex THEN
+                UPDATE @extschema@.table_index
+                    SET tic_separate_creation_step = TRUE
+                    WHERE tic_schema = p_schema
+                      AND tic_table = r_tbl.relname
+                      AND tic_drop_for_copy;
+            END IF;
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
 --    This will let the optimizer choose a proper plan for the compare_table() function, without the cost of an ANALYZE.
             IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
@@ -1356,6 +1372,67 @@ BEGIN
 END;
 $assign_table_part_to_batch$;
 
+-- The assign_index_to_batch() function assigns an index re-creation to a batch.
+CREATE FUNCTION assign_index_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema name of the related table
+    p_table                  TEXT,               -- The table name
+    p_object                 TEXT                -- The index or constraint to assign
+    )
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes, ie 1
+$assign_index_to_batch$
+DECLARE
+    v_batchType              TEXT;
+    v_separateCreateIndex    BOOLEAN;
+    v_kbytes                 FLOAT;
+    v_prevBatchName          TEXT;
+BEGIN
+-- Check that all parameter are not NULL.
+    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_object IS NULL THEN
+        RAISE EXCEPTION 'assign_index_to_batch: No input parameter can be NULL.';
+    END IF;
+-- Check that the batch exists, get its type and set its migration as in-progress.
+    SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
+-- Check that the batch type allows index creations.
+    IF v_batchType <> 'COPY' THEN
+        RAISE EXCEPTION 'assign_index_to_batch: an index creation cannot be assigned to a batch of type %.', v_batchType;
+    END IF;
+-- Check that the index belongs to a registered table and has been set as to be created in a separate step and get the table statistics.
+    SELECT tic_separate_creation_step, tbl_kbytes INTO v_separateCreateIndex, v_kbytes
+        FROM @extschema@.table_index
+             JOIN @extschema@.table_to_process ON (tbl_schema = tic_schema AND tbl_name = tic_table)
+        WHERE tic_schema = p_schema AND tic_table = p_table AND tic_object = p_object;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% is not known or the table is not registered.',
+                        p_object, p_schema, p_table;
+    END IF;
+    IF NOT v_separateCreateIndex THEN
+        RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% has not been set as to be created by a separate step.',
+                        p_object, p_schema, p_table;
+    END IF;
+-- Check that the index has not been already assigned to another batch.
+    SELECT stp_batch_name INTO v_prevBatchName
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+        WHERE stp_name = p_schema || '.' || p_table || '.' || p_object
+          AND bat_type = 'COPY';
+    IF FOUND THEN
+        RAISE EXCEPTION 'assign_index_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
+                        p_object, p_schema, p_table, v_prevBatchName;
+    END IF;
+-- Register the index creation into the step table.
+    INSERT INTO @extschema@.step (
+            stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
+            stp_sql_function, stp_cost
+        ) VALUES (
+            p_schema || '.' || p_table || '.' || p_object, p_batchName, 'INDEX', p_schema, p_table, p_object,
+            'create_index', v_kbytes
+        );
+--
+    RETURN 1;
+END;
+$assign_index_to_batch$;
+
 -- The assign_sequences_to_batch() function assigns a set of sequences of a single schema to a batch
 -- Two regexp filter sequences already registered to a migration to include and exclude to the batch.
 CREATE FUNCTION assign_sequences_to_batch(
@@ -1627,6 +1704,22 @@ BEGIN
     IF FOUND THEN
         RAISE EXCEPTION 'complete_migration_configuration: Fatal errors encountered';
     END IF;
+-- Check that tables having separetely created indexes have also separate first and last parts to enclose the indexes creation.
+    FOR r_tbl IN
+        SELECT tic_schema, tic_table
+            FROM (
+                SELECT tic_schema, tic_table, count(prt_number) AS nb_part
+                    FROM @extschema@.table_index
+                         JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
+                         LEFT OUTER JOIN @extschema@.table_part ON (tic_schema = prt_schema AND tic_table = prt_table)
+                    WHERE tic_separate_creation_step
+                      AND tbl_migration = p_migration
+                    GROUP BY 1,2
+                 ) AS t
+            WHERE nb_part < 2
+    LOOP
+        RAISE EXCEPTION 'complete_migration_configuration: The table %.% has separately created indexes but no table parts have been registered.', r_tbl.tic_schema, r_tbl.tic_table;
+    END LOOP;
 -- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
     FOR r_function IN
         SELECT DISTINCT '@extschema@.' || stp_sql_function || '(TEXT, TEXT, JSONB)' AS function_prototype
@@ -1664,7 +1757,7 @@ BEGIN
               AND stp_object = r_step.stp_object
               AND stp_part_num <> r_step.stp_part_num;
     END LOOP;
--- The table parts set as the last step for their table must have all the other parts of the same batch as parents.
+-- Process the table parts set as the last step for their table.
     FOR r_step IN
         SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_part_num
             FROM @extschema@.step
@@ -1673,6 +1766,7 @@ BEGIN
               AND stp_type = 'TABLE_PART'
               AND prt_is_last_step
     LOOP
+-- They must have all the other parts of the same batch as parents.
         SELECT array_agg(stp_name) INTO v_parents
             FROM @extschema@.step
                  JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
@@ -1681,6 +1775,38 @@ BEGIN
               AND stp_schema = r_step.stp_schema
               AND stp_object = r_step.stp_object
               AND stp_part_num <> r_step.stp_part_num
+              AND stp_batch_name = r_step.stp_batch_name;
+        UPDATE @extschema@.step
+            SET stp_parents = array_cat(stp_parents, v_parents)
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_name = r_step.stp_name;
+-- They must have all the create index steps of the same batch, if any, as parents also.
+        SELECT array_agg(stp_name) INTO v_parents
+            FROM @extschema@.step
+            WHERE stp_type = 'INDEX'
+              AND stp_schema = r_step.stp_schema
+              AND stp_object = r_step.stp_object
+              AND stp_batch_name = r_step.stp_batch_name;
+        UPDATE @extschema@.step
+            SET stp_parents = array_cat(stp_parents, v_parents)
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_name = r_step.stp_name;
+    END LOOP;
+-- Create the links for index creation steps.
+-- All the related table parts of the same batch, except the last one, are parents of each index creation step.
+    FOR r_step IN
+        SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_sub_object
+            FROM @extschema@.step
+            WHERE stp_batch_name = ANY (v_batchArray)
+              AND stp_type = 'INDEX'
+    LOOP
+        SELECT array_agg(stp_name) INTO v_parents
+            FROM @extschema@.step
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+            WHERE stp_type = 'TABLE_PART'
+              AND NOT prt_is_last_step
+              AND stp_schema = r_step.stp_schema
+              AND stp_object = r_step.stp_object
               AND stp_batch_name = r_step.stp_batch_name;
         UPDATE @extschema@.step
             SET stp_parents = array_cat(stp_parents, v_parents)
@@ -1853,7 +1979,7 @@ $check_batch$;
 --
 
 -- The copy_table() function is the generic copy function that is used to process tables.
--- Input parameters: batch and step names.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of copied rows.
 -- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
 CREATE FUNCTION copy_table(
@@ -1941,13 +2067,13 @@ BEGIN
 -- Pre-processing.
 --
     IF v_isFirstStep THEN
--- Drop the constraints known as 'to be dropped' (unique, exclude).
+-- Drop the constraints known as 'to be dropped' (pk, unique, exclude).
         FOR r_obj IN
             SELECT tic_object
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
-                  AND tic_type = 'C'
+                  AND tic_type LIKE 'C%'
                   AND tic_drop_for_copy
         LOOP
             EXECUTE format(
@@ -2004,23 +2130,36 @@ BEGIN
 -- Post processing.
 --
     IF v_isLastStep THEN
--- Recreate the constraints that have been previously dropped and that are not marked as "to be created by a separate step".
+-- Recreate the constraints that have been previously dropped.
         FOR r_obj IN
-            SELECT tic_object, tic_definition
+            SELECT tic_object, tic_type, tic_definition, tic_separate_creation_step
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
-                  AND tic_type = 'C'
+                  AND tic_type LIKE 'C%'
                   AND tic_drop_for_copy
-                  AND NOT tic_separate_creation_step
         LOOP
-            EXECUTE format(
-                'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
-                v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
-            );
-            v_nbCreatedIndex = v_nbCreatedIndex + 1;
+            IF NOT r_obj.tic_separate_creation_step THEN
+-- The index related to the constraint has not been already created (the most common case). So recreate the constraint with its initial definition.
+                EXECUTE format(
+                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
+                    v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
+                );
+                v_nbCreatedIndex = v_nbCreatedIndex + 1;
+            ELSE
+-- The index related to the constraint has been already created by a separate step. So just add the constraint using the existing index.
+                EXECUTE format(
+                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s USING INDEX %I',
+                    v_schema, v_table, r_obj.tic_object,
+                    CASE r_obj.tic_type
+                        WHEN 'Cp' THEN 'PRIMARY KEY'
+                        WHEN 'Cu' THEN 'UNIQUE'
+                        ELSE NULL                        -- should never happen
+                    END, r_obj.tic_object
+                );
+            END IF;
         END LOOP;
--- Recreate the indexes that have been previously dropped.
+-- Recreate the indexes that have been previously dropped and that are not recreated by a separate step.
         FOR r_obj IN
             SELECT tic_definition
                 FROM @extschema@.table_index
@@ -2075,7 +2214,7 @@ END;
 $copy_table$;
 
 -- The copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
--- Input parameters: batch and step names.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
 CREATE FUNCTION copy_sequence(
     p_batchName                TEXT,
@@ -2161,8 +2300,71 @@ BEGIN
 END;
 $get_source_sequence$;
 
+-- The create_index() function is a generic function recreate a index that has been marked as
+-- 'not to be created in the copy post-processing phase'. It may be useful to create several indexes in parallel for a large table.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report.
+CREATE FUNCTION create_index(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SET synchronous_commit = 'off'
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$create_index$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_index                    TEXT;
+    v_type                     TEXT;
+    v_definition               TEXT;
+    v_separateCreationStep     BOOLEAN;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the index/constraint.
+    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition, tic_separate_creation_step
+        INTO v_schema, v_table, v_index, v_type, v_definition, v_separateCreationStep
+        FROM @extschema@.step
+             JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_object = stp_sub_object)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'create_index: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Check that the requested index/constraint creation is valid.
+    IF NOT v_separateCreationStep THEN
+        RAISE EXCEPTION 'create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
+    END IF;
+-- Create the index of the constraint depending on its registered type.
+    CASE
+        WHEN v_type = 'I' THEN
+-- It is an index.
+            EXECUTE v_definition;
+        WHEN v_type IN ('Cp', 'Cu') THEN
+-- It is a constraint.
+-- Create the related index in advance. The constraint will be created later in the table copy post-processing, referencing this index.
+-- To get the index definition, just remove the PRIMARY KEY or UNIQUE keywords from the constraint definition.
+            EXECUTE format(
+                'CREATE UNIQUE INDEX %I ON %I.%I %s',
+                v_index, v_schema, v_table,
+                regexp_replace(v_definition, 'PRIMARY KEY |UNIQUE ', ''));
+        ELSE
+            RAISE EXCEPTION 'create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
+    END CASE;
+-- Return the step report.
+    r_output.sr_indicator = 'RECREATED_INDEXES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 13;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$create_index$;
+
 -- The compare_table() function is a generic compare function that is used to process tables.
--- Input parameters: batch and step names.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of discrepancies found.
 -- The function compares a foreign table with its related local table, using a single SQL statement.
 -- Discrepancies are inserted into the data2pg.content_diff table.
@@ -2346,7 +2548,7 @@ END;
 $compare_table$;
 
 -- The compare_sequence() function compares the characteristics of a source and its destination sequence.
--- Input parameters: batch and step names.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
 -- Discrepancies are inserted into the data2pg.content_diff table.
 CREATE FUNCTION compare_sequence(
@@ -2417,6 +2619,7 @@ END;
 $compare_sequence$;
 
 -- The truncate_all() function is a generic truncate function to clean up all tables of a migration.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of truncated tables.
 CREATE FUNCTION truncate_all(
     p_batchName                TEXT,
@@ -2463,6 +2666,7 @@ END;
 $truncate_all$;
 
 -- The truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
+-- Input parameters: batch name, step name and execution options.
 -- The truncation is only performed when the COMPARE_TRUNCATE_DIFF step option is set to true.
 -- It returns a step report including the number of truncated tables, i.e. 1 or 0 depending on the step option parameter.
 CREATE FUNCTION truncate_content_diff(
@@ -2497,6 +2701,7 @@ $truncate_content_diff$;
 
 -- The check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
 -- This may not be always the case because tables are populated in replica mode.
+-- Input parameters: batch name, step name and execution options.
 -- The function does not perform anything if the COPY_MAX_ROWS step option is set, because the referential integrity cannot be garanteed if only a subset of tables is copied.
 -- It returns a step report.
 CREATE FUNCTION check_fkey(
@@ -2566,7 +2771,7 @@ END;
 $check_fkey$;
 
 -- The discover_table() function scans a foreign table to compute some statistics useful to decide the best postgres data type for its columns.
--- Input parameters: batch and step names.
+-- Input parameters: batch name, step name and execution options.
 -- It stores the result into the discovery_column table.
 -- It returns a step report including the number of analyzed columns and rows.
 CREATE OR REPLACE FUNCTION discover_table(
