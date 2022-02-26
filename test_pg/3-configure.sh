@@ -201,17 +201,19 @@ SELECT complete_migration_configuration('PG''s db');
 
 COMMIT;
 
-select * from step order by stp_batch_name, stp_name;
-select * from table_to_process;
-select * from table_part;
-select * from sequence_to_process;
-select * from table_column order by tco_schema, tco_table, tco_number;
-select * from table_index order by tic_schema, tic_table, tic_object;
+select stp_batch_name as "Batch", count(*) as "#steps" from step group by 1 order by stp_batch_name;
+
+--select * from step order by stp_batch_name, stp_name;
+--select * from table_to_process;
+--select * from table_part;
+--select * from sequence_to_process;
+--select * from table_column order by tco_schema, tco_table, tco_number;
+--select * from table_index order by tic_schema, tic_table, tic_object;
 
 EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
 else
-  echo "  => The data migration is ready to start"
+  echo "  => The scheduler can use this migration configuration"
 fi
