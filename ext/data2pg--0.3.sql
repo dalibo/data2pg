@@ -738,15 +738,16 @@ BEGIN
           AND relkind = 'r'
           AND relname ~ p_tablesToInclude
           AND (p_tablesToExclude IS NULL OR relname !~ p_tablesToExclude);
--- Check that none of these selected tables are already registered.
-    SELECT string_agg(tbl_name, ', ') INTO v_tablesList
-        FROM @extschema@.table_to_process
-        WHERE tbl_schema = p_schema
-          AND tbl_name = ANY(v_tablesArray);
-    IF v_tablesList IS NOT NULL THEN
-        RAISE EXCEPTION 'register_tables: Some tables (%) are already assigned to a migration.',
-                         v_tablesList;
-    END IF;
+-- Exclude and notice the tables that are already registered
+    FOR r_tbl IN
+       SELECT tbl_name
+           FROM @extschema@.table_to_process
+           WHERE tbl_schema = p_schema
+             AND tbl_name = ANY(v_tablesArray)
+    LOOP
+        v_tablesArray = array_remove(v_tablesArray, r_tbl.tbl_name);
+        RAISE NOTICE 'register_tables: The table % is already assigned to a migration.', r_tbl.tbl_name;
+    END LOOP;
 -- Process the selected tables.
     v_nbTables = cardinality(v_tablesArray);
     IF v_nbTables = 0 THEN
@@ -1168,15 +1169,16 @@ BEGIN
               AND relkind = 'S'
               AND relname ~ p_sequencesToInclude
               AND (p_sequencesToExclude IS NULL OR relname !~ p_sequencesToExclude);
--- Check that none of these selected sequences are already registered.
-    SELECT string_agg(seq_name, ', ') INTO v_sequencesList
-        FROM @extschema@.sequence_to_process
-        WHERE seq_schema = p_schema
-          AND seq_name = ANY(v_sequencesArray);
-    IF v_sequencesList IS NOT NULL THEN
-        RAISE EXCEPTION 'register_sequences: Some sequences (%) are already assigned to a migration.',
-                         v_sequencesList;
-    END IF;
+-- Exclude and notice the sequences that are already registered
+    FOR r_seq IN
+       SELECT seq_name
+           FROM @extschema@.sequence_to_process
+           WHERE seq_schema = p_schema
+             AND seq_name = ANY(v_sequencesArray)
+    LOOP
+        v_sequencesArray = array_remove(v_sequencesArray, r_seq.seq_name);
+        RAISE NOTICE 'register_sequences: The sequence % is already assigned to a migration.', r_seq.seq_name;
+    END LOOP;
 -- Process the selected sequences.
     v_nbSequences = cardinality(v_sequencesArray);
     IF v_nbSequences = 0 THEN
@@ -1273,7 +1275,7 @@ BEGIN
                                 p_schema, r_tbl.tbl_name;
             END IF;
         END IF;
--- Register the table into the step table.
+-- Record the table into the step table.
         INSERT INTO @extschema@.step (
                 stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
                 stp_sql_function, stp_cost
@@ -1354,7 +1356,7 @@ BEGIN
                             p_schema, p_table, v_prevBatchName;
         END IF;
     END IF;
--- Register the table part into the step table.
+-- Record the table part into the step table.
     INSERT INTO @extschema@.step (
             stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_part_num,
             stp_sql_function, stp_cost
@@ -1420,7 +1422,7 @@ BEGIN
         RAISE EXCEPTION 'assign_index_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
                         p_object, p_schema, p_table, v_prevBatchName;
     END IF;
--- Register the index creation into the step table.
+-- Record the index creation into the step table.
     INSERT INTO @extschema@.step (
             stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
             stp_sql_function, stp_cost
@@ -1483,7 +1485,7 @@ BEGIN
                                 p_schema, r_seq.seq_name, v_prevBatchName;
             END IF;
         END IF;
--- Register the sequence into the step table.
+-- Record the sequence into the step table.
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sql_function, stp_cost)
             VALUES (
                 p_schema || '.' || r_seq.seq_name, p_batchName, 'SEQUENCE', p_schema, r_seq.seq_name,
@@ -1577,7 +1579,7 @@ BEGIN
             RAISE EXCEPTION 'assign_fkey_checks_to_batch: none of both tables linked by the fkey %.%.% are registered.',
                             p_schema, p_table, r_fk.conname;
         END IF;
--- Register the sequence into the step table.
+-- Record the FK check into the step table.
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
                                   stp_sub_object, stp_sql_function, stp_cost)
             VALUES (p_schema || '.' || p_table || '.' || r_fk.conname, p_batchName, 'FOREIGN_KEY', p_schema, p_table,
