@@ -76,12 +76,13 @@ SELECT create_migration(
 --
 
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
-SELECT register_tables('PG''s db', 'myschema2', '^myTbl3$', NULL, p_separateCreateIndex => true);
+SELECT register_table('PG''s db', 'myschema2', 'myTbl3', p_separateCreateIndex => true);
 SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
 SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL,
        p_ForeignTableOptions => 'OPTIONS(updatable ''false'')', p_createForeignTable => true);
 
 SELECT register_sequences('PG''s db', 'myschema1', '.*', NULL);
+SELECT register_sequence('PG''s db', 'myschema2', 'myseq2');
 SELECT register_sequences('PG''s db', 'myschema2', '.*', NULL);
 SELECT register_sequences('PG''s db', 'phil''s schema3', '.*', NULL);
 
@@ -133,12 +134,14 @@ SELECT create_batch('COMPARE_ALL','PG''s db','COMPARE',null);
 
 SELECT assign_tables_to_batch('BATCH1', 'myschema1', '.*', NULL);
 --select assign_tables_to_batch('BATCH1', 'myschema1', '.*', '^mytbl2b$');
-SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^mytbl1|myTbl3$');
+SELECT assign_table_to_batch('BATCH1', 'myschema2', 'mytbl2');
+SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^(mytbl1|mytbl2|myTbl3)$');
 SELECT assign_tables_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
 --select assign_tables_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
 SELECT assign_sequences_to_batch('BATCH1', 'myschema1', '.*', NULL);
-SELECT assign_sequences_to_batch('BATCH1', 'myschema2', '.*', NULL);
+SELECT assign_sequence_to_batch('BATCH1', 'myschema2', 'myseq2');
+SELECT assign_sequences_to_batch('BATCH1', 'myschema2', '.*', '^myseq2$');
 SELECT assign_sequences_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
 --select assign_sequences_to_batch('BATCH1', 'myschema4', '.*', NULL);
 

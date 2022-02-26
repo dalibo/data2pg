@@ -650,8 +650,8 @@ $drop_batch$;
 -- Some characteristics of the table are recorded into the table_to_process, table_index and table_column tables.
 CREATE FUNCTION register_tables(
     p_migration              TEXT,               -- The migration linked to the tables
-    p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
-    p_tablesToInclude        TEXT,               -- Regexp defining the tables to assign for the schema
+    p_schema                 TEXT,               -- The schema which tables have to be registered into the migration
+    p_tablesToInclude        TEXT,               -- Regexp defining the tables to register for the schema
     p_tablesToExclude        TEXT,               -- Regexp defining the tables to exclude (NULL to exclude no table)
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL,
@@ -668,7 +668,7 @@ CREATE FUNCTION register_tables(
     p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
                              DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
     )
-    RETURNS INT LANGUAGE plpgsql                 -- returns the number of effectively assigned tables
+    RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively assigned tables
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
 $register_tables$
 DECLARE
@@ -954,6 +954,34 @@ BEGIN
 END;
 $register_tables$;
 
+-- The register_table() function links a single table to a migration.
+-- It is just a wrapper over the register_tables() function.
+CREATE FUNCTION register_table(
+    p_migration              TEXT,               -- The migration linked to the tables
+    p_schema                 TEXT,               -- The schema holding the table to register
+    p_table                  TEXT,               -- The table name to register
+    p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
+                             DEFAULT NULL,
+    p_sourceTableStatLoc     TEXT                -- The data2pg table that contains statistics about these target tables
+                             DEFAULT 'source_table_stat',
+    p_createForeignTable     BOOLEAN             -- Boolean indicating whether the FOREIGN TABLE have to be created
+                             DEFAULT TRUE,       --   (if FALSE, an external operation must create them before launching a migration)
+    p_ForeignTableOptions    TEXT                -- A specific directive to apply to the created foreign tables
+                             DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
+                                                 --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
+                                                 --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
+    p_separateCreateIndex    BOOLEAN             -- Boolean indicating whether the indexes of these tables have to be created by
+                             DEFAULT FALSE,      --   separate steps (to speed-up index rebuild for large tables with a lof of indexes)
+    p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
+                             DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
+    )
+    RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively assigned tables
+    AS
+$register_table$
+    SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableStatLoc,
+                                       p_createForeignTable, p_ForeignTableOptions, p_separateCreateIndex, p_sortByPKey);
+$register_table$;
+
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
 -- It allows to manage columns with different names, with different types and or with specific computation rule.
 -- The target column is defined with the schema, table and column name.
@@ -1079,7 +1107,7 @@ CREATE FUNCTION register_table_part(
     p_isLastPart             BOOLEAN             -- Boolean indicating that the part is the last one for the table
                              DEFAULT FALSE       --   (if TRUE, the post-processing action is performed)
     )
-    RETURNS INT LANGUAGE plpgsql AS              -- returns the number of effectively assigned table part, i.e. 1
+    RETURNS INT LANGUAGE plpgsql AS              -- Returns the number of effectively assigned table part, i.e. 1
 $register_table_part$
 DECLARE
     v_migrationName          TEXT;
@@ -1130,12 +1158,12 @@ $register_table_part$;
 CREATE FUNCTION register_sequences(
     p_migration              TEXT,               -- The migration linked to the sequences
     p_schema                 TEXT,               -- The schema which sequences have to be registered to the migration
-    p_sequencesToInclude     TEXT,               -- Regexp defining the sequences to assign for the schema
+    p_sequencesToInclude     TEXT,               -- Regexp defining the sequences to register for the schema
     p_sequencesToExclude     TEXT,               -- Regexp defining the sequences to exclude (NULL to exclude no sequence)
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL
     )
-    RETURNS INTEGER LANGUAGE plpgsql             -- returns the number of effectively registered sequences
+    RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively registered sequences
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
 $register_sequences$
 DECLARE
@@ -1190,9 +1218,7 @@ BEGIN
                 FROM pg_catalog.pg_class
                      JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
                 WHERE nspname = p_schema
-                  AND relkind = 'S'
-                  AND relname ~ p_sequencesToInclude
-                  AND (p_sequencesToExclude IS NULL OR relname !~ p_sequencesToExclude)
+                  AND relname = ANY(v_sequencesArray)
                 ORDER BY relname
         LOOP
 -- For PostgreSQL source database only,
@@ -1219,6 +1245,21 @@ BEGIN
 END;
 $register_sequences$;
 
+-- The register_sequence() function links a single sequence to a migration.
+-- It is just a wrapper over the register_sequences() function.
+CREATE FUNCTION register_sequence(
+    p_migration              TEXT,               -- The migration linked to the sequences
+    p_schema                 TEXT,               -- The schema holding the sequence to register
+    p_sequence               TEXT,               -- The sequence name to register for the schema
+    p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
+                             DEFAULT NULL
+    )
+    RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively registered sequences
+    AS
+$register_sequence$
+    SELECT @extschema@.register_sequences(p_migration, p_schema, '^' || p_sequence || '$', NULL, p_sourceSchema);
+$register_sequence$;
+
 -- The assign_tables_to_batch() function assigns a set of tables of a single schema to a batch.
 -- Two regexp filter tables already registered to a migration to include and exclude to the batch.
 CREATE FUNCTION assign_tables_to_batch(
@@ -1227,7 +1268,7 @@ CREATE FUNCTION assign_tables_to_batch(
     p_tablesToInclude        TEXT,               -- Regexp defining the tables to assign for the schema
     p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL to exclude no table)
     )
-    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned tables
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned tables
 $assign_tables_to_batch$
 DECLARE
     v_migrationName          TEXT;
@@ -1299,6 +1340,18 @@ BEGIN
 END;
 $assign_tables_to_batch$;
 
+-- The assign_table_to_batch() function assigns a single table to a batch.
+-- It is a simple wrapper over the assign_tables_to_batch() function.
+CREATE FUNCTION assign_table_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema holding the table to assign
+    p_table                  TEXT                -- The table to assign
+    )
+    RETURNS INTEGER LANGUAGE sql AS              -- Returns the number of effectively assigned tables.
+$assign_table_to_batch$
+    SELECT @extschema@.assign_tables_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
+$assign_table_to_batch$;
+
 -- The assign_table_part_to_batch() function assigns a table's part to a batch.
 -- Two regexp filter tables already registered to a migration to include and exclude to the batch.
 CREATE FUNCTION assign_table_part_to_batch(
@@ -1307,7 +1360,7 @@ CREATE FUNCTION assign_table_part_to_batch(
     p_table                  TEXT,               -- The table name
     p_partNum                INTEGER             -- The part number to assign
     )
-    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned table part, ie. 1
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table part, ie. 1
 $assign_table_part_to_batch$
 DECLARE
     v_batchType              TEXT;
@@ -1499,6 +1552,18 @@ BEGIN
     RETURN v_nbSequences;
 END;
 $assign_sequences_to_batch$;
+
+-- The assign_sequence_to_batch() function assigns a single sequence to a batch.
+-- It is a simple wrapper over the assign_sequences_to_batch() function.
+CREATE FUNCTION assign_sequence_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema holding the sequence to assign
+    p_sequence               TEXT                -- The sequence name
+    )
+    RETURNS INTEGER LANGUAGE sql AS              -- Returns the number of effectively assigned sequences.
+$assign_sequence_to_batch$
+    SELECT @extschema@.assign_sequences_to_batch(p_batchName, p_schema, '^' || p_sequence || '$', NULL);
+$assign_sequence_to_batch$;
 
 -- The assign_fkey_checks_to_batch() function assigns checks on one or all foreign keys of a table to a batch.
 CREATE FUNCTION assign_fkey_checks_to_batch(
