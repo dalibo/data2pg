@@ -618,7 +618,7 @@ BEGIN
 END;
 $create_batch$;
 
--- The drop_batch() function remove all components linked to a given batch.
+-- The drop_batch() function removes all components linked to a given batch.
 -- It returns the number of removed steps.
 CREATE FUNCTION drop_batch(
     p_batchName              TEXT
@@ -1388,25 +1388,35 @@ BEGIN
                         p_partNum, p_schema, p_table;
     END IF;
     IF v_batchType = 'COPY' THEN
--- For batches of type COPY, check that the table part has not been already assigned to another batch of type COPY.
+-- For batches of type COPY, check if the table part has been already assigned.
         SELECT stp_batch_name INTO v_prevBatchName
             FROM @extschema@.step
                  JOIN @extschema@.batch ON (bat_name = stp_batch_name)
             WHERE stp_name = p_schema || '.' || p_table || '.' || p_partNum
               AND bat_type = 'COPY';
         IF FOUND THEN
-            RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% is already assigned to the batch %.',
-                            p_partNum, p_schema, p_table, v_prevBatchName;
+            IF v_prevBatchName <> p_batchName THEN
+                RAISE WARNING 'assign_table_part_to_batch: The part % of the table %.% is already assigned to the batch %.',
+                                p_partNum, p_schema, p_table, v_prevBatchName;
+            ELSE
+                RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% is already assigned to this batch.',
+                                p_partNum, p_schema, p_table;
+            END IF;
         END IF;
--- ... and check that the table is not already fully assigned to a batch of the same type.
+-- ... and check if the table is already fully assigned to a batch of the same type.
         SELECT stp_batch_name INTO v_prevBatchName
             FROM @extschema@.step
                  JOIN @extschema@.batch ON (bat_name = stp_batch_name)
             WHERE stp_name = p_schema || '.' || p_table
               AND bat_type = 'COPY';
         IF FOUND THEN
-            RAISE EXCEPTION 'assign_table_part_to_batch: The table %.% is already assigned to the batch "%".',
-                            p_schema, p_table, v_prevBatchName;
+            IF v_prevBatchName <> p_batchName THEN
+                RAISE WARNING 'assign_table_part_to_batch: The table %.% is already assigned to the batch "%".',
+                                p_schema, p_table, v_prevBatchName;
+            ELSE
+                RAISE EXCEPTION 'assign_table_part_to_batch: The table %.% is already assigned to this batch.',
+                                p_schema, p_table;
+            END IF;
         END IF;
     END IF;
 -- Record the table part into the step table.
