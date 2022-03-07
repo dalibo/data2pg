@@ -746,7 +746,7 @@ BEGIN
              AND tbl_name = ANY(v_tablesArray)
     LOOP
         v_tablesArray = array_remove(v_tablesArray, r_tbl.tbl_name);
-        RAISE NOTICE 'register_tables: The table % is already assigned to a migration.', r_tbl.tbl_name;
+        RAISE NOTICE 'register_tables: The table % is already registered to a migration.', r_tbl.tbl_name;
     END LOOP;
 -- Process the selected tables.
     v_nbTables = cardinality(v_tablesArray);
@@ -862,15 +862,12 @@ BEGIN
                     END LOOP;
                 END IF;
             ELSE
---   Without PK or UNIQUE index, use all columns and issue a warning.
+--   Without PK or UNIQUE index, use all columns.
                 SELECT array_agg(attnum ORDER BY attnum)
                     INTO v_compareKeyColNb
                     FROM pg_catalog.pg_attribute
                     WHERE attrelid = r_tbl.table_oid
                       AND attnum > 0 AND NOT attisdropped;
-                RAISE WARNING 'register_tables: The table %.% has neither PK nor UNIQUE index.'
-                              ' All columns are used as sort key, without being sure that there will not be duplicates',
-                              p_schema, r_tbl.relname;
             END IF;
 --   Insert into the table_column table
             EXECUTE format(
@@ -1314,6 +1311,18 @@ BEGIN
             IF FOUND THEN
                 RAISE EXCEPTION 'assign_tables_to_batch: The table %.% has at least 1 part already assigned to a batch of type COPY.',
                                 p_schema, r_tbl.tbl_name;
+            END IF;
+        ELSIF v_batchType = 'COMPARE' THEN
+-- For batches of type COMPARE, raise a warning if the table has neither PK nor unique index.
+            PERFORM 0
+                FROM @extschema@.table_index
+                WHERE tic_schema = p_schema
+                  AND tic_table = r_tbl.tbl_name
+                  AND tic_type IN ('Cp', 'Cu');
+            IF NOT FOUND THEN
+                RAISE WARNING 'assign_tables_to_batch: The table %.% has neither PK nor UNIQUE index.'
+                              ' All columns are used as sort key, without being sure that there will not be duplicates',
+                              p_schema, r_tbl.tbl_name;
             END IF;
         END IF;
 -- Record the table into the step table.
