@@ -149,6 +149,9 @@ CREATE TABLE table_index (
     tic_definition             TEXT NOT NULL,           -- The index or constraint definition
     tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
     tic_separate_creation_step BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the index has to be created by a separate step
+    tic_last_drop_ts           TIMESTAMPTZ,             -- The timestamp of the latest drop of this index or constraint
+    tic_last_create_ts         TIMESTAMPTZ,             -- The timestamp of the latest re-creation of this index or constraint
+    tic_last_create_duration   INTERVAL,                -- The last recreation duration
     PRIMARY KEY (tic_schema, tic_table, tic_object),
     FOREIGN KEY (tic_schema, tic_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
@@ -2153,7 +2156,7 @@ BEGIN
 -- Pre-processing.
 --
     IF v_isFirstStep THEN
--- Drop the constraints known as 'to be dropped' (pk, unique, exclude).
+-- Drop the constraints known as 'to be dropped' (pk, unique, exclude) and record the drop timestamp.
         FOR r_obj IN
             SELECT tic_object
                 FROM @extschema@.table_index
@@ -2166,9 +2169,16 @@ BEGIN
                 'ALTER TABLE %I.%I DROP CONSTRAINT %I',
                 v_schema, v_table, r_obj.tic_object
             );
+            UPDATE @extschema@.table_index
+                SET tic_last_drop_ts = clock_timestamp(),
+                    tic_last_create_ts = NULL,
+                    tic_last_create_duration = NULL
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
             v_nbDroppedIndex = v_nbDroppedIndex + 1;
         END LOOP;
--- Drop the indexes known as "to be dropped" during the copy processing.
+-- Drop the indexes known as "to be dropped" during the copy processing and record the drop timestamp.
         FOR r_obj IN
             SELECT tic_object
                 FROM @extschema@.table_index
@@ -2181,6 +2191,13 @@ BEGIN
                 'DROP INDEX %I.%I',
                 v_schema, r_obj.tic_object
             );
+            UPDATE @extschema@.table_index
+                SET tic_last_drop_ts = clock_timestamp(),
+                    tic_last_create_ts = NULL,
+                    tic_last_create_duration = NULL
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
             v_nbDroppedIndex = v_nbDroppedIndex + 1;
         END LOOP;
     END IF;
@@ -2226,12 +2243,25 @@ BEGIN
                   AND tic_drop_for_copy
         LOOP
             IF NOT r_obj.tic_separate_creation_step THEN
--- The index related to the constraint has not been already created (the most common case). So recreate the constraint with its initial definition.
+-- The index related to the constraint has not been already created (the most common case).
+                v_nbCreatedIndex = v_nbCreatedIndex + 1;
+-- Record the recreation start timestamp.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_ts = clock_timestamp()
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
+-- Recreate the constraint with its initial definition.
                 EXECUTE format(
                     'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
                     v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
                 );
-                v_nbCreatedIndex = v_nbCreatedIndex + 1;
+-- Record the recreation duration.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
             ELSE
 -- The index related to the constraint has been already created by a separate step. So just add the constraint using the existing index.
                 EXECUTE format(
@@ -2255,8 +2285,21 @@ BEGIN
                   AND tic_drop_for_copy
                   AND NOT tic_separate_creation_step
         LOOP
-            EXECUTE r_obj.tic_definition;
             v_nbCreatedIndex = v_nbCreatedIndex + 1;
+-- Record the recreation start timestamp
+            UPDATE @extschema@.table_index
+                SET tic_last_create_ts = clock_timestamp()
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
+-- Create the index.
+            EXECUTE r_obj.tic_definition;
+-- Record the recreation duration
+            UPDATE @extschema@.table_index
+                SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
         END LOOP;
 -- Get the statistics (and let the autovacuum do its job).
         EXECUTE format(
@@ -2422,6 +2465,12 @@ BEGIN
     IF NOT v_separateCreationStep THEN
         RAISE EXCEPTION 'create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
     END IF;
+-- Record the recreation start timestamp.
+    UPDATE @extschema@.table_index
+        SET tic_last_create_ts = clock_timestamp()
+        WHERE tic_schema = v_schema
+          AND tic_table = v_table
+          AND tic_object = v_index;
 -- Create the index of the constraint depending on its registered type.
     CASE
         WHEN v_type = 'I' THEN
@@ -2438,6 +2487,12 @@ BEGIN
         ELSE
             RAISE EXCEPTION 'create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
     END CASE;
+-- Record the recreation duration
+    UPDATE @extschema@.table_index
+        SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+        WHERE tic_schema = v_schema
+          AND tic_table = v_table
+          AND tic_object = v_index;
 -- Return the step report.
     r_output.sr_indicator = 'RECREATED_INDEXES';
     r_output.sr_value = 1;
