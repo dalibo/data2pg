@@ -465,7 +465,7 @@ sub initRun {
     my $nullableRefRun;  # Reference run id to feed the SQL statement ; set to NULL if not defined
     my $migrationName;   # Migration name returned by the get_batch_ids() function call
     my $isMigCompleted;  # Flag representing the migration configuration state as returned by the get_batch_ids() function call
-    my $stepOptionsError;# Error message, if any, reported by the check_step_options() function (empty string if no error)
+    my $stepOptionsError;# Error message, if any, reported by the __check_step_options() function (empty string if no error)
     my $runFound;        # Boolean used to check the non existence of a supplied run id
     my $quotedComment;   # Comment properly quoted for the SQL
     my $quotedBatchType; # Batch type properly quoted for the SQL
@@ -566,8 +566,8 @@ sub initRun {
     }
 
     $sql = qq(
-        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed, check_step_options($quotedStepOpt)
-            FROM get_batch_ids()
+        SELECT bi_batch_type, bi_mgr_name, bi_mgr_config_completed, __check_step_options($quotedStepOpt)
+            FROM __get_batch_ids()
             WHERE bi_batch_name = $quotedBatchName
     );
     ($batchType, $migrationName, $isMigCompleted, $stepOptionsError) = $sessions[1]->{dbh}->selectrow_array($sql);
@@ -737,7 +737,7 @@ sub buildWorkingPlan {
     $quotedBatchName = $sessions[1]->{dbh}->quote($batchName, { pg_type => PG_VARCHAR });
     $sql = qq(
         SELECT wp_name, wp_sql_function, wp_shell_script, wp_cost, wp_parents
-          FROM get_working_plan($quotedBatchName)
+          FROM __get_working_plan($quotedBatchName)
     );
     $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}});
 # Insert returned steps into the step table of the data2pg database.
@@ -1289,7 +1289,7 @@ sub abortRun {
 
 # Ask for the backends termination,
         $sql = qq(
-          SELECT $pgSchema.terminate_data2pg_backends('$pgPidsToKill')
+          SELECT $pgSchema.__terminate_data2pg_backends('$pgPidsToKill')
         );
         ($pgKilledPids) = $dbh->selectrow_array($sql);
         if ($verbose) {printVerbose("PostgreSQL backends terminated: $pgPidsToKill.");}
@@ -1376,7 +1376,7 @@ sub checkDb {
 # Get the configured batches.
     $sql = qq(
         SELECT bi_mgr_name, bi_batch_name, bi_batch_type, CASE bi_mgr_config_completed WHEN TRUE THEN 'Yes' ELSE 'No' END AS mgr_is_ready
-            FROM get_batch_ids()
+            FROM __get_batch_ids()
             ORDER BY bi_mgr_name, bi_batch_name
     );
     $rows = $sessions[1]->{dbh}->selectall_arrayref($sql, {Slice => {}});

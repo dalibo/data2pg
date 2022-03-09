@@ -18,7 +18,7 @@ $$;
 --
 -- Create specific types.
 --
--- The batch_id_type coposite type is used as output record for the get_batch_ids() function called by the Data2Pg scheduler.
+-- The batch_id_type coposite type is used as output record for the __get_batch_ids() function called by the Data2Pg scheduler.
 CREATE TYPE batch_id_type AS (
     bi_batch_name              TEXT,                    -- The name of the batch
     bi_batch_type              TEXT,                    -- The batch type
@@ -26,7 +26,7 @@ CREATE TYPE batch_id_type AS (
     bi_mgr_config_completed    BOOLEAN                  -- Boolean indicating whether the migration configuration is completed or not
 );
 
--- The working_plan_type composite type is used as output record for the get_working_plan() function called by the Data2Pg scheduler.
+-- The working_plan_type composite type is used as output record for the __get_working_plan() function called by the Data2Pg scheduler.
 CREATE TYPE working_plan_type AS (
     wp_name                    TEXT,                    -- The name of the step
     wp_sql_function            TEXT,                    -- The sql function to execute (for common cases)
@@ -213,7 +213,7 @@ CREATE TABLE discovery_table (
     dscv_table               TEXT NOT NULL,              -- The analyzed table name on the source database
     dscv_timestamp           TIMESTAMPTZ                 -- The transaction timestamp of the table analysis
                              DEFAULT current_timestamp,
-    dscv_max_row             BIGINT,                     -- The DISCOVER_MAX_ROWS parameter, if set at discover_table() time.
+    dscv_max_row             BIGINT,                     -- The DISCOVER_MAX_ROWS parameter, if set at _discover_table() time.
     dscv_nb_row              BIGINT,                     -- The number of rows in the analyzed table
     PRIMARY KEY (dscv_schema, dscv_table)
 );
@@ -389,7 +389,7 @@ BEGIN
               FROM @extschema@.ora_tables GROUP BY 1,2,3,4;
 
         -- Drop the now useless foreign tables, but keep the ora_sequences
-        -- that will be used by the copy_sequence() function.
+        -- that will be used by the _copy_sequence() function.
         DROP FOREIGN TABLE @extschema@.ora_tables;
 
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
@@ -610,11 +610,11 @@ BEGIN
 -- If the batch needs a truncate step, add it into the step table.
     IF p_batchType = 'COPY' AND p_startWithTruncate THEN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
-            VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', 'truncate_all', 1);
+            VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', '_truncate_all', 1);
     END IF;
     IF p_batchType = 'COMPARE' THEN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
-            VALUES ('TRUNCATE_DIFF', p_batchName, 'TRUNCATE', 'truncate_content_diff', 1);
+            VALUES ('TRUNCATE_DIFF', p_batchName, 'TRUNCATE', '_truncate_content_diff', 1);
     END IF;
 --
     RETURN 1;
@@ -941,7 +941,7 @@ BEGIN
                       AND tic_drop_for_copy;
             END IF;
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
---    This will let the optimizer choose a proper plan for the compare_table() function, without the cost of an ANALYZE.
+--    This will let the optimizer choose a proper plan for the _compare_table() function, without the cost of an ANALYZE.
             IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
                 UPDATE pg_catalog.pg_class
                     SET reltuples = coalesce(v_sourceRows, 0), relpages = coalesce(v_sourceKBytes / 8, 0)
@@ -1335,10 +1335,10 @@ BEGIN
             ) VALUES (
                 p_schema || '.' || r_tbl.tbl_name, p_batchName, 'TABLE', p_schema, r_tbl.tbl_name,
                 CASE v_batchType
-                    WHEN 'COPY' THEN 'copy_table'
-                    WHEN 'CHECK' THEN 'check_table'
-                    WHEN 'COMPARE' THEN 'compare_table'
-                    WHEN 'DISCOVER' THEN 'discover_table'
+                    WHEN 'COPY' THEN '_copy_table'
+                    WHEN 'CHECK' THEN '_check_table'
+                    WHEN 'COMPARE' THEN '_compare_table'
+                    WHEN 'DISCOVER' THEN '_discover_table'
                 END,
                 r_tbl.tbl_kbytes
             );
@@ -1438,9 +1438,9 @@ BEGIN
         ) VALUES (
             p_schema || '.' || p_table || '.' || p_partNum, p_batchName, 'TABLE_PART', p_schema, p_table, p_partNum,
             CASE v_batchType
-                WHEN 'COPY' THEN 'copy_table'
-                WHEN 'CHECK' THEN 'check_table'
-                WHEN 'COMPARE' THEN 'compare_table'
+                WHEN 'COPY' THEN '_copy_table'
+                WHEN 'CHECK' THEN '_check_table'
+                WHEN 'COMPARE' THEN '_compare_table'
             END,
             v_kbytes
         );
@@ -1503,7 +1503,7 @@ BEGIN
             stp_sql_function, stp_cost
         ) VALUES (
             p_schema || '.' || p_table || '.' || p_object, p_batchName, 'INDEX', p_schema, p_table, p_object,
-            'create_index', v_kbytes
+            '_create_index', v_kbytes
         );
 --
     RETURN 1;
@@ -1565,8 +1565,8 @@ BEGIN
             VALUES (
                 p_schema || '.' || r_seq.seq_name, p_batchName, 'SEQUENCE', p_schema, r_seq.seq_name,
                 CASE v_batchType
-                    WHEN 'COPY' THEN 'copy_sequence'
-                    WHEN 'COMPARE' THEN 'compare_sequence'
+                    WHEN 'COPY' THEN '_copy_sequence'
+                    WHEN 'COMPARE' THEN '_compare_sequence'
                 END,
                 10);
     END LOOP;
@@ -1670,7 +1670,7 @@ BEGIN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object,
                                   stp_sub_object, stp_sql_function, stp_cost)
             VALUES (p_schema || '.' || p_table || '.' || r_fk.conname, p_batchName, 'FOREIGN_KEY', p_schema, p_table,
-                    r_fk.conname, 'check_fkey', v_cost);
+                    r_fk.conname, '_check_fkey', v_cost);
     END LOOP;
 -- Check that fkeys have been found.
     IF v_nbFKey = 0 AND p_fkey IS NOT NULL THEN
@@ -2067,11 +2067,11 @@ $check_batch$;
 --
 --
 
--- The copy_table() function is the generic copy function that is used to process tables.
+-- The _copy_table() function is the generic copy function that is used to process tables.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of copied rows.
 -- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
-CREATE FUNCTION copy_table(
+CREATE FUNCTION _copy_table(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
@@ -2080,7 +2080,7 @@ CREATE FUNCTION copy_table(
     SET session_replication_role = 'replica'
     SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$copy_table$
+$_copy_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
@@ -2115,7 +2115,7 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'copy_table: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_copy_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the table_to_process table to get table related details.
     SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
@@ -2340,12 +2340,12 @@ BEGIN
 --
     RETURN;
 END;
-$copy_table$;
+$_copy_table$;
 
--- The copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
+-- The _copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
-CREATE FUNCTION copy_sequence(
+CREATE FUNCTION _copy_sequence(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
@@ -2353,7 +2353,7 @@ CREATE FUNCTION copy_sequence(
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$copy_sequence$
+$_copy_sequence$
 DECLARE
     v_schema                   TEXT;
     v_sequence                 TEXT;
@@ -2373,11 +2373,11 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'copy_sequence: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_copy_sequence: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Depending on the source DBMS, get the sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
-       FROM @extschema@.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
 -- Set the sequence's characteristics.
     EXECUTE format(
         'SELECT setval(%L, %s, %s)',
@@ -2392,13 +2392,13 @@ BEGIN
 --
     RETURN;
 END;
-$copy_sequence$;
+$_copy_sequence$;
 
--- The get_source_sequence() function get the properties of a sequence on the source database, depending on the RDBMS.
+-- The _get_source_sequence() function get the properties of a sequence on the source database, depending on the RDBMS.
 -- It is called by functions processing sequences copy or comparison.
 -- Input parameters: source DBSM and the sequence id.
 -- The output parameters: last value and is_called properties.
-CREATE FUNCTION get_source_sequence(
+CREATE FUNCTION _get_source_sequence(
     p_sourceDbms               TEXT,
     p_sourceSchema             TEXT,
     p_foreignSchema            TEXT,
@@ -2408,7 +2408,7 @@ CREATE FUNCTION get_source_sequence(
     )
     RETURNS RECORD LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$get_source_sequence$
+$_get_source_sequence$
 BEGIN
 -- Depending on the source DBMS, get the sequence's characteristics.
     IF p_sourceDbms = 'Oracle' THEN
@@ -2422,18 +2422,18 @@ BEGIN
             p_foreignSchema, p_sequence
             ) INTO p_lastValue, p_isCalled;
     ELSE
-        RAISE EXCEPTION 'get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
+        RAISE EXCEPTION '_get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
     END IF;
 --
     RETURN;
 END;
-$get_source_sequence$;
+$_get_source_sequence$;
 
--- The create_index() function is a generic function recreate a index that has been marked as
+-- The _create_index() function is a generic function recreate a index that has been marked as
 -- 'not to be created in the copy post-processing phase'. It may be useful to create several indexes in parallel for a large table.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
-CREATE FUNCTION create_index(
+CREATE FUNCTION _create_index(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
@@ -2441,7 +2441,7 @@ CREATE FUNCTION create_index(
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$create_index$
+$_create_index$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
@@ -2459,11 +2459,11 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'create_index: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_create_index: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Check that the requested index/constraint creation is valid.
     IF NOT v_separateCreationStep THEN
-        RAISE EXCEPTION 'create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
+        RAISE EXCEPTION '_create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
     END IF;
 -- Record the recreation start timestamp.
     UPDATE @extschema@.table_index
@@ -2485,7 +2485,7 @@ BEGIN
                 v_index, v_schema, v_table,
                 regexp_replace(v_definition, 'PRIMARY KEY |UNIQUE ', ''));
         ELSE
-            RAISE EXCEPTION 'create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
+            RAISE EXCEPTION '_create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
     END CASE;
 -- Record the recreation duration
     UPDATE @extschema@.table_index
@@ -2502,9 +2502,9 @@ BEGIN
 --
     RETURN;
 END;
-$create_index$;
+$_create_index$;
 
--- The compare_table() function is a generic compare function that is used to process tables.
+-- The _compare_table() function is a generic compare function that is used to process tables.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of discrepancies found.
 -- The function compares a foreign table with its related local table, using a single SQL statement.
@@ -2515,14 +2515,14 @@ $create_index$;
 -- It may be simple masking. In this case, the keyword "MASKED" replaces the column content for the comparison and in the content_diff table.
 -- It may be an computation applied on the source column and on the local column. Both may be different if needed.
 -- When a comparison rule is applied on a column, its name reported in the content_diff JSON values is enclosed by parenthesis.
-CREATE FUNCTION compare_table(
+CREATE FUNCTION _compare_table(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$compare_table$
+$_compare_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
@@ -2548,7 +2548,7 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'compare_table: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_compare_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the table_to_process table to get table related details.
     SELECT tbl_foreign_schema, tbl_foreign_name
@@ -2587,7 +2587,7 @@ BEGIN
             FROM @extschema@.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
         IF v_partCondition IS NULL THEN
-            RAISE WARNING 'compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
+            RAISE WARNING '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
         END IF;
     END IF;
 -- Analyze the step options.
@@ -2686,20 +2686,20 @@ BEGIN
 --
     RETURN;
 END;
-$compare_table$;
+$_compare_table$;
 
--- The compare_sequence() function compares the characteristics of a source and its destination sequence.
+-- The _compare_sequence() function compares the characteristics of a source and its destination sequence.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
 -- Discrepancies are inserted into the data2pg.content_diff table.
-CREATE FUNCTION compare_sequence(
+CREATE FUNCTION _compare_sequence(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$compare_sequence$
+$_compare_sequence$
 DECLARE
     v_schema                   TEXT;
     v_sequence                 TEXT;
@@ -2722,11 +2722,11 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'compare_sequence: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_compare_sequence: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Depending on the source DBMS, get the source sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
-       FROM @extschema@.get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
 -- Get the destination sequence's characteristics.
     EXECUTE format(
         'SELECT last_value, is_called
@@ -2757,19 +2757,19 @@ BEGIN
 --
     RETURN;
 END;
-$compare_sequence$;
+$_compare_sequence$;
 
--- The truncate_all() function is a generic truncate function to clean up all tables of a migration.
+-- The _truncate_all() function is a generic truncate function to clean up all tables of a migration.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of truncated tables.
-CREATE FUNCTION truncate_all(
+CREATE FUNCTION _truncate_all(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$truncate_all$
+$_truncate_all$
 DECLARE
     v_batchName                TEXT;
     v_tablesList               TEXT;
@@ -2783,7 +2783,7 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'truncate_all: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_truncate_all: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Build the tables list of all tables of the migration.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
@@ -2804,7 +2804,7 @@ BEGIN
 --
     RETURN;
 END;
-$truncate_all$;
+$_truncate_all$;
 
 -- The _verify_objects() function verify that all objects involved in a migration really exists.
 -- Input parameters: migration name.
@@ -2932,17 +2932,17 @@ BEGIN
 END;
 $_verify_objects$;
 
--- The truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
+-- The _truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
 -- Input parameters: batch name, step name and execution options.
 -- The truncation is only performed when the COMPARE_TRUNCATE_DIFF step option is set to true.
 -- It returns a step report including the number of truncated tables, i.e. 1 or 0 depending on the step option parameter.
-CREATE FUNCTION truncate_content_diff(
+CREATE FUNCTION _truncate_content_diff(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql AS
-$truncate_content_diff$
+$_truncate_content_diff$
 DECLARE
     v_compareTruncateDiff      BOOLEAN;
     r_output                   @extschema@.step_report_type;
@@ -2964,21 +2964,21 @@ BEGIN
 --
     RETURN;
 END;
-$truncate_content_diff$;
+$_truncate_content_diff$;
 
--- The check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
+-- The _check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
 -- This may not be always the case because tables are populated in replica mode.
 -- Input parameters: batch name, step name and execution options.
 -- The function does not perform anything if the COPY_MAX_ROWS step option is set, because the referential integrity cannot be garanteed if only a subset of tables is copied.
 -- It returns a step report.
-CREATE FUNCTION check_fkey(
+CREATE FUNCTION _check_fkey(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$check_fkey$
+$_check_fkey$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
@@ -2993,7 +2993,7 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'check_fkey: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_check_fkey: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Analyze the step options.
     v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
@@ -3009,7 +3009,7 @@ BEGIN
               AND conname = v_fkey;
 -- Check that the FK still exist.
        IF NOT FOUND THEN
-           RAISE EXCEPTION 'check_fkey: The foreign key % for table %.% has not been found.', v_fkey, v_schema, v_table;
+           RAISE EXCEPTION '_check_fkey: The foreign key % for table %.% has not been found.', v_fkey, v_schema, v_table;
        END IF;
 -- Drop the FK.
        EXECUTE format(
@@ -3035,20 +3035,20 @@ BEGIN
 --
   RETURN;
 END;
-$check_fkey$;
+$_check_fkey$;
 
--- The discover_table() function scans a foreign table to compute some statistics useful to decide the best postgres data type for its columns.
+-- The _discover_table() function scans a foreign table to compute some statistics useful to decide the best postgres data type for its columns.
 -- Input parameters: batch name, step name and execution options.
 -- It stores the result into the discovery_column table.
 -- It returns a step report including the number of analyzed columns and rows.
-CREATE OR REPLACE FUNCTION discover_table(
+CREATE OR REPLACE FUNCTION _discover_table(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$discover_table$
+$_discover_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
@@ -3086,7 +3086,7 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'discover_table: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_discover_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the migration table to get the FDW server name.
     SELECT mgr_server_name
@@ -3483,24 +3483,28 @@ BEGIN
 --
     RETURN;
 END;
-$discover_table$;
+$_discover_table$;
 
--- The get_batch_ids() function is called by the Data2Pg scheduler to get the list of all configured batches.
-CREATE FUNCTION get_batch_ids()
+--
+-- Service functions called by the Data2Pg scheduler.
+--
+
+-- The __get_batch_ids() function is called by the Data2Pg scheduler to get the list of all configured batches.
+CREATE FUNCTION __get_batch_ids()
     RETURNS SETOF batch_id_type LANGUAGE sql AS
-$get_batch_ids$
+$__get_batch_ids$
 SELECT bat_name, bat_type, bat_migration, mgr_config_completed
     FROM @extschema@.batch
          JOIN @extschema@.migration ON (bat_migration = mgr_name);
-$get_batch_ids$;
+$__get_batch_ids$;
 
--- The get_working_plan() function is called by the Data2Pg scheduler to build its working plan.
+-- The __get_working_plan() function is called by the Data2Pg scheduler to build its working plan.
 -- Only the data useful for its purpose are returned, through the working_plan_type structure.
-CREATE FUNCTION get_working_plan(
+CREATE FUNCTION __get_working_plan(
     p_batchName                TEXT
     )
     RETURNS SETOF working_plan_type LANGUAGE plpgsql AS
-$get_working_plan$
+$__get_working_plan$
 DECLARE
     v_migration              TEXT;
     v_isConfigCompleted      BOOLEAN;
@@ -3512,10 +3516,10 @@ BEGIN
              JOIN @extschema@.migration ON (bat_migration = mgr_name)
         WHERE bat_name = p_batchName;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'get_working_plan: batch "%" not found.', p_batchName;
+        RAISE EXCEPTION '__get_working_plan: batch "%" not found.', p_batchName;
     END IF;
     IF NOT v_isConfigCompleted THEN
-        RAISE EXCEPTION 'get_working_plan: the migration "%" configuration is not marked as completed. Execute the complete_migration_configuration() function.',
+        RAISE EXCEPTION '__get_working_plan: the migration "%" configuration is not marked as completed. Execute the complete_migration_configuration() function.',
                         v_migration;
     END IF;
 -- Deliver steps.
@@ -3525,17 +3529,17 @@ BEGIN
             WHERE stp_batch_name = p_batchName;
     RETURN;
 END;
-$get_working_plan$;
+$__get_working_plan$;
 
--- The check_step_options() function is called by the Data2Pg scheduler. It checks the content of the step_options parameter presented in TEXT format.
+-- The __check_step_options() function is called by the Data2Pg scheduler. It checks the content of the step_options parameter presented in TEXT format.
 -- It verifies that the syntax is JSON compatible and that the keywords and values are valid.
 -- Input parameter: the step options, in TEXT format.
 -- Output parameter: the error message, or an empty string when no problem is detected.
-CREATE FUNCTION check_step_options(
+CREATE FUNCTION __check_step_options(
     p_stepOptions            TEXT
     )
     RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS
-$check_step_options$
+$__check_step_options$
 DECLARE
     v_jsonStepOptions        JSONB;
     r_key                    RECORD;
@@ -3598,7 +3602,7 @@ BEGIN
 --
     RETURN '';
 END;
-$check_step_options$;
+$__check_step_options$;
 
 -- The terminate_data2pg_backends() function is called by the Data2Pg scheduler for its 'abort' actions.
 -- It terminates Postgres backends that could be still in execution.
