@@ -2806,6 +2806,132 @@ BEGIN
 END;
 $truncate_all$;
 
+-- The _verify_objects() function verify that all objects involved in a migration really exists.
+-- Input parameters: migration name.
+-- It raises exceptions in case of detected problems, like missing schemas, tables, index, constraints, sequences.
+-- The expected objects lists are built at migration configuration time.
+CREATE FUNCTION _verify_objects(
+    p_migration                TEXT
+    )
+    RETURNS VOID LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_verify_objects$
+DECLARE
+    v_list                     TEXT;
+BEGIN
+-- Check that the supplied migration name exists.
+    PERFORM mgr_name
+        FROM @extschema@.migration
+        WHERE mgr_name = p_migration;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_verify_objects: The migration "%" is unknown.', p_migration;
+    END IF;
+-- Check target and foreign schemas.
+    SELECT string_agg(tbl_schema, ', ' ORDER BY tbl_schema) INTO v_list
+        FROM (
+            (SELECT DISTINCT tbl_schema
+                FROM @extschema@.table_to_process
+                WHERE tbl_migration = p_migration
+             UNION
+             SELECT DISTINCT tbl_foreign_schema
+                FROM @extschema@.table_to_process
+                WHERE tbl_migration = p_migration)
+            EXCEPT
+            SELECT nspname
+                FROM pg_catalog.pg_namespace
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing schemas detected (%).', v_list;
+    END IF;
+-- Check target tables.
+    SELECT string_agg(tbl_schema || '.' || tbl_name, ', ' ORDER BY tbl_schema || '.' || tbl_name) INTO v_list
+        FROM (
+            SELECT DISTINCT tbl_schema, tbl_name
+                FROM @extschema@.table_to_process
+                WHERE tbl_migration = p_migration
+            EXCEPT
+            SELECT nspname, relname
+                FROM pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
+                WHERE relkind = 'r'
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing target tables detected (%).', v_list;
+    END IF;
+-- Check foreign tables.
+    SELECT string_agg(tbl_foreign_schema  || '.' || tbl_foreign_name, ', ' ORDER BY tbl_foreign_schema  || '.' || tbl_foreign_name) INTO v_list
+        FROM (
+            SELECT DISTINCT tbl_foreign_schema, tbl_foreign_name
+                FROM @extschema@.table_to_process
+                WHERE tbl_migration = p_migration
+            EXCEPT
+            SELECT nspname, relname
+                FROM pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
+                WHERE relkind = 'f'
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing foreign tables detected (%).', v_list;
+    END IF;
+-- Check indexes.
+    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_object, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_object)
+        INTO v_list
+        FROM (
+            SELECT DISTINCT tic_schema, tic_table, tic_object
+                FROM @extschema@.table_index
+                     JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
+                WHERE tbl_migration = p_migration
+                  AND tic_type = 'I'
+            EXCEPT
+            SELECT nspname, r.relname, i.relname
+                FROM pg_index
+                     JOIN pg_class i ON (i.oid = indexrelid)
+                     JOIN pg_class r ON (r.oid = indrelid)
+                     JOIN pg_catalog.pg_namespace ON (r.relnamespace = pg_namespace.oid)
+                WHERE i.relkind = 'i'
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing index detected (%).', v_list;
+    END IF;
+-- Check PK, UNIQUE and EXCLUDE constraints.
+    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_object, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_object)
+        INTO v_list
+        FROM (
+            SELECT DISTINCT tic_schema, tic_table, tic_object
+                FROM @extschema@.table_index
+                     JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
+                WHERE tbl_migration = p_migration
+                  AND tic_type LIKE 'C%'
+            EXCEPT
+            SELECT nspname, r.relname, conname
+                FROM pg_constraint
+                     JOIN pg_class r ON (r.oid = conrelid)
+                     JOIN pg_catalog.pg_namespace ON (r.relnamespace = pg_namespace.oid)
+                WHERE contype IN ('p', 'u', 'x')
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing constraint detected (%).', v_list;
+    END IF;
+-- Check target sequences.
+    SELECT string_agg(seq_schema || '.' || seq_name, ', ' ORDER BY seq_schema || '.' || seq_name) INTO v_list
+        FROM (
+            SELECT DISTINCT seq_schema, seq_name
+                FROM @extschema@.sequence_to_process
+                WHERE seq_migration = p_migration
+            EXCEPT
+            SELECT nspname, relname
+                FROM pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
+                WHERE relkind = 'S'
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing target sequences detected (%).', v_list;
+    END IF;
+--
+    RETURN;
+END;
+$_verify_objects$;
+
 -- The truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
 -- Input parameters: batch name, step name and execution options.
 -- The truncation is only performed when the COMPARE_TRUNCATE_DIFF step option is set to true.
