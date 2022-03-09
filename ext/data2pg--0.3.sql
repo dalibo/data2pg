@@ -69,8 +69,8 @@ CREATE TABLE batch (
     bat_migration              TEXT NOT NULL,           -- The migration the batch belongs to
     bat_type                   TEXT NOT NULL            -- The batch type, i.e. the type of action to perform
                                CHECK (bat_type IN ('COPY', 'CHECK', 'COMPARE', 'DISCOVER')),
-    bat_start_with_truncate    BOOLEAN,                 -- Boolean indicating whether a truncate step has to be included in the batch working plan
-                                                        --   It only concerns batches of type COPY
+    bat_with_init_step         BOOLEAN,                 -- Boolean indicating whether a INIT step has to be included in the batch working plan
+    bat_with_end_step          BOOLEAN,                 -- Boolean indicating whether a END step has to be included in the batch working plan
     PRIMARY KEY (bat_name),
     FOREIGN KEY (bat_migration) REFERENCES migration (mgr_name)
 );
@@ -82,7 +82,7 @@ CREATE TABLE step (
                                                         --   By construction it contains the schema, the table or sequence names
                                                         --   and the table part number if any
     stp_type                   TEXT  NOT NULL           -- step type
-                               CHECK (stp_type IN ('TRUNCATE', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'INDEX', 'FOREIGN_KEY', 'CUSTOM')),
+                               CHECK (stp_type IN ('INIT', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'INDEX', 'FOREIGN_KEY', 'CUSTOM', 'END')),
     stp_schema                 TEXT,                    -- Schema name of the sequence or table to process,
                                                         --   NULL if the step is not related to a sequence or a table
     stp_object                 TEXT,                    -- Object name, typically the sequence or table to process,
@@ -571,7 +571,8 @@ CREATE FUNCTION create_batch(
     p_batchName              TEXT,                    -- Batch name
     p_migration              TEXT,                    -- Migration name
     p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK', 'COMPARE' or 'DISCOVER')
-    p_startWithTruncate      BOOLEAN                  -- Boolean indicating whether a truncate step will need to be added to the batch working plan
+    p_withInitStep           BOOLEAN,                 -- Boolean indicating whether an INIT step will need to be added to the batch working plan
+    p_withEndStep            BOOLEAN                  -- Boolean indicating whether an END step will need to be added to the batch working plan
     )
     RETURNS INTEGER LANGUAGE plpgsql AS
 $create_batch$
@@ -599,22 +600,32 @@ BEGIN
     IF p_batchType <> 'COPY' AND p_batchType <> 'CHECK' AND p_batchType <> 'COMPARE' AND p_batchType <> 'DISCOVER' THEN
         RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY, CHECK, COMPARE or DISCOVER.', p_batchType;
     END IF;
--- If the p_startWithTruncate boolean is TRUE, check that the batch is of type COPY.
-    IF p_startWithTruncate AND p_batchType <> 'COPY' THEN
-        RAISE EXCEPTION 'create_batch: A batch of type % cannot start with a truncate step.', p_batchType;
-    END IF;
 -- Checks are OK.
 -- Record the batch into the batch table.
-    INSERT INTO @extschema@.batch (bat_name, bat_migration, bat_type, bat_start_with_truncate)
-        VALUES (p_batchName, p_migration, p_batchType, coalesce(p_startWithTruncate, FALSE));
--- If the batch needs a truncate step, add it into the step table.
-    IF p_batchType = 'COPY' AND p_startWithTruncate THEN
+    INSERT INTO @extschema@.batch (bat_name, bat_migration, bat_type, bat_with_init_step, bat_with_end_step)
+        VALUES (p_batchName, p_migration, p_batchType, coalesce(p_withInitStep, FALSE), coalesce(p_withEndStep, FALSE));
+-- If the batch needs an INIT and/or END steps, add them into the step table.
+    IF p_withInitStep THEN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
-            VALUES ('TRUNCATE_' || p_migration, p_batchName, 'TRUNCATE', '_truncate_all', 1);
+            VALUES ('INIT_' || p_migration, p_batchName, 'INIT',
+                    CASE p_batchType
+                        WHEN 'COPY' THEN '_copy_init'
+--                        WHEN 'CHECK' THEN '_check_init'
+                        WHEN 'COMPARE' THEN '_compare_init'
+                        WHEN 'DISCOVER' THEN '_discover_init'
+                    END,
+                    1);
     END IF;
-    IF p_batchType = 'COMPARE' THEN
+    IF p_withEndStep THEN
         INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_sql_function, stp_cost)
-            VALUES ('TRUNCATE_DIFF', p_batchName, 'TRUNCATE', '_truncate_content_diff', 1);
+            VALUES ('END_' || p_migration, p_batchName, 'END',
+                    CASE p_batchType
+                        WHEN 'COPY' THEN '_copy_end'
+--                        WHEN 'CHECK' THEN '_check_end'
+                        WHEN 'COMPARE' THEN '_compare_end'
+                        WHEN 'DISCOVER' THEN '_discover_end'
+                    END,
+                    1);
     END IF;
 --
     RETURN 1;
@@ -1739,7 +1750,8 @@ CREATE FUNCTION complete_migration_configuration(
 $complete_migration_configuration$
 DECLARE
     v_batchArray             TEXT[];
-    v_countStartWithTruncate INT;
+    v_countBatchWithInitStep INT;
+    v_countBatchWithEndStep  INT;
     v_parents                TEXT[];
     v_refSchema              TEXT;
     v_refTable               TEXT;
@@ -1755,13 +1767,23 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'complete_migration_configuration: Migration "%" not found.', p_migration;
     END IF;
--- Get the list of related batches and raise a warning if there are several batches marked as starting with a tables TRUNCATE.
-    SELECT array_agg(bat_name), count(bat_name) FILTER (WHERE bat_start_with_truncate)
-        INTO v_batchArray, v_countStartWithTruncate
+-- Get the list of related batches.
+    SELECT array_agg(bat_name) INTO v_batchArray
         FROM @extschema@.batch
         WHERE bat_migration = p_migration;
-    IF v_countStartWithTruncate <> 1 THEN
-        RAISE WARNING 'complete_migration_configuration: % batches are declared as starting with a TRUNCATE step. It is usualy 1', v_countStartWithTruncate;
+-- Raise a warning if none or several batches of type COPY have an INIT step or an END step.
+    SELECT count(bat_name) FILTER (WHERE bat_with_init_step), count(bat_name) FILTER (WHERE bat_with_end_step)
+        INTO v_countBatchWithInitStep, v_countBatchWithEndstep
+        FROM @extschema@.batch
+        WHERE bat_migration = p_migration
+          AND bat_type = 'COPY';
+    IF v_countBatchWithInitStep <> 1 THEN
+        RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an initial step. It is usualy 1',
+                      v_countBatchWithInitStep;
+    END IF;
+    IF v_countBatchWithEndStep <> 1 THEN
+        RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an end step. It is usualy 1',
+                      v_countBatchWithEndStep;
     END IF;
 -- Check that all tables registered into the migration have a unique part set as the first one and a unique part as the last one.
     FOR r_tbl IN
@@ -1936,23 +1958,30 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
--- Process the chaining constraints related to the TRUNCATE step for the COPY batches starting with a TRUNCATE.
+-- Process the chaining constraints related to the INIT steps.
     UPDATE @extschema@.step
-        SET stp_parents = ARRAY['TRUNCATE_' || p_migration]
+        SET stp_parents = ARRAY['INIT_' || p_migration]
         FROM @extschema@.batch
         WHERE stp_batch_name = bat_name
-          AND bat_type = 'COPY'
-          AND bat_start_with_truncate
-          AND stp_type IN ('TABLE', 'TABLE_PART')
+          AND bat_with_init_step
+          AND stp_type <> 'INIT'
           AND stp_parents IS NULL;
--- Process the chaining constraints related to the TRUNCATE step for the COMPARE batches starting with a TRUNCATE.
-    UPDATE @extschema@.step
-        SET stp_parents = ARRAY['TRUNCATE_DIFF']
-        FROM @extschema@.batch
-        WHERE stp_batch_name = bat_name
-          AND bat_type = 'COMPARE'
-          AND stp_type IN ('TABLE', 'TABLE_PART', 'SEQUENCE')
-          AND stp_parents IS NULL;
+-- Process the chaining constraints related to the END steps.
+    FOR r_step IN
+        SELECT stp_name, stp_batch_name
+            FROM @extschema@.step
+            WHERE stp_batch_name = ANY (v_batchArray)
+              AND stp_type = 'END'
+    LOOP
+        SELECT array_agg(stp_name) INTO v_parents
+            FROM @extschema@.step
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_type <> 'END';
+        UPDATE @extschema@.step
+            SET stp_parents = v_parents
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_name = r_step.stp_name;
+    END LOOP;
 -- Move the parents registered by add_step_parent() function calls.
     UPDATE @extschema@.step
         SET stp_parents = array_cat(stp_parents, stp_added_parents)
@@ -1975,14 +2004,6 @@ BEGIN
           AND step.stp_batch_name = parent_rebuild.step_batch
           AND step.stp_name = parent_rebuild.step_name
           AND step.stp_parents <> parent_rebuild.unique_parents;
--- Compute the cost of the Truncate step, now that the number of tables to truncate is known.
-    UPDATE @extschema@.step
-        SET stp_cost = (
-             SELECT 10 * count(*)
-                 FROM @extschema@.table_to_process
-                 WHERE tbl_migration = p_migration
-                       )
-        WHERE stp_name = 'TRUNCATE_' || p_migration;
 --
     RETURN;
 END;
@@ -2759,54 +2780,105 @@ BEGIN
 END;
 $_compare_sequence$;
 
--- The _truncate_all() function is a generic truncate function to clean up all tables of a migration.
+-- The _copy_init() function is the initial step of a batch of type COPY. It checks that all expected component are present and truncate tables.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of truncated tables.
-CREATE FUNCTION _truncate_all(
+CREATE FUNCTION _copy_init(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$_truncate_all$
+$_copy_init$
 DECLARE
     v_batchName                TEXT;
+    v_migration                TEXT;
     v_tablesList               TEXT;
     v_nbTables                 BIGINT;
     r_tbl                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the step characteristics.
-    SELECT stp_batch_name INTO v_batchName
+    SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
         FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION '_truncate_all: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_copy_init: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Build the tables list of all tables of the migration.
+-- Check the components. It raises an exception in case of trouble.
+    PERFORM @extschema@._verify_objects(v_migration);
+-- Truncate all tables of the migration.
+-- Build the tables list.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
         INTO v_tablesList, v_nbTables
         FROM @extschema@.table_to_process
              JOIN @extschema@.batch ON (bat_migration = tbl_migration)
         WHERE bat_name = v_batchName;
+-- ... and truncate them within a single statement.
     EXECUTE format(
           'TRUNCATE %s CASCADE',
           v_tablesList
           );
 -- Return the step report.
+    r_output.sr_indicator = 'INITIAL_CHECKS_OK';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
     r_output.sr_indicator = 'TRUNCATED_TABLES';
     r_output.sr_value = v_nbTables;
-    r_output.sr_rank = 1;
+    r_output.sr_rank = 2;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
 --
     RETURN;
 END;
-$_truncate_all$;
+$_copy_init$;
+
+-- The _copy_end() function is the final step of a single batch or a set of batches of type COPY.
+-- It checks that all expected component are present.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report including the number of truncated tables.
+CREATE FUNCTION _copy_end(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_copy_end$
+DECLARE
+    v_batchName                TEXT;
+    v_migration                TEXT;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the step characteristics.
+    SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_copy_init: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Check the components. It raises an exception in case of trouble.
+    PERFORM @extschema@._verify_objects(v_migration);
+-- Return the step report.
+    r_output.sr_indicator = 'FINAL_CHECKS_OK';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 99;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_copy_end$;
 
 -- The _verify_objects() function verify that all objects involved in a migration really exists.
+-- It is called by the _copy_init() and _copy_end() functions
 -- Input parameters: migration name.
 -- It raises exceptions in case of detected problems, like missing schemas, tables, index, constraints, sequences.
 -- The expected objects lists are built at migration configuration time.
@@ -2819,13 +2891,6 @@ $_verify_objects$
 DECLARE
     v_list                     TEXT;
 BEGIN
--- Check that the supplied migration name exists.
-    PERFORM mgr_name
-        FROM @extschema@.migration
-        WHERE mgr_name = p_migration;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_verify_objects: The migration "%" is unknown.', p_migration;
-    END IF;
 -- Check target and foreign schemas.
     SELECT string_agg(tbl_schema, ', ' ORDER BY tbl_schema) INTO v_list
         FROM (
@@ -2932,17 +2997,18 @@ BEGIN
 END;
 $_verify_objects$;
 
--- The _truncate_content_diff() function truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
--- Input parameters: batch name, step name and execution options.
+-- The _compare_init() function the initial step of a batch of type COMPARE.
+-- It requested, it truncates the content diff table that collects detected tables content differences in batches of type COMPARE.
 -- The truncation is only performed when the COMPARE_TRUNCATE_DIFF step option is set to true.
+-- Input parameters: batch name, step name and execution options.
 -- It returns a step report including the number of truncated tables, i.e. 1 or 0 depending on the step option parameter.
-CREATE FUNCTION _truncate_content_diff(
+CREATE FUNCTION _compare_init(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
     )
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql AS
-$_truncate_content_diff$
+$_compare_init$
 DECLARE
     v_compareTruncateDiff      BOOLEAN;
     r_output                   @extschema@.step_report_type;
@@ -2964,7 +3030,109 @@ BEGIN
 --
     RETURN;
 END;
-$_truncate_content_diff$;
+$_compare_init$;
+
+-- The _compare_end() function is the final step of a single batch or a set of batches of type COMPARE.
+-- It does not perform any task, right now.
+-- Input parameters: batch name, step name and execution options.
+-- It returns an empty step report.
+CREATE FUNCTION _compare_end(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_compare_end$
+DECLARE
+    v_batchName                TEXT;
+    v_migration                TEXT;
+    v_tablesList               TEXT;
+    v_nbTables                 BIGINT;
+    r_tbl                      RECORD;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the step characteristics.
+    SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_compare_end: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Return the step report.
+    RETURN;
+END;
+$_compare_end$;
+
+-- The _discover_init() function is the initial step of a single batch or a set of batches of type DISCOVER.
+-- It does not perform any task, right now.
+-- Input parameters: batch name, step name and execution options.
+-- It returns an empty step report.
+CREATE FUNCTION _discover_init(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_discover_init$
+DECLARE
+    v_batchName                TEXT;
+    v_migration                TEXT;
+    v_tablesList               TEXT;
+    v_nbTables                 BIGINT;
+    r_tbl                      RECORD;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the step characteristics.
+    SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_discover_init: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Return the step report.
+    RETURN;
+END;
+$_discover_init$;
+
+-- The _discover_end() function is the final step of a single batch or a set of batches of type DISCOVER.
+-- It does not perform any task, right now.
+-- Input parameters: batch name, step name and execution options.
+-- It returns an empty step report.
+CREATE FUNCTION _discover_end(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_discover_end$
+DECLARE
+    v_batchName                TEXT;
+    v_migration                TEXT;
+    v_tablesList               TEXT;
+    v_nbTables                 BIGINT;
+    r_tbl                      RECORD;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the step characteristics.
+    SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
+        FROM @extschema@.step
+             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_discover_end: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Return the step report.
+    RETURN;
+END;
+$_discover_end$;
 
 -- The _check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
 -- This may not be always the case because tables are populated in replica mode.

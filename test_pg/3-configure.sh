@@ -53,7 +53,6 @@ BEGIN TRANSACTION;
 -- Create the migration object and the FDW infrastructure
 --
 
-SELECT drop_migration('mig_all');
 SELECT drop_migration('PG''s db');
 
 select * from migration;
@@ -69,7 +68,6 @@ SELECT create_migration(
     p_userMappingOptions   => 'user ''postgres'', password ''postgres''',
     p_importSchemaOptions  => 'import_default ''false'''
 );
-
 
 --
 -- Register the tables and sequences
@@ -118,15 +116,24 @@ SELECT register_table_part('myschema2', 'myTbl3', 2, NULL, FALSE, TRUE);    -- b
 --
 -- Build the batches
 --
-SELECT drop_batch('BATCH0');
+SELECT drop_batch(
+  p_batchName => 'BATCH0'
+);
 SELECT drop_batch('BATCH1');
 SELECT drop_batch('COMPARE_ALL');
 SELECT drop_batch('DISCOVER_ALL');
 
-SELECT create_batch('BATCH0','PG''s db','COPY',true);
-SELECT create_batch('BATCH1','PG''s db','COPY',false);
-SELECT create_batch('COMPARE_ALL','PG''s db','COMPARE',null);
---SELECT create_batch('DISCOVER_ALL','PG''s db','DISCOVER',null);
+SELECT create_batch(
+  p_batchName => 'BATCH0',
+  p_migration => 'PG''s db',
+  p_batchType => 'COPY',
+  p_withInitStep => true,
+  p_withEndStep => false
+);
+
+SELECT create_batch('BATCH1', 'PG''s db', 'COPY', false, true);
+SELECT create_batch('COMPARE_ALL', 'PG''s db', 'COMPARE', true, true);
+--SELECT create_batch('DISCOVER_ALL', 'PG''s db', 'DISCOVER', true, true);
 
 --
 -- Assign the tables and sequences to batches
