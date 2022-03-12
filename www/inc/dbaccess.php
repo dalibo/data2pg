@@ -299,7 +299,7 @@ function sql_getStepResultsSummary($runId) {
 function sql_getSteps($runId, $runStatus) {
 	global $conn;
 
-	$sql = "SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking, stp_ses_id,
+	$sql = "SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking, stp_ses_id, ses_backend_pid, 
 				   to_char(stp_start_ts, 'YYYY-MM-DD HH24:MI:SS.US') AS stp_start_ts, to_char(stp_end_ts, 'YYYY-MM-DD HH24:MI:SS.US') AS stp_end_ts,
 				   CASE WHEN stp_status = 'Completed' AND stp_end_ts - stp_start_ts < '1 DAY'
 							THEN to_char(stp_end_ts - stp_start_ts, 'HH24:MI:SS.US')
@@ -318,6 +318,7 @@ function sql_getSteps($runId, $runStatus) {
 				   END AS stp_elapse,
 				   sr_value
 			FROM step
+                 LEFT OUTER JOIN session ON (ses_run_id = stp_run_id AND ses_id = stp_ses_id)
 				 LEFT OUTER JOIN step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
 				 (VALUES ('In_progress',1),('Ready',2),('Blocked',3),('Completed',4)) AS state(state_name, state_order)
 			WHERE state_name = stp_status::TEXT

@@ -299,8 +299,10 @@ sub showRunDetails {
                         WHEN stp_status = 'In_progress' THEN to_char(current_timestamp - stp_start_ts, 'HH24:MI:SS')
                         ELSE NULL
                    END AS stp_elapse,
+                   ses_backend_pid,
                    sr_value
             FROM step
+                 LEFT OUTER JOIN session ON (ses_run_id = stp_run_id AND ses_id = stp_ses_id)
                  LEFT OUTER JOIN step_result ON (stp_run_id = sr_run_id AND stp_name = sr_step AND sr_is_main_indicator),
                  (VALUES ('In_progress',1),('Ready',2),('Blocked',3),('Completed',4)) AS state(state_name, state_order)
             WHERE state_name = stp_status::TEXT
@@ -317,7 +319,7 @@ sub showRunDetails {
         while (($lines == 0 || $currLine <= $lines) && ($row = $sth->fetchrow_hashref())) {
             if ($row->{'stp_status'} ne $previousStatus) {
                 if ($row->{'stp_status'} eq 'In_progress') {
-                    print "    'In_progress' steps               Estim.Cost Sess.      Start         Elapse";
+                    print "    'In_progress' steps               Estim.Cost Sess.      Start         Elapse    Backend_Pid";
                 } elsif ($row->{'stp_status'} eq 'Ready') {
                     print "    'Ready' steps                     Estim.Cost ";
                 } elsif ($row->{'stp_status'} eq 'Blocked') {
@@ -328,8 +330,8 @@ sub showRunDetails {
                 print "\n"; $currLine++;
             }
             if ($row->{'stp_status'} eq 'In_progress') {
-                printf("%-35.35s %12u %3u %-19.19s %-12.12s",
-                    $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'}, $row->{'stp_start_ts'}, $row->{'stp_elapse'});
+                printf("%-35.35s %12u %3u %-19.19s %-12.12s %u",
+                    $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'}, $row->{'stp_start_ts'}, $row->{'stp_elapse'}, $row->{'ses_backend_pid'});
             } elsif ($row->{'stp_status'} eq 'Ready') {
                 printf("%-35.35s %12u",
                     $row->{'stp_name'}, $row->{'stp_cost'});

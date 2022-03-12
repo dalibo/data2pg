@@ -259,7 +259,11 @@ function runDetails($runId, $msg = '') {
 			echo "\t\t<th>Step name</th>\n";
 			echo "\t\t<th>Estim. cost</th>\n";
 			echo "\t\t<th>Status</th>\n";
-			echo "\t\t<th>Session</th>\n";
+			if ($run['run_status'] == 'In_progress') {
+				echo "\t\t<th>Session (pid)</th>\n";
+			} else {
+				echo "\t\t<th>Session</th>\n";
+			}
 			echo "\t\t<th>#blocking</th>\n";
 			echo "\t\t<th>Start</th>\n";
 			echo "\t\t<th>End</th>\n";
@@ -278,7 +282,11 @@ function runDetails($runId, $msg = '') {
 				echo "\t\t<td class='alignLeft'>" . htmlspecialchars($step['stp_name']) . "</td>\n";
 				echo "\t\t<td>" . htmlspecialchars($step['stp_cost']) . "</td>\n";
 				echo "\t\t<td>" . htmlspecialchars($step['stp_status']) . "</td>\n";
-				echo "\t\t<td>" . htmlspecialchars($step['stp_ses_id']) . "</td>\n";
+				echo "\t\t<td>" . htmlspecialchars($step['stp_ses_id']);
+				if ($run['run_status'] == 'In_progress' && $step['stp_status'] == 'In_progress') {
+					echo " (" . htmlspecialchars($step['ses_backend_pid']) . ")";
+				}
+				echo "</td>\n";
 				echo "\t\t<td>" . htmlspecialchars($step['nb_blocking']) . "</td>\n";
 				echo "\t\t<td>" . htmlspecialchars($step['stp_start_ts']) . "</td>\n";
 				echo "\t\t<td>" . htmlspecialchars($step['stp_end_ts']) . "</td>\n";
