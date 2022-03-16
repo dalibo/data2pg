@@ -79,7 +79,7 @@ dc-test: ## Test data2pg.
 #######################     Manual tests     ###################################
 ################################################################################
 .PHONY: test ## Test data2pg.
-test: test-batch-0 test-batch-1 test-batch-compare ## Test Data2Pg runs.
+test: test-batch-0 test-batch-1 test-batch-tables-check test-batch-compare ## Test Data2Pg runs.
 
 .PHONY: test-batch-0 ## Test batch0.
 test-batch-0: ## Test batch0.
@@ -92,6 +92,10 @@ test-batch-1: ## Test batch1.
 .PHONY: test-batch-compare ## Test batch_compare.
 test-batch-compare: ## Test batch_compare.
 	perl data2pg.pl --conf test_pg/batch_compare.conf --action run
+
+.PHONY: test-batch-tables-check ## Test batch_tables_check.
+test-batch-tables-check: ## Test batch_tables_check.
+	perl data2pg.pl --conf test_pg/batch_tables_check.conf --action run
 
 #.PHONY: test-batch-discover ## Test batch_discover.
 #test-batch-discover: ## Test batch_discover.

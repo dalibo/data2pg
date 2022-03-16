@@ -189,6 +189,17 @@ SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', 4);
 SELECT assign_index_to_batch('BATCH1', tic_schema, tic_table, tic_object) FROM table_index WHERE tic_separate_creation_step;
 
 --
+-- Assign table checks
+--
+SELECT assign_table_checks_to_batch('BATCH1', 'myschema1', 'mytbl1');
+SELECT assign_tables_checks_to_batch('BATCH1', 'myschema2', '.*', NULL);
+
+SELECT create_batch('CHECK_TABLES', 'PG''s db', 'COPY', false, false);
+SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'myschema1', '.*', NULL);
+SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'myschema2', '.*', NULL);
+SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'phil''s schema3', '.*', NULL);
+
+--
 -- Assign FK checks
 --
 

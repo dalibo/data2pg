@@ -82,7 +82,7 @@ CREATE TABLE step (
                                                         --   By construction it contains the schema, the table or sequence names
                                                         --   and the table part number if any
     stp_type                   TEXT  NOT NULL           -- step type
-                               CHECK (stp_type IN ('INIT', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'INDEX', 'FOREIGN_KEY', 'CUSTOM', 'END')),
+                               CHECK (stp_type IN ('INIT', 'TABLE', 'SEQUENCE', 'TABLE_PART', 'INDEX', 'CHECK', 'FOREIGN_KEY', 'CUSTOM', 'END')),
     stp_schema                 TEXT,                    -- Schema name of the sequence or table to process,
                                                         --   NULL if the step is not related to a sequence or a table
     stp_object                 TEXT,                    -- Object name, typically the sequence or table to process,
@@ -190,6 +190,19 @@ CREATE TABLE source_table_stat (
     stat_rows                BIGINT,                     -- The number of rows as reported by the source catalog
     stat_kbytes              FLOAT,                      -- The table data volume in k-bytes as reported by the source catalog
     PRIMARY KEY (stat_migration, stat_schema, stat_table)
+);
+
+-- The counter table is populated with the result of checks.
+CREATE TABLE counter (
+    cnt_schema               TEXT NOT NULL,              -- The schema of the target table
+    cnt_table                TEXT NOT NULL,              -- The target table name
+    cnt_database             CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
+                             CHECK (cnt_database IN ('S', 'D')),
+    cnt_counter              TEXT,                       -- The counter id
+    cnt_value                BIGINT,                     -- The counter value
+    cnt_timestamp            TIMESTAMPTZ                 -- The transaction timestamp of the table check
+                             DEFAULT clock_timestamp(),
+    PRIMARY KEY (cnt_schema, cnt_table, cnt_database, cnt_counter)
 );
 
 -- The content_diff table is populated with the result of elementary compare_table and compare_sequence steps.
@@ -1521,6 +1534,63 @@ BEGIN
 END;
 $assign_index_to_batch$;
 
+-- The assign_tables_checks_to_batch() function assigns a set of table checks of a single schema to a batch.
+-- Two regexp filter tables already registered to a migration to include and exclude to the batch.
+CREATE FUNCTION assign_tables_checks_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
+    p_tablesToInclude        TEXT,               -- Regexp defining the tables to assign for the schema
+    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL to exclude no table)
+    )
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table checks
+$assign_tables_checks_to_batch$
+DECLARE
+    v_migrationName          TEXT;
+    v_batchType              TEXT;
+    v_nbTables               INT;
+    v_prevBatchName          TEXT;
+    r_tbl                    RECORD;
+BEGIN
+-- Check that the first 3 parameters are not NULL.
+    IF p_batchName IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: The first 3 input parameters cannot be NULL.';
+    END IF;
+-- Check that the batch exists, get its migration name and set the migration as in-progress.
+    SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
+-- Check that the batch is of type COPY
+    IF v_batchType <> 'COPY' THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: The batch % is not of type COPY.', p_batchName;
+    END IF;
+-- Record the tables into the step table.
+    INSERT INTO @extschema@.step (stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sql_function, stp_cost)
+        SELECT p_schema || '.' || tbl_name || '.' || '_check', p_batchName, 'CHECK', p_schema, tbl_name, '_check_table', tbl_kbytes
+            FROM @extschema@.table_to_process
+            WHERE tbl_migration = v_migrationName
+              AND tbl_schema = p_schema
+              AND tbl_name ~ p_tablesToInclude
+              AND (p_tablesToExclude IS NULL OR tbl_name !~ p_tablesToExclude);
+    GET DIAGNOSTICS v_nbTables = ROW_COUNT;
+-- Check that at least 1 table has been assigned.
+    IF v_nbTables = 0 THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: No tables have been selected.';
+    END IF;
+--
+    RETURN v_nbTables;
+END;
+$assign_tables_checks_to_batch$;
+
+-- The assign_table_checks_to_batch() function assigns checks for a single table to a batch.
+-- It is a simple wrapper over the assign_tables_checks_to_batch() function.
+CREATE FUNCTION assign_table_checks_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema holding the table to assign
+    p_table                  TEXT                -- The table to assign
+    )
+    RETURNS INTEGER LANGUAGE sql AS              -- Returns the number of effectively assigned tables.
+$assign_table_to_batch$
+    SELECT @extschema@.assign_tables_checks_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
+$assign_table_to_batch$;
+
 -- The assign_sequences_to_batch() function assigns a set of sequences of a single schema to a batch
 -- Two regexp filter sequences already registered to a migration to include and exclude to the batch.
 CREATE FUNCTION assign_sequences_to_batch(
@@ -1924,6 +1994,27 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
+-- Create the links for table checks steps.
+-- All the related table or table parts of the same batch are parents of each table check step.
+    FOR r_step IN
+        SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_sub_object
+            FROM @extschema@.step
+            WHERE stp_batch_name = ANY (v_batchArray)
+              AND stp_type = 'CHECK'
+    LOOP
+        SELECT array_agg(stp_name) INTO v_parents
+            FROM @extschema@.step
+            WHERE stp_type IN ('TABLE', 'TABLE_PART')
+              AND stp_schema = r_step.stp_schema
+              AND stp_object = r_step.stp_object
+              AND stp_batch_name = r_step.stp_batch_name;
+        IF v_parents IS NOT NULL THEN
+            UPDATE @extschema@.step
+                SET stp_parents = array_cat(stp_parents, v_parents)
+                WHERE stp_batch_name = r_step.stp_batch_name
+                  AND stp_name = r_step.stp_name;
+        END IF;
+    END LOOP;
 -- Add chaining constraints for foreign keys checks.
     FOR r_step IN
         SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_sub_object
@@ -2087,698 +2178,6 @@ $check_batch$;
 -- Functions called by the Data2Pg scheduler.
 --
 --
-
--- The _copy_table() function is the generic copy function that is used to process tables.
--- Input parameters: batch name, step name and execution options.
--- It returns a step report including the number of copied rows.
--- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
-CREATE FUNCTION _copy_table(
-    p_batchName                TEXT,
-    p_step                     TEXT,
-    p_stepOptions              JSONB
-    )
-    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
-    SET session_replication_role = 'replica'
-    SET synchronous_commit = 'off'
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$_copy_table$
-DECLARE
-    v_schema                   TEXT;
-    v_table                    TEXT;
-    v_partNum                  INTEGER;
-    v_partCondition            TEXT;
-    v_isFirstStep              BOOLEAN = TRUE;
-    v_isLastStep               BOOLEAN = TRUE;
-    v_copyMaxRows              BIGINT;
-    v_copyPctRows              REAL;
-    v_copySlowDown             BIGINT;
-    v_foreignSchema            TEXT;
-    v_foreignTable             TEXT;
-    v_estimatedNbRows          BIGINT;
-    v_copySortOrder            TEXT;
-    v_insertColList            TEXT;
-    v_selectExprList           TEXT;
-    v_someGenAlwaysIdentCol    BOOLEAN;
-    v_constraint               TEXT;
-    v_i                        INT;
-    v_index                    TEXT;
-    v_indexDef                 TEXT;
-    v_stmt                     TEXT;
-    v_nbRows                   BIGINT = 0;
-    v_nbDroppedIndex           SMALLINT = 0;
-    v_nbCreatedIndex           SMALLINT = 0;
-    r_obj                      RECORD;
-    r_output                   @extschema@.step_report_type;
-BEGIN
--- Get the identity of the table.
-    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
-        FROM @extschema@.step
-        WHERE stp_batch_name = p_batchName
-          AND stp_name = p_step;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_copy_table: no step % found for the batch %.', p_step, p_batchName;
-    END IF;
--- Read the table_to_process table to get table related details.
-    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
-           tbl_copy_sort_order, tbl_some_gen_alw_id_col
-        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows,
-             v_copySortOrder, v_someGenAlwaysIdentCol
-        FROM @extschema@.table_to_process
-        WHERE tbl_schema = v_schema AND tbl_name = v_table;
--- Read the table_column table to get details about columns
-    SELECT string_agg(tco_copy_source_expr, ','),
-           string_agg(tco_copy_dest_col, ',')
-        INTO v_selectExprList, v_insertColList
-        FROM (
-           SELECT tco_name, tco_copy_source_expr, tco_copy_dest_col
-               FROM @extschema@.table_column
-               WHERE tco_schema = v_schema AND tco_table = v_table
-               ORDER BY tco_number
-             ) AS t;
--- If the step concerns a table part, get additional details about the part.
-    IF v_partNum IS NOT NULL THEN
-        SELECT prt_condition, prt_is_first_step, prt_is_last_step
-            INTO v_partCondition, v_isFirstStep, v_isLastStep
-            FROM @extschema@.table_part
-            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
-    END IF;
--- Analyze the step options.
-    v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
-    v_copyPctRows = p_stepOptions->>'COPY_PCT_ROWS';
-    v_copySlowDown = p_stepOptions->>'COPY_SLOW_DOWN';
--- Compute the maximum number of rows to copy, depending on both COPY_MAX_ROWS and COPY_PCT_ROWS option values.
--- When the COPY_PCT_ROWS is set, apply this percentage to the estimated number of rows from the table statistics, rounded to the next integer.
--- If both COPY_MAX_ROWS and COPY_PCT_ROWS options are set, keep the least computed number of rows.
-    IF v_copyPctRows IS NOT NULL AND
-      (v_copyMaxRows IS NULL OR v_copyMaxRows > v_estimatedNbRows * v_copyPctRows / 100) THEN
-       v_copyMaxRows = 1 + v_estimatedNbRows * v_copyPctRows / 100;
-    END IF;
---
--- Pre-processing.
---
-    IF v_isFirstStep THEN
--- Drop the constraints known as 'to be dropped' (pk, unique, exclude) and record the drop timestamp.
-        FOR r_obj IN
-            SELECT tic_object
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type LIKE 'C%'
-                  AND tic_drop_for_copy
-        LOOP
-            EXECUTE format(
-                'ALTER TABLE %I.%I DROP CONSTRAINT %I',
-                v_schema, v_table, r_obj.tic_object
-            );
-            UPDATE @extschema@.table_index
-                SET tic_last_drop_ts = clock_timestamp(),
-                    tic_last_create_ts = NULL,
-                    tic_last_create_duration = NULL
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
-            v_nbDroppedIndex = v_nbDroppedIndex + 1;
-        END LOOP;
--- Drop the indexes known as "to be dropped" during the copy processing and record the drop timestamp.
-        FOR r_obj IN
-            SELECT tic_object
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type = 'I'
-                  AND tic_drop_for_copy
-        LOOP
-            EXECUTE format(
-                'DROP INDEX %I.%I',
-                v_schema, r_obj.tic_object
-            );
-            UPDATE @extschema@.table_index
-                SET tic_last_drop_ts = clock_timestamp(),
-                    tic_last_create_ts = NULL,
-                    tic_last_create_duration = NULL
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
-            v_nbDroppedIndex = v_nbDroppedIndex + 1;
-        END LOOP;
-    END IF;
---
--- Copy processing.
---
--- The copy processing is not performed for a 'TABLE_PART' step without condition.
-    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
--- Do not sort the source data when the table is processed with a WHERE clause or a LIMIT clause.
-        IF v_partCondition IS NOT NULL OR v_copyMaxRows IS NOT NULL THEN
-            v_copySortOrder = NULL;
-        END IF;
--- Copy the foreign table to the destination table.
-        v_stmt = format(
-            'INSERT INTO %I.%I (%s) %s
-               SELECT %s
-               FROM ONLY %I.%I
-               %s
-               %s
-               %s',
-            v_schema, v_table, v_InsertColList,
-            CASE WHEN v_someGenAlwaysIdentCol THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END,
-            v_selectExprList, v_foreignSchema, v_foreignTable,
-            coalesce('WHERE ' || v_partCondition, ''),
-            coalesce('ORDER BY ' || v_copySortOrder, ''),
-            coalesce('LIMIT ' || v_copyMaxRows, '')
-            );
---raise warning '%',v_stmt;
-        EXECUTE v_stmt;
-        GET DIAGNOSTICS v_nbRows = ROW_COUNT;
-    END IF;
---
--- Post processing.
---
-    IF v_isLastStep THEN
--- Recreate the constraints that have been previously dropped.
-        FOR r_obj IN
-            SELECT tic_object, tic_type, tic_definition, tic_separate_creation_step
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type LIKE 'C%'
-                  AND tic_drop_for_copy
-        LOOP
-            IF NOT r_obj.tic_separate_creation_step THEN
--- The index related to the constraint has not been already created (the most common case).
-                v_nbCreatedIndex = v_nbCreatedIndex + 1;
--- Record the recreation start timestamp.
-                UPDATE @extschema@.table_index
-                    SET tic_last_create_ts = clock_timestamp()
-                    WHERE tic_schema = v_schema
-                      AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
--- Recreate the constraint with its initial definition.
-                EXECUTE format(
-                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
-                    v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
-                );
--- Record the recreation duration.
-                UPDATE @extschema@.table_index
-                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-                    WHERE tic_schema = v_schema
-                      AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
-            ELSE
--- The index related to the constraint has been already created by a separate step. So just add the constraint using the existing index.
-                EXECUTE format(
-                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s USING INDEX %I',
-                    v_schema, v_table, r_obj.tic_object,
-                    CASE r_obj.tic_type
-                        WHEN 'Cp' THEN 'PRIMARY KEY'
-                        WHEN 'Cu' THEN 'UNIQUE'
-                        ELSE NULL                        -- should never happen
-                    END, r_obj.tic_object
-                );
-            END IF;
-        END LOOP;
--- Recreate the indexes that have been previously dropped and that are not recreated by a separate step.
-        FOR r_obj IN
-            SELECT tic_definition
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type = 'I'
-                  AND tic_drop_for_copy
-                  AND NOT tic_separate_creation_step
-        LOOP
-            v_nbCreatedIndex = v_nbCreatedIndex + 1;
--- Record the recreation start timestamp
-            UPDATE @extschema@.table_index
-                SET tic_last_create_ts = clock_timestamp()
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
--- Create the index.
-            EXECUTE r_obj.tic_definition;
--- Record the recreation duration
-            UPDATE @extschema@.table_index
-                SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
-        END LOOP;
--- Get the statistics (and let the autovacuum do its job).
-        EXECUTE format(
-            'ANALYZE %I.%I',
-            v_schema, v_table);
-    END IF;
--- Slowdown (for testing purpose only)
-    IF v_copySlowDown IS NOT NULL THEN
-        PERFORM pg_sleep(v_nbRows * v_copySlowDown / 1000000);
-    END IF;
--- Return the step report.
-    IF v_isLastStep THEN
-        r_output.sr_indicator = 'COPIED_TABLES';
-        r_output.sr_value = 1;
-        r_output.sr_rank = 10;
-        r_output.sr_is_main_indicator = FALSE;
-        RETURN NEXT r_output;
-    END IF;
-    r_output.sr_indicator = 'COPIED_ROWS';
-    r_output.sr_value = v_nbRows;
-    r_output.sr_rank = 11;
-    r_output.sr_is_main_indicator = TRUE;
-    RETURN NEXT r_output;
-    IF v_nbDroppedIndex > 0 THEN
-        r_output.sr_indicator = 'DROPPED_INDEXES';
-        r_output.sr_value = v_nbDroppedIndex;
-        r_output.sr_rank = 12;
-        r_output.sr_is_main_indicator = FALSE;
-        RETURN NEXT r_output;
-    END IF;
-    IF v_nbCreatedIndex > 0 THEN
-        r_output.sr_indicator = 'RECREATED_INDEXES';
-        r_output.sr_value = v_nbCreatedIndex;
-        r_output.sr_rank = 13;
-        r_output.sr_is_main_indicator = FALSE;
-        RETURN NEXT r_output;
-    END IF;
---
-    RETURN;
-END;
-$_copy_table$;
-
--- The _copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
--- Input parameters: batch name, step name and execution options.
--- It returns a step report.
-CREATE FUNCTION _copy_sequence(
-    p_batchName                TEXT,
-    p_step                     TEXT,
-    p_stepOptions              JSONB
-    )
-    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
-    SET synchronous_commit = 'off'
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$_copy_sequence$
-DECLARE
-    v_schema                   TEXT;
-    v_sequence                 TEXT;
-    v_foreignSchema            TEXT;
-    v_sourceSchema             TEXT;
-    v_sourceDbms               TEXT;
-    v_lastValue                BIGINT;
-    v_isCalled                 TEXT;
-    r_output                   @extschema@.step_report_type;
-BEGIN
--- Get the identity of the sequence.
-    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
-      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
-        FROM @extschema@.step
-             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
-             JOIN @extschema@.migration ON (seq_migration = mgr_name)
-        WHERE stp_batch_name = p_batchName
-          AND stp_name = p_step;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_copy_sequence: no step % found for the batch %.', p_step, p_batchName;
-    END IF;
--- Depending on the source DBMS, get the sequence's characteristics.
-    SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
-       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
--- Set the sequence's characteristics.
-    EXECUTE format(
-        'SELECT setval(%L, %s, %s)',
-        quote_ident(v_schema) || '.' || quote_ident(v_sequence), v_lastValue, v_isCalled
-        );
--- Return the step report.
-    r_output.sr_indicator = 'COPIED_SEQUENCES';
-    r_output.sr_value = 1;
-    r_output.sr_rank = 20;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
---
-    RETURN;
-END;
-$_copy_sequence$;
-
--- The _get_source_sequence() function get the properties of a sequence on the source database, depending on the RDBMS.
--- It is called by functions processing sequences copy or comparison.
--- Input parameters: source DBSM and the sequence id.
--- The output parameters: last value and is_called properties.
-CREATE FUNCTION _get_source_sequence(
-    p_sourceDbms               TEXT,
-    p_sourceSchema             TEXT,
-    p_foreignSchema            TEXT,
-    p_sequence                 TEXT,
-    OUT p_lastValue            BIGINT,
-    OUT p_isCalled             TEXT
-    )
-    RETURNS RECORD LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$_get_source_sequence$
-BEGIN
--- Depending on the source DBMS, get the sequence's characteristics.
-    IF p_sourceDbms = 'Oracle' THEN
-        SELECT last_number, 'true' INTO p_lastValue, p_isCalled
-           FROM @extschema@.ora_sequences
-           WHERE sequence_owner = p_sourceSchema
-             AND sequence_name = upper(p_sequence);
-    ELSIF p_sourceDbms = 'PostgreSQL' THEN
-        EXECUTE format(
-            'SELECT last_value, CASE WHEN is_called THEN ''true'' ELSE ''false'' END FROM %I.%I',
-            p_foreignSchema, p_sequence
-            ) INTO p_lastValue, p_isCalled;
-    ELSE
-        RAISE EXCEPTION '_get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
-    END IF;
---
-    RETURN;
-END;
-$_get_source_sequence$;
-
--- The _create_index() function is a generic function recreate a index that has been marked as
--- 'not to be created in the copy post-processing phase'. It may be useful to create several indexes in parallel for a large table.
--- Input parameters: batch name, step name and execution options.
--- It returns a step report.
-CREATE FUNCTION _create_index(
-    p_batchName                TEXT,
-    p_step                     TEXT,
-    p_stepOptions              JSONB
-    )
-    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
-    SET synchronous_commit = 'off'
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$_create_index$
-DECLARE
-    v_schema                   TEXT;
-    v_table                    TEXT;
-    v_index                    TEXT;
-    v_type                     TEXT;
-    v_definition               TEXT;
-    v_separateCreationStep     BOOLEAN;
-    r_output                   @extschema@.step_report_type;
-BEGIN
--- Get the identity of the index/constraint.
-    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition, tic_separate_creation_step
-        INTO v_schema, v_table, v_index, v_type, v_definition, v_separateCreationStep
-        FROM @extschema@.step
-             JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_object = stp_sub_object)
-        WHERE stp_batch_name = p_batchName
-          AND stp_name = p_step;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_create_index: no step % found for the batch %.', p_step, p_batchName;
-    END IF;
--- Check that the requested index/constraint creation is valid.
-    IF NOT v_separateCreationStep THEN
-        RAISE EXCEPTION '_create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
-    END IF;
--- Record the recreation start timestamp.
-    UPDATE @extschema@.table_index
-        SET tic_last_create_ts = clock_timestamp()
-        WHERE tic_schema = v_schema
-          AND tic_table = v_table
-          AND tic_object = v_index;
--- Create the index of the constraint depending on its registered type.
-    CASE
-        WHEN v_type = 'I' THEN
--- It is an index.
-            EXECUTE v_definition;
-        WHEN v_type IN ('Cp', 'Cu') THEN
--- It is a constraint.
--- Create the related index in advance. The constraint will be created later in the table copy post-processing, referencing this index.
--- To get the index definition, just remove the PRIMARY KEY or UNIQUE keywords from the constraint definition.
-            EXECUTE format(
-                'CREATE UNIQUE INDEX %I ON %I.%I %s',
-                v_index, v_schema, v_table,
-                regexp_replace(v_definition, 'PRIMARY KEY |UNIQUE ', ''));
-        ELSE
-            RAISE EXCEPTION '_create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
-    END CASE;
--- Record the recreation duration
-    UPDATE @extschema@.table_index
-        SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-        WHERE tic_schema = v_schema
-          AND tic_table = v_table
-          AND tic_object = v_index;
--- Return the step report.
-    r_output.sr_indicator = 'RECREATED_INDEXES';
-    r_output.sr_value = 1;
-    r_output.sr_rank = 13;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
---
-    RETURN;
-END;
-$_create_index$;
-
--- The _compare_table() function is a generic compare function that is used to process tables.
--- Input parameters: batch name, step name and execution options.
--- It returns a step report including the number of discrepancies found.
--- The function compares a foreign table with its related local table, using a single SQL statement.
--- Discrepancies are inserted into the data2pg.content_diff table.
--- In content_diff, rows content is represented in JSON format, distinguishing key columns and other columns. 
--- The comparison takes into account column transformation rules that have been defined for the COPY processing by register_columns_transform_rule() function calls.
--- It also takes into account additional column comparison rules defined by register_column_comparison_rule() function calls.
--- It may be simple masking. In this case, the keyword "MASKED" replaces the column content for the comparison and in the content_diff table.
--- It may be an computation applied on the source column and on the local column. Both may be different if needed.
--- When a comparison rule is applied on a column, its name reported in the content_diff JSON values is enclosed by parenthesis.
-CREATE FUNCTION _compare_table(
-    p_batchName                TEXT,
-    p_step                     TEXT,
-    p_stepOptions              JSONB
-    )
-    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$_compare_table$
-DECLARE
-    v_schema                   TEXT;
-    v_table                    TEXT;
-    v_partNum                  INTEGER;
-    v_foreignSchema            TEXT;
-    v_foreignTable             TEXT;
-    v_sourceExprList           TEXT;
-    v_destExprList             TEXT;
-    v_destColList              TEXT;
-    v_keyJsonBuild             TEXT;
-    v_otherJsonBuild           TEXT;
-    v_compareSortOrder         TEXT;
-    v_partCondition            TEXT;
-    v_maxDiff                  TEXT;
-    v_maxRows                  TEXT;
-    v_stmt                     TEXT;
-    v_nbDiff                   BIGINT;
-    r_output                   @extschema@.step_report_type;
-BEGIN
--- Get the table identity.
-    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
-        FROM @extschema@.step
-        WHERE stp_batch_name = p_batchName
-          AND stp_name = p_step;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_compare_table: no step % found for the batch %.', p_step, p_batchName;
-    END IF;
--- Read the table_to_process table to get table related details.
-    SELECT tbl_foreign_schema, tbl_foreign_name
-        INTO v_foreignSchema, v_foreignTable
-        FROM @extschema@.table_to_process
-        WHERE tbl_schema = v_schema AND tbl_name = v_table;
--- Read the table_column table to get details about columns and build pieces of SQL that will be used by the global comparison statement below.
-    SELECT string_agg(quote_ident(tco_name), ','),
-           string_agg(coalesce(tco_compare_source_expr, quote_literal('MASKED')), ','),
-           string_agg(coalesce(tco_compare_dest_expr, quote_literal('MASKED')), ','),
-           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
-           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NULL),
-           coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_compare_sort_rank) FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
-                    string_agg(quote_ident(tco_name), ','))
-        INTO v_destColList,
-             v_sourceExprList,
-             v_destExprList,
-             v_keyJsonBuild,
-             v_otherJsonBuild,
-             v_compareSortOrder
-        FROM (
-           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank,
-                  CASE WHEN tco_compare_source_expr = tco_name AND tco_compare_dest_expr = tco_name
-                      THEN tco_name
-                      ELSE '(' || tco_name || ')' 
-                  END AS tco_decorated_name
-               FROM @extschema@.table_column
-               WHERE tco_schema = v_schema AND tco_table = v_table
-               ORDER BY tco_number
-             ) AS t;
--- If the step concerns a table part, warn if no WHERE clause exists.
---   Pre-processing or post-processing only steps are only useful for batches of type COPY.
-    IF v_partNum IS NOT NULL THEN
-        SELECT prt_condition
-            INTO v_partCondition
-            FROM @extschema@.table_part
-            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
-        IF v_partCondition IS NULL THEN
-            RAISE WARNING '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
-        END IF;
-    END IF;
--- Analyze the step options.
-    v_maxDiff = p_stepOptions->>'COMPARE_MAX_DIFF';
-    v_maxRows = p_stepOptions->>'COMPARE_MAX_ROWS';
---
--- Compare processing.
---
--- The compare processing is not performed for a 'TABLE_PART' step without condition.
-    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
--- Compare the foreign table and the destination table.
-        v_stmt = format(
-            'WITH ft (%s) AS (
-                     SELECT %s FROM %I.%I %s
-                     ORDER BY %s %s),
-                  t (%s) AS (
-                     SELECT %s FROM %I.%I %s
-                     ORDER BY %s %s),
-                  source_diff AS (
-                     SELECT * FROM ft
-                         EXCEPT
-                     SELECT * FROM t
-                     LIMIT %s),
-                  destination_diff AS (
-                     SELECT * FROM t
-                         EXCEPT
-                     SELECT * FROM ft
-                     LIMIT %s),
-                  all_diff AS (
-                     SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_key_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
-                         UNION ALL
-                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff
-                     LIMIT %s),
-                  formatted_diff AS (
-                     SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_key_cols, diff_other_cols
-                        FROM all_diff ORDER BY %s, diff_database DESC),
-                  inserted_diff AS (
-                     INSERT INTO @extschema@.content_diff
-                         (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
-                         SELECT * FROM formatted_diff %s
-                         RETURNING diff_rank)
-                  SELECT max(diff_rank) FROM inserted_diff',
-            -- ft CTE variables
-            v_destColList,
-            v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
-            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
-            -- t CTE variables
-            v_destColList,
-            v_destExprList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
-            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
-            -- source_diff CTE variables
-            coalesce (v_maxDiff, 'ALL'),
-            -- destination_diff CTE variables
-            coalesce (v_maxDiff, 'ALL'),
-            -- all_diff CTE variables
-            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
-            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
-            coalesce (v_maxDiff, 'ALL'),
-            -- formatted_diff CTE variables
-            v_schema, v_table, v_compareSortOrder,
-            v_compareSortOrder,
-            -- inserted_diff CTE variables
-            coalesce ('WHERE diff_rank <= ' || v_maxDiff, '')
-            );
---raise warning '%',v_stmt;
-        EXECUTE v_stmt INTO v_nbDiff;
-    END IF;
--- Return the step report.
-    IF v_partNum IS NULL THEN
-        r_output.sr_indicator = 'COMPARED_TABLES';
-        r_output.sr_rank = 50;
-    ELSE
-        r_output.sr_indicator = 'COMPARED_TABLE_PARTS';
-        r_output.sr_rank = 51;
-    END IF;
-    r_output.sr_value = 1;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
---
-    IF v_partNum IS NULL THEN
-        r_output.sr_indicator = 'NON_EQUAL_TABLES';
-        r_output.sr_rank = 60;
-    ELSE
-        r_output.sr_indicator = 'NON_EQUAL_TABLE_PARTS';
-        r_output.sr_rank = 61;
-    END IF;
-    r_output.sr_value = CASE WHEN v_nbDiff IS NULL THEN 0 ELSE 1 END;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
---
-    r_output.sr_indicator = 'ROW_DIFFERENCES';
-    r_output.sr_value = coalesce(v_nbDiff, 0);
-    r_output.sr_rank = 71;
-    r_output.sr_is_main_indicator = TRUE;
-    RETURN NEXT r_output;
---
-    RETURN;
-END;
-$_compare_table$;
-
--- The _compare_sequence() function compares the characteristics of a source and its destination sequence.
--- Input parameters: batch name, step name and execution options.
--- It returns a step report.
--- Discrepancies are inserted into the data2pg.content_diff table.
-CREATE FUNCTION _compare_sequence(
-    p_batchName                TEXT,
-    p_step                     TEXT,
-    p_stepOptions              JSONB
-    )
-    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
-    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
-$_compare_sequence$
-DECLARE
-    v_schema                   TEXT;
-    v_sequence                 TEXT;
-    v_foreignSchema            TEXT;
-    v_sourceSchema             TEXT;
-    v_sourceDbms               TEXT;
-    v_srcLastValue             BIGINT;
-    v_srcIsCalled              TEXT;
-    v_destLastValue            BIGINT;
-    v_destIsCalled             TEXT;
-    v_areSequencesEqual        BOOLEAN;
-    r_output                   @extschema@.step_report_type;
-BEGIN
--- Get the identity of the sequence.
-    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
-      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
-        FROM @extschema@.step
-             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
-             JOIN @extschema@.migration ON (seq_migration = mgr_name)
-        WHERE stp_batch_name = p_batchName
-          AND stp_name = p_step;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION '_compare_sequence: no step % found for the batch %.', p_step, p_batchName;
-    END IF;
--- Depending on the source DBMS, get the source sequence's characteristics.
-    SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
-       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
--- Get the destination sequence's characteristics.
-    EXECUTE format(
-        'SELECT last_value, is_called
-             FROM %s',
-        quote_ident(v_schema) || '.' || quote_ident(v_sequence)
-        )
-        INTO v_destLastValue, v_destIsCalled;
--- If both sequences don't match, record it.
-    v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
-    IF NOT v_areSequencesEqual THEN
-        INSERT INTO @extschema@.content_diff
-            (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
-            VALUES
-            (v_schema, v_sequence, 1, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
-            (v_schema, v_sequence, 1, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
-    END IF;
--- Return the step report.
-    r_output.sr_indicator = 'COMPARED_SEQUENCES';
-    r_output.sr_value = 1;
-    r_output.sr_rank = 52;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
-    r_output.sr_indicator = 'SEQUENCE_DIFFERENCES';
-    r_output.sr_rank = 72;
-    r_output.sr_value = CASE WHEN NOT v_areSequencesEqual THEN 1 ELSE 0 END;
-    r_output.sr_is_main_indicator = TRUE;
-    RETURN NEXT r_output;
---
-    RETURN;
-END;
-$_compare_sequence$;
 
 -- The _copy_init() function is the initial step of a batch of type COPY. It checks that all expected component are present and truncate tables.
 -- Input parameters: batch name, step name and execution options.
@@ -3133,6 +2532,834 @@ BEGIN
     RETURN;
 END;
 $_discover_end$;
+
+-- The _copy_table() function is the generic copy function that is used to process tables.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report including the number of copied rows.
+-- It is set as session_replication_role = 'replica', so that no check are performed on foreign keys and no regular trigger are executed.
+CREATE FUNCTION _copy_table(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SET session_replication_role = 'replica'
+    SET synchronous_commit = 'off'
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_copy_table$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_partNum                  INTEGER;
+    v_partCondition            TEXT;
+    v_isFirstStep              BOOLEAN = TRUE;
+    v_isLastStep               BOOLEAN = TRUE;
+    v_copyMaxRows              BIGINT;
+    v_copyPctRows              REAL;
+    v_copySlowDown             BIGINT;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_estimatedNbRows          BIGINT;
+    v_copySortOrder            TEXT;
+    v_insertColList            TEXT;
+    v_selectExprList           TEXT;
+    v_someGenAlwaysIdentCol    BOOLEAN;
+    v_constraint               TEXT;
+    v_i                        INT;
+    v_index                    TEXT;
+    v_indexDef                 TEXT;
+    v_stmt                     TEXT;
+    v_nbRows                   BIGINT = 0;
+    v_nbDroppedIndex           SMALLINT = 0;
+    v_nbCreatedIndex           SMALLINT = 0;
+    r_obj                      RECORD;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the table.
+    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_copy_table: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Read the table_to_process table to get table related details.
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_rows,
+           tbl_copy_sort_order, tbl_some_gen_alw_id_col
+        INTO v_foreignSchema, v_foreignTable, v_estimatedNbRows,
+             v_copySortOrder, v_someGenAlwaysIdentCol
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Read the table_column table to get details about columns
+    SELECT string_agg(tco_copy_source_expr, ','),
+           string_agg(tco_copy_dest_col, ',')
+        INTO v_selectExprList, v_insertColList
+        FROM (
+           SELECT tco_name, tco_copy_source_expr, tco_copy_dest_col
+               FROM @extschema@.table_column
+               WHERE tco_schema = v_schema AND tco_table = v_table
+               ORDER BY tco_number
+             ) AS t;
+-- If the step concerns a table part, get additional details about the part.
+    IF v_partNum IS NOT NULL THEN
+        SELECT prt_condition, prt_is_first_step, prt_is_last_step
+            INTO v_partCondition, v_isFirstStep, v_isLastStep
+            FROM @extschema@.table_part
+            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
+    END IF;
+-- Analyze the step options.
+    v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
+    v_copyPctRows = p_stepOptions->>'COPY_PCT_ROWS';
+    v_copySlowDown = p_stepOptions->>'COPY_SLOW_DOWN';
+-- Compute the maximum number of rows to copy, depending on both COPY_MAX_ROWS and COPY_PCT_ROWS option values.
+-- When the COPY_PCT_ROWS is set, apply this percentage to the estimated number of rows from the table statistics, rounded to the next integer.
+-- If both COPY_MAX_ROWS and COPY_PCT_ROWS options are set, keep the least computed number of rows.
+    IF v_copyPctRows IS NOT NULL AND
+      (v_copyMaxRows IS NULL OR v_copyMaxRows > v_estimatedNbRows * v_copyPctRows / 100) THEN
+       v_copyMaxRows = 1 + v_estimatedNbRows * v_copyPctRows / 100;
+    END IF;
+--
+-- Pre-processing.
+--
+    IF v_isFirstStep THEN
+-- Drop the constraints known as 'to be dropped' (pk, unique, exclude) and record the drop timestamp.
+        FOR r_obj IN
+            SELECT tic_object
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type LIKE 'C%'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE format(
+                'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+                v_schema, v_table, r_obj.tic_object
+            );
+            UPDATE @extschema@.table_index
+                SET tic_last_drop_ts = clock_timestamp(),
+                    tic_last_create_ts = NULL,
+                    tic_last_create_duration = NULL
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
+            v_nbDroppedIndex = v_nbDroppedIndex + 1;
+        END LOOP;
+-- Drop the indexes known as "to be dropped" during the copy processing and record the drop timestamp.
+        FOR r_obj IN
+            SELECT tic_object
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'I'
+                  AND tic_drop_for_copy
+        LOOP
+            EXECUTE format(
+                'DROP INDEX %I.%I',
+                v_schema, r_obj.tic_object
+            );
+            UPDATE @extschema@.table_index
+                SET tic_last_drop_ts = clock_timestamp(),
+                    tic_last_create_ts = NULL,
+                    tic_last_create_duration = NULL
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
+            v_nbDroppedIndex = v_nbDroppedIndex + 1;
+        END LOOP;
+    END IF;
+--
+-- Copy processing.
+--
+-- The copy processing is not performed for a 'TABLE_PART' step without condition.
+    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
+-- Do not sort the source data when the table is processed with a WHERE clause or a LIMIT clause.
+        IF v_partCondition IS NOT NULL OR v_copyMaxRows IS NOT NULL THEN
+            v_copySortOrder = NULL;
+        END IF;
+-- Copy the foreign table to the destination table.
+        v_stmt = format(
+            'INSERT INTO %I.%I (%s) %s
+               SELECT %s
+               FROM ONLY %I.%I
+               %s
+               %s
+               %s',
+            v_schema, v_table, v_InsertColList,
+            CASE WHEN v_someGenAlwaysIdentCol THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END,
+            v_selectExprList, v_foreignSchema, v_foreignTable,
+            coalesce('WHERE ' || v_partCondition, ''),
+            coalesce('ORDER BY ' || v_copySortOrder, ''),
+            coalesce('LIMIT ' || v_copyMaxRows, '')
+            );
+--raise warning '%',v_stmt;
+        EXECUTE v_stmt;
+        GET DIAGNOSTICS v_nbRows = ROW_COUNT;
+    END IF;
+--
+-- Post processing.
+--
+    IF v_isLastStep THEN
+-- Recreate the constraints that have been previously dropped.
+        FOR r_obj IN
+            SELECT tic_object, tic_type, tic_definition, tic_separate_creation_step
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type LIKE 'C%'
+                  AND tic_drop_for_copy
+        LOOP
+            IF NOT r_obj.tic_separate_creation_step THEN
+-- The index related to the constraint has not been already created (the most common case).
+                v_nbCreatedIndex = v_nbCreatedIndex + 1;
+-- Record the recreation start timestamp.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_ts = clock_timestamp()
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
+-- Recreate the constraint with its initial definition.
+                EXECUTE format(
+                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
+                    v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
+                );
+-- Record the recreation duration.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
+            ELSE
+-- The index related to the constraint has been already created by a separate step. So just add the constraint using the existing index.
+                EXECUTE format(
+                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s USING INDEX %I',
+                    v_schema, v_table, r_obj.tic_object,
+                    CASE r_obj.tic_type
+                        WHEN 'Cp' THEN 'PRIMARY KEY'
+                        WHEN 'Cu' THEN 'UNIQUE'
+                        ELSE NULL                        -- should never happen
+                    END, r_obj.tic_object
+                );
+            END IF;
+        END LOOP;
+-- Recreate the indexes that have been previously dropped and that are not recreated by a separate step.
+        FOR r_obj IN
+            SELECT tic_object, tic_definition
+                FROM @extschema@.table_index
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_type = 'I'
+                  AND tic_drop_for_copy
+                  AND NOT tic_separate_creation_step
+        LOOP
+            v_nbCreatedIndex = v_nbCreatedIndex + 1;
+-- Record the recreation start timestamp
+            UPDATE @extschema@.table_index
+                SET tic_last_create_ts = clock_timestamp()
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
+-- Create the index.
+            EXECUTE r_obj.tic_definition;
+-- Record the recreation duration
+            UPDATE @extschema@.table_index
+                SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                WHERE tic_schema = v_schema
+                  AND tic_table = v_table
+                  AND tic_object = r_obj.tic_object;
+        END LOOP;
+-- Get the statistics (and let the autovacuum do its job).
+        EXECUTE format(
+            'ANALYZE %I.%I',
+            v_schema, v_table);
+    END IF;
+-- Slowdown (for testing purpose only)
+    IF v_copySlowDown IS NOT NULL THEN
+        PERFORM pg_sleep(v_nbRows * v_copySlowDown / 1000000);
+    END IF;
+-- Return the step report.
+    IF v_isLastStep THEN
+        r_output.sr_indicator = 'COPIED_TABLES';
+        r_output.sr_value = 1;
+        r_output.sr_rank = 10;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    r_output.sr_indicator = 'COPIED_ROWS';
+    r_output.sr_value = v_nbRows;
+    r_output.sr_rank = 11;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+    IF v_nbDroppedIndex > 0 THEN
+        r_output.sr_indicator = 'DROPPED_INDEXES';
+        r_output.sr_value = v_nbDroppedIndex;
+        r_output.sr_rank = 12;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    IF v_nbCreatedIndex > 0 THEN
+        r_output.sr_indicator = 'RECREATED_INDEXES';
+        r_output.sr_value = v_nbCreatedIndex;
+        r_output.sr_rank = 13;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+--
+    RETURN;
+END;
+$_copy_table$;
+
+-- The _copy_sequence() function is a generic sequence adjustment function that is used to process individual sequences.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report.
+CREATE FUNCTION _copy_sequence(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SET synchronous_commit = 'off'
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
+$_copy_sequence$
+DECLARE
+    v_schema                   TEXT;
+    v_sequence                 TEXT;
+    v_foreignSchema            TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceDbms               TEXT;
+    v_lastValue                BIGINT;
+    v_isCalled                 TEXT;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the sequence.
+    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
+      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
+        FROM @extschema@.step
+             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
+             JOIN @extschema@.migration ON (seq_migration = mgr_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_copy_sequence: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Depending on the source DBMS, get the sequence's characteristics.
+    SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+-- Set the sequence's characteristics.
+    EXECUTE format(
+        'SELECT setval(%L, %s, %s)',
+        quote_ident(v_schema) || '.' || quote_ident(v_sequence), v_lastValue, v_isCalled
+        );
+-- Return the step report.
+    r_output.sr_indicator = 'COPIED_SEQUENCES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 20;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_copy_sequence$;
+
+-- The _get_source_sequence() function get the properties of a sequence on the source database, depending on the RDBMS.
+-- It is called by functions processing sequences copy or comparison.
+-- Input parameters: source DBSM and the sequence id.
+-- The output parameters: last value and is_called properties.
+CREATE FUNCTION _get_source_sequence(
+    p_sourceDbms               TEXT,
+    p_sourceSchema             TEXT,
+    p_foreignSchema            TEXT,
+    p_sequence                 TEXT,
+    OUT p_lastValue            BIGINT,
+    OUT p_isCalled             TEXT
+    )
+    RETURNS RECORD LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
+$_get_source_sequence$
+BEGIN
+-- Depending on the source DBMS, get the sequence's characteristics.
+    IF p_sourceDbms = 'Oracle' THEN
+        SELECT last_number, 'true' INTO p_lastValue, p_isCalled
+           FROM @extschema@.ora_sequences
+           WHERE sequence_owner = p_sourceSchema
+             AND sequence_name = upper(p_sequence);
+    ELSIF p_sourceDbms = 'PostgreSQL' THEN
+        EXECUTE format(
+            'SELECT last_value, CASE WHEN is_called THEN ''true'' ELSE ''false'' END FROM %I.%I',
+            p_foreignSchema, p_sequence
+            ) INTO p_lastValue, p_isCalled;
+    ELSE
+        RAISE EXCEPTION '_get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
+    END IF;
+--
+    RETURN;
+END;
+$_get_source_sequence$;
+
+-- The _create_index() function is a generic function recreate a index that has been marked as
+-- 'not to be created in the copy post-processing phase'. It may be useful to create several indexes in parallel for a large table.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report.
+CREATE FUNCTION _create_index(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SET synchronous_commit = 'off'
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_create_index$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_index                    TEXT;
+    v_type                     TEXT;
+    v_definition               TEXT;
+    v_separateCreationStep     BOOLEAN;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the index/constraint.
+    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition, tic_separate_creation_step
+        INTO v_schema, v_table, v_index, v_type, v_definition, v_separateCreationStep
+        FROM @extschema@.step
+             JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_object = stp_sub_object)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_create_index: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Check that the requested index/constraint creation is valid.
+    IF NOT v_separateCreationStep THEN
+        RAISE EXCEPTION '_create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
+    END IF;
+-- Record the recreation start timestamp.
+    UPDATE @extschema@.table_index
+        SET tic_last_create_ts = clock_timestamp()
+        WHERE tic_schema = v_schema
+          AND tic_table = v_table
+          AND tic_object = v_index;
+-- Create the index of the constraint depending on its registered type.
+    CASE
+        WHEN v_type = 'I' THEN
+-- It is an index.
+            EXECUTE v_definition;
+        WHEN v_type IN ('Cp', 'Cu') THEN
+-- It is a constraint.
+-- Create the related index in advance. The constraint will be created later in the table copy post-processing, referencing this index.
+-- To get the index definition, just remove the PRIMARY KEY or UNIQUE keywords from the constraint definition.
+            EXECUTE format(
+                'CREATE UNIQUE INDEX %I ON %I.%I %s',
+                v_index, v_schema, v_table,
+                regexp_replace(v_definition, 'PRIMARY KEY |UNIQUE ', ''));
+        ELSE
+            RAISE EXCEPTION '_create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
+    END CASE;
+-- Record the recreation duration
+    UPDATE @extschema@.table_index
+        SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+        WHERE tic_schema = v_schema
+          AND tic_table = v_table
+          AND tic_object = v_index;
+-- Return the step report.
+    r_output.sr_indicator = 'RECREATED_INDEXES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 13;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_create_index$;
+
+-- The _check_table() function computes some aggregates, at least the number of rows, on both source and target tables.
+-- Results can be compared to be sure that the data content has been correctly migrated.
+-- Input parameters: batch name, step name and execution options.
+-- It stores the result into the counter table.
+-- It returns a step report including the number of recorded aggregates.
+CREATE OR REPLACE FUNCTION _check_table(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_check_table$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_serverName               TEXT;
+    v_isFtAsQueryPossible      BOOLEAN;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_aggForeignTable          TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceTable              TEXT;
+    v_nbColumns                SMALLINT = 0;
+    v_colDefList               TEXT;
+    v_stmt                     TEXT;
+    v_foreignTableQuery        TEXT;
+    v_nbRows                   BIGINT;
+    v_nbAggregates             INT;
+    v_nbDiff                   INT;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the table to examine.
+    SELECT stp_schema, stp_object
+        INTO v_schema, v_table
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_check_table: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Read the migration table to get the FDW server name and source RDBMS.
+    SELECT mgr_server_name, (mgr_source_dbms IN ('Oracle', 'SQLServer', 'Sybase_ASA')) AS mgr_is_ft_as_query_possible
+        INTO v_serverName, v_isFtAsQueryPossible
+        FROM @extschema@.migration
+             JOIN @extschema@.batch ON (bat_migration = mgr_name)
+        WHERE bat_name = p_batchName;
+-- Read the table_to_process table to get the foreign schema and build the foreign table name.
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name, tbl_foreign_name || '_agg'
+        INTO v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable, v_aggForeignTable
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Delete previous aggregates in the counter table.
+    DELETE FROM @extschema@.counter
+        WHERE cnt_schema = v_schema AND cnt_table = v_table;
+--
+-- Process the target table.
+    v_nbAggregates = 1;
+-- Analyze the source table content and record the resulting aggregates into the counter table.
+    v_stmt = 'WITH aggregates AS ('
+          || '  SELECT count(*) AS nb_rows FROM ' || quote_ident(v_schema) || '.' || quote_ident(v_table)
+          || '  ) '
+          || 'INSERT INTO @extschema@.counter (cnt_schema, cnt_table, cnt_database, cnt_counter, cnt_value)'
+          || '  SELECT ' || quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ''D'', ''nb_rows'', nb_rows'
+          || '      FROM aggregates';
+    EXECUTE v_stmt;
+--
+-- Process the source table.
+    IF v_isFtAsQueryPossible THEN
+-- With FDW allowing to create a foreign table defined as query, use this technic to let the source DBMS compute the aggregates.
+        v_colDefList = 'nb_rows BIGINT';
+-- Create the aggregate foreign table.
+        v_foreignTableQuery := format(
+            '(SELECT count(*) AS nb_rows FROM %I.%I)',
+            v_sourceSchema, v_sourceTable
+        );
+        v_stmt = format(
+            'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS ( table %L )',
+            v_foreignSchema, v_aggForeignTable, v_colDefList, v_serverName, v_foreignTableQuery
+        );
+        EXECUTE v_stmt;
+-- Analyze the source table content by querying the aggregate foreign table and record the resulting aggregates into the counter table.
+        v_stmt = 'WITH aggregates AS ('
+              || '  SELECT * FROM ' || quote_ident(v_foreignSchema) || '.' || quote_ident(v_aggForeignTable)
+              || '  ) '
+              || 'INSERT INTO @extschema@.counter (cnt_schema, cnt_table, cnt_database, cnt_counter, cnt_value)'
+              || '  SELECT ' || quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ''S'', ''nb_rows'', nb_rows'
+              || '      FROM aggregates';
+        EXECUTE v_stmt;
+-- Drop the aggregate foreign table, that is now useless.
+        EXECUTE format(
+            'DROP FOREIGN TABLE %I.%I',
+            v_foreignSchema, v_aggForeignTable
+        );
+    ELSE
+-- Otherwise directly compute the aggregates on the foreign table.
+-- Analyze the source table content by querying the foreign table and record the resulting aggregates into the counter table.
+        v_stmt = 'WITH aggregates AS ('
+              || '  SELECT count(*) AS nb_rows FROM ' || quote_ident(v_foreignSchema) || '.' || quote_ident(v_foreignTable)
+              || '  ) '
+              || 'INSERT INTO @extschema@.counter (cnt_schema, cnt_table, cnt_database, cnt_counter, cnt_value)'
+              || '  SELECT ' || quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ''S'', ''nb_rows'', nb_rows'
+              || '      FROM aggregates';
+        EXECUTE v_stmt;
+    END IF;
+--
+-- Compare aggregate from both databases.
+    SELECT count(*) INTO v_nbDiff
+        FROM @extschema@.counter s
+             JOIN @extschema@.counter d ON (d.cnt_schema = s.cnt_schema AND d.cnt_table = s.cnt_table AND
+                                            d.cnt_database = 'D' AND d.cnt_counter = s.cnt_counter)
+        WHERE s.cnt_schema = v_schema
+          AND s.cnt_table = v_table
+          AND s.cnt_database = 'S'
+          AND s.cnt_value <> d.cnt_value;
+-- Return the step report.
+    r_output.sr_indicator = 'CHECKED_TABLES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 90;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'COMPUTED_AGGREGATES';
+    r_output.sr_value = v_nbAggregates;
+    r_output.sr_rank = 91;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'UNEQUAL_AGGREGATES';
+    r_output.sr_value = v_nbDiff;
+    r_output.sr_rank = 92;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_check_table$;
+
+-- The _compare_table() function is a generic compare function that is used to process tables.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report including the number of discrepancies found.
+-- The function compares a foreign table with its related local table, using a single SQL statement.
+-- Discrepancies are inserted into the data2pg.content_diff table.
+-- In content_diff, rows content is represented in JSON format, distinguishing key columns and other columns.
+-- The comparison takes into account column transformation rules that have been defined for the COPY processing by register_columns_transform_rule() function calls.
+-- It also takes into account additional column comparison rules defined by register_column_comparison_rule() function calls.
+-- It may be simple masking. In this case, the keyword "MASKED" replaces the column content for the comparison and in the content_diff table.
+-- It may be an computation applied on the source column and on the local column. Both may be different if needed.
+-- When a comparison rule is applied on a column, its name reported in the content_diff JSON values is enclosed by parenthesis.
+CREATE FUNCTION _compare_table(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
+$_compare_table$
+DECLARE
+    v_schema                   TEXT;
+    v_table                    TEXT;
+    v_partNum                  INTEGER;
+    v_foreignSchema            TEXT;
+    v_foreignTable             TEXT;
+    v_sourceExprList           TEXT;
+    v_destExprList             TEXT;
+    v_destColList              TEXT;
+    v_keyJsonBuild             TEXT;
+    v_otherJsonBuild           TEXT;
+    v_compareSortOrder         TEXT;
+    v_partCondition            TEXT;
+    v_maxDiff                  TEXT;
+    v_maxRows                  TEXT;
+    v_stmt                     TEXT;
+    v_nbDiff                   BIGINT;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the table identity.
+    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_compare_table: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Read the table_to_process table to get table related details.
+    SELECT tbl_foreign_schema, tbl_foreign_name
+        INTO v_foreignSchema, v_foreignTable
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = v_schema AND tbl_name = v_table;
+-- Read the table_column table to get details about columns and build pieces of SQL that will be used by the global comparison statement below.
+    SELECT string_agg(quote_ident(tco_name), ','),
+           string_agg(coalesce(tco_compare_source_expr, quote_literal('MASKED')), ','),
+           string_agg(coalesce(tco_compare_dest_expr, quote_literal('MASKED')), ','),
+           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
+           string_agg(quote_literal(tco_decorated_name) || ',' || quote_ident(tco_name), ',') FILTER (WHERE tco_compare_sort_rank IS NULL),
+           coalesce(string_agg(quote_ident(tco_name), ',' ORDER BY tco_compare_sort_rank) FILTER (WHERE tco_compare_sort_rank IS NOT NULL),
+                    string_agg(quote_ident(tco_name), ','))
+        INTO v_destColList,
+             v_sourceExprList,
+             v_destExprList,
+             v_keyJsonBuild,
+             v_otherJsonBuild,
+             v_compareSortOrder
+        FROM (
+           SELECT tco_name, tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank,
+                  CASE WHEN tco_compare_source_expr = tco_name AND tco_compare_dest_expr = tco_name
+                      THEN tco_name
+                      ELSE '(' || tco_name || ')'
+                  END AS tco_decorated_name
+               FROM @extschema@.table_column
+               WHERE tco_schema = v_schema AND tco_table = v_table
+               ORDER BY tco_number
+             ) AS t;
+-- If the step concerns a table part, warn if no WHERE clause exists.
+--   Pre-processing or post-processing only steps are only useful for batches of type COPY.
+    IF v_partNum IS NOT NULL THEN
+        SELECT prt_condition
+            INTO v_partCondition
+            FROM @extschema@.table_part
+            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
+        IF v_partCondition IS NULL THEN
+            RAISE WARNING '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
+        END IF;
+    END IF;
+-- Analyze the step options.
+    v_maxDiff = p_stepOptions->>'COMPARE_MAX_DIFF';
+    v_maxRows = p_stepOptions->>'COMPARE_MAX_ROWS';
+--
+-- Compare processing.
+--
+-- The compare processing is not performed for a 'TABLE_PART' step without condition.
+    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
+-- Compare the foreign table and the destination table.
+        v_stmt = format(
+            'WITH ft (%s) AS (
+                     SELECT %s FROM %I.%I %s
+                     ORDER BY %s %s),
+                  t (%s) AS (
+                     SELECT %s FROM %I.%I %s
+                     ORDER BY %s %s),
+                  source_diff AS (
+                     SELECT * FROM ft
+                         EXCEPT
+                     SELECT * FROM t
+                     LIMIT %s),
+                  destination_diff AS (
+                     SELECT * FROM t
+                         EXCEPT
+                     SELECT * FROM ft
+                     LIMIT %s),
+                  all_diff AS (
+                     SELECT %s, ''S'' AS diff_database, json_build_object(%s) AS diff_key_cols, json_build_object(%s) AS diff_other_cols FROM source_diff
+                         UNION ALL
+                     SELECT %s, ''D'', json_build_object(%s), json_build_object(%s) FROM destination_diff
+                     LIMIT %s),
+                  formatted_diff AS (
+                     SELECT %L AS diff_schema, %L AS diff_relation, dense_rank() OVER (ORDER BY %s) AS diff_rank, diff_database, diff_key_cols, diff_other_cols
+                        FROM all_diff ORDER BY %s, diff_database DESC),
+                  inserted_diff AS (
+                     INSERT INTO @extschema@.content_diff
+                         (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
+                         SELECT * FROM formatted_diff %s
+                         RETURNING diff_rank)
+                  SELECT max(diff_rank) FROM inserted_diff',
+            -- ft CTE variables
+            v_destColList,
+            v_sourceExprList, v_foreignSchema, v_foreignTable, coalesce('WHERE ' || v_partCondition, ''),
+            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
+            -- t CTE variables
+            v_destColList,
+            v_destExprList, v_schema, v_table, coalesce('WHERE ' || v_partCondition, ''),
+            v_compareSortOrder, coalesce('LIMIT ' || v_maxRows, ''),
+            -- source_diff CTE variables
+            coalesce (v_maxDiff, 'ALL'),
+            -- destination_diff CTE variables
+            coalesce (v_maxDiff, 'ALL'),
+            -- all_diff CTE variables
+            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
+            v_compareSortOrder, v_keyJsonBuild, v_otherJsonBuild,
+            coalesce (v_maxDiff, 'ALL'),
+            -- formatted_diff CTE variables
+            v_schema, v_table, v_compareSortOrder,
+            v_compareSortOrder,
+            -- inserted_diff CTE variables
+            coalesce ('WHERE diff_rank <= ' || v_maxDiff, '')
+            );
+--raise warning '%',v_stmt;
+        EXECUTE v_stmt INTO v_nbDiff;
+    END IF;
+-- Return the step report.
+    IF v_partNum IS NULL THEN
+        r_output.sr_indicator = 'COMPARED_TABLES';
+        r_output.sr_rank = 50;
+    ELSE
+        r_output.sr_indicator = 'COMPARED_TABLE_PARTS';
+        r_output.sr_rank = 51;
+    END IF;
+    r_output.sr_value = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    IF v_partNum IS NULL THEN
+        r_output.sr_indicator = 'NON_EQUAL_TABLES';
+        r_output.sr_rank = 60;
+    ELSE
+        r_output.sr_indicator = 'NON_EQUAL_TABLE_PARTS';
+        r_output.sr_rank = 61;
+    END IF;
+    r_output.sr_value = CASE WHEN v_nbDiff IS NULL THEN 0 ELSE 1 END;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+--
+    r_output.sr_indicator = 'ROW_DIFFERENCES';
+    r_output.sr_value = coalesce(v_nbDiff, 0);
+    r_output.sr_rank = 71;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_compare_table$;
+
+-- The _compare_sequence() function compares the characteristics of a source and its destination sequence.
+-- Input parameters: batch name, step name and execution options.
+-- It returns a step report.
+-- Discrepancies are inserted into the data2pg.content_diff table.
+CREATE FUNCTION _compare_sequence(
+    p_batchName                TEXT,
+    p_step                     TEXT,
+    p_stepOptions              JSONB
+    )
+    RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
+$_compare_sequence$
+DECLARE
+    v_schema                   TEXT;
+    v_sequence                 TEXT;
+    v_foreignSchema            TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceDbms               TEXT;
+    v_srcLastValue             BIGINT;
+    v_srcIsCalled              TEXT;
+    v_destLastValue            BIGINT;
+    v_destIsCalled             TEXT;
+    v_areSequencesEqual        BOOLEAN;
+    r_output                   @extschema@.step_report_type;
+BEGIN
+-- Get the identity of the sequence.
+    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
+      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
+        FROM @extschema@.step
+             JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
+             JOIN @extschema@.migration ON (seq_migration = mgr_name)
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION '_compare_sequence: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Depending on the source DBMS, get the source sequence's characteristics.
+    SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+-- Get the destination sequence's characteristics.
+    EXECUTE format(
+        'SELECT last_value, is_called
+             FROM %s',
+        quote_ident(v_schema) || '.' || quote_ident(v_sequence)
+        )
+        INTO v_destLastValue, v_destIsCalled;
+-- If both sequences don't match, record it.
+    v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
+    IF NOT v_areSequencesEqual THEN
+        INSERT INTO @extschema@.content_diff
+            (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
+            VALUES
+            (v_schema, v_sequence, 1, 'S', NULL, ('{"last_value": ' || v_srcLastValue || ', "is_called": ' || v_srcIsCalled || '}')::JSON),
+            (v_schema, v_sequence, 1, 'D', NULL, ('{"last_value": ' || v_destLastValue || ', "is_called": ' || v_destIsCalled || '}')::JSON);
+    END IF;
+-- Return the step report.
+    r_output.sr_indicator = 'COMPARED_SEQUENCES';
+    r_output.sr_value = 1;
+    r_output.sr_rank = 52;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'SEQUENCE_DIFFERENCES';
+    r_output.sr_rank = 72;
+    r_output.sr_value = CASE WHEN NOT v_areSequencesEqual THEN 1 ELSE 0 END;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_compare_sequence$;
 
 -- The _check_fkey() function supresses and recreates a foreign key to be sure that the constraint is verified.
 -- This may not be always the case because tables are populated in replica mode.
