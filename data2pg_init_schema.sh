@@ -106,7 +106,7 @@ echo "--------------------------------------------------------"
 psql -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
 \set ON_ERROR_STOP ON
 
-DROP EXTENSION IF EXISTS :data2pg_schema;
+DROP EXTENSION IF EXISTS :data2pg_schema CASCADE;
 DROP SCHEMA IF EXISTS :data2pg_schema CASCADE;
 
 CREATE SCHEMA :data2pg_schema;
