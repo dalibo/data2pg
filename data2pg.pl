@@ -690,6 +690,7 @@ sub openSession
                   SET ses_status = 'Opened', ses_backend_pid = $backendPid, ses_end_ts = NULL
         );
         $d2pDbh->do($sql);
+        $d2pDbh->commit();
     }
 
     if ($verbose) {printVerbose("Session $i on the target database opened");}
