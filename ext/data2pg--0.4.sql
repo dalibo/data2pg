@@ -3999,22 +3999,22 @@ BEGIN
 END;
 $__check_step_options$;
 
--- The terminate_data2pg_backends() function is called by the Data2Pg scheduler for its 'abort' actions.
+-- The __terminate_data2pg_backends() function is called by the Data2Pg scheduler for its 'abort' actions.
 -- It terminates Postgres backends that could be still in execution.
 -- Input parameter: an array of the pids to terminate, if they are still in execution.
 -- Output parameter: an array of the pids that have been effectively terminated.
-CREATE FUNCTION terminate_data2pg_backends(
+CREATE FUNCTION __terminate_data2pg_backends(
     p_pids                   INT[]
     )
     RETURNS INT[] LANGUAGE SQL AS
-$terminate_data2pg_backends$
+$__terminate_data2pg_backends$
     SELECT array_agg(pid) FROM
         (SELECT pid, pg_terminate_backend(pid) AS has_been_terminated
             FROM pg_stat_activity
                 WHERE pid = ANY ($1)
                   AND application_name = 'data2pg') AS t
         WHERE has_been_terminated;
-$terminate_data2pg_backends$;
+$__terminate_data2pg_backends$;
 
 --
 -- Set the appropriate rights.
