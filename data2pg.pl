@@ -12,7 +12,7 @@ use Getopt::Long;
 use Time::HiRes 'sleep';
 use vars qw($VERSION $PROGRAM $APPNAME);
 
-$VERSION = '0.3';
+$VERSION = '0.4';
 $PROGRAM = 'data2pg.pl';
 $APPNAME = 'data2pg';
 
