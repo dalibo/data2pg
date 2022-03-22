@@ -801,8 +801,7 @@ BEGIN
                 FROM (SELECT unnest(v_tablesArray) AS relname) AS t;
             EXECUTE format(
                 'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I %s',
-                CASE WHEN v_sourceDbms = 'Oracle' THEN '"' || v_sourceSchema || '"' ELSE quote_ident(v_sourceSchema) END,
-                v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
+                quote_ident(v_sourceSchema), v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
         END IF;
 -- Next step of the tables processing. Tables are processed one by one.
         FOR r_tbl IN
