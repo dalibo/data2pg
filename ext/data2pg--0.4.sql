@@ -2209,13 +2209,12 @@ BEGIN
     END IF;
 -- Check the components. It raises an exception in case of trouble.
     PERFORM @extschema@._verify_objects(v_migration);
--- Truncate all tables of the migration.
+-- Truncate all application tables linked to the migration.
 -- Build the tables list.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
         INTO v_tablesList, v_nbTables
         FROM @extschema@.table_to_process
-             JOIN @extschema@.batch ON (bat_migration = tbl_migration)
-        WHERE bat_name = v_batchName;
+        WHERE tbl_migration = v_migration;
 -- ... and truncate them within a single statement.
     EXECUTE format(
           'TRUNCATE %s CASCADE',
