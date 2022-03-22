@@ -270,6 +270,20 @@ CREATE TABLE discovery_advice (
 );
 
 --
+-- Create views.
+--
+
+CREATE VIEW counter_diff AS
+    SELECT d.cnt_schema, d.cnt_table, d.cnt_counter,
+           s.cnt_value as cnt_source_value, d.cnt_value as cnt_dest_value,
+           s.cnt_timestamp as cnt_source_ts, d.cnt_timestamp as cnt_dest_ts
+        FROM counter s
+             JOIN counter d ON (d.cnt_schema = s.cnt_schema AND d.cnt_table = s.cnt_table AND
+                                        d.cnt_database = 'D' AND d.cnt_counter = s.cnt_counter)
+        WHERE s.cnt_database = 'S'
+          AND s.cnt_value <> d.cnt_value;
+
+--
 -- Create functions.
 --
 
