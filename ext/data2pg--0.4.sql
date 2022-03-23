@@ -723,6 +723,7 @@ DECLARE
     v_tablesArray            TEXT[];
     v_tablesList             TEXT;
     v_foreingTablesList      TEXT;
+    v_missingTablesList      TEXT;
     v_nbTables               INT;
     v_prevMigration          TEXT;
     v_copySortOrder          TEXT;
@@ -793,199 +794,211 @@ BEGIN
     v_nbTables = cardinality(v_tablesArray);
     IF v_nbTables = 0 THEN
         RAISE EXCEPTION 'register_tables: No table has been found in the schema "%" using the provided selection criteria.', p_schema;
-    ELSE
--- Create the foreign tables mapped on the tables in the source database.
---    For Oracle, the source schema name is forced in upper case.
-        IF p_createForeignTable THEN
-            SELECT string_agg(quote_ident(relname), ',') INTO v_foreingTablesList
-                FROM (SELECT unnest(v_tablesArray) AS relname) AS t;
-            EXECUTE format(
-                'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I %s',
-                quote_ident(v_sourceSchema), v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
+    END IF;
+-- Create the foreign tables mapped on the tables in the source database, using an IMPORT FOREIGN SCHEMA statement.
+    IF p_createForeignTable THEN
+        SELECT string_agg(quote_ident(relname), ',') INTO v_foreingTablesList
+            FROM (SELECT unnest(v_tablesArray) AS relname) AS t;
+        EXECUTE format(
+            'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I %s',
+            quote_ident(v_sourceSchema), v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
+-- Check that all tables have been found.
+        SELECT string_agg(relname, ', ') INTO v_missingTablesList
+            FROM (
+                SELECT unnest(v_tablesArray) AS relname
+                  EXCEPT
+                SELECT relname
+                    FROM pg_catalog.pg_class
+                         JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
+                    WHERE nspname = v_foreignSchema
+                      AND relkind = 'f'
+                  ) AS t;
+        IF v_missingTablesList IS NOT NULL THEN
+            RAISE EXCEPTION 'register_tables: Some tables have not been found in the source database : %.', v_missingTablesList;
         END IF;
+    END IF;
 -- Next step of the tables processing. Tables are processed one by one.
-        FOR r_tbl IN
-            SELECT relname, pg_class.oid AS table_oid, pg_namespace.oid AS schema_oid
-                FROM pg_catalog.pg_class
-                     JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-                WHERE nspname = p_schema
-                  AND relname = ANY(v_tablesArray)
-                ORDER BY relname
-        LOOP
+    FOR r_tbl IN
+        SELECT relname, pg_class.oid AS table_oid, pg_namespace.oid AS schema_oid
+            FROM pg_catalog.pg_class
+                 JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
+            WHERE nspname = p_schema
+              AND relname = ANY(v_tablesArray)
+            ORDER BY relname
+    LOOP
 -- TODO: improve naming adjustment for other RDBMS or if the table names differ between the source and the target database
-            v_sourceTable = CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END;
+        v_sourceTable = CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END;
 -- Alter the foreign table with the provided options.
-            IF p_ForeignTableOptions IS NOT NULL THEN
-                EXECUTE format(
-                    'ALTER FOREIGN TABLE %I.%I %s',
-                    v_foreignSchema, r_tbl.relname, p_ForeignTableOptions);
-            END IF;
+        IF p_ForeignTableOptions IS NOT NULL THEN
+            EXECUTE format(
+                'ALTER FOREIGN TABLE %I.%I %s',
+                v_foreignSchema, r_tbl.relname, p_ForeignTableOptions);
+        END IF;
 -- Get the clustered index columns list, if it exists.
 -- This list will be used in an ORDER BY clause of the table copy function.
-            SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
-                FROM pg_catalog.pg_index
-                WHERE indrelid = r_tbl.table_oid
-                  AND indisclustered;
+        SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
+            FROM pg_catalog.pg_index
+            WHERE indrelid = r_tbl.table_oid
+              AND indisclustered;
 -- Are there any columns declared GENERATED ALWAYS AS IDENTITY in the target table?
-            IF v_pgVersion < 100000 THEN
-                v_anyGenAlwaysIdentCol = FALSE;
-            ELSE
-                v_anyGenAlwaysIdentCol = EXISTS( 
-                    SELECT 1 FROM pg_catalog.pg_attribute
-                        WHERE attrelid = r_tbl.table_oid
-                          AND attnum > 0 AND NOT attisdropped
-                          AND attidentity = 'a');
-            END IF;
+        IF v_pgVersion < 100000 THEN
+            v_anyGenAlwaysIdentCol = FALSE;
+        ELSE
+            v_anyGenAlwaysIdentCol = EXISTS(
+                SELECT 1 FROM pg_catalog.pg_attribute
+                    WHERE attrelid = r_tbl.table_oid
+                      AND attnum > 0 AND NOT attisdropped
+                      AND attidentity = 'a');
+        END IF;
 -- Build both arrays of tables linked by foreign keys.
 --    The tables that are referenced by FK from this table.
-            SELECT array_agg(DISTINCT nf.nspname || '.' || tf.relname ORDER BY nf.nspname || '.' || tf.relname) INTO v_referencingTables
-              FROM pg_catalog.pg_constraint c, pg_catalog.pg_namespace nf, pg_catalog.pg_class tf
-              WHERE contype = 'f'                                           -- FK constraints only
-                AND c.confrelid = tf.oid AND tf.relnamespace = nf.oid       -- join for referenced table and namespace
-                AND c.conrelid  = r_tbl.table_oid;                          -- select the current table
+        SELECT array_agg(DISTINCT nf.nspname || '.' || tf.relname ORDER BY nf.nspname || '.' || tf.relname) INTO v_referencingTables
+          FROM pg_catalog.pg_constraint c, pg_catalog.pg_namespace nf, pg_catalog.pg_class tf
+          WHERE contype = 'f'                                           -- FK constraints only
+            AND c.confrelid = tf.oid AND tf.relnamespace = nf.oid       -- join for referenced table and namespace
+            AND c.conrelid  = r_tbl.table_oid;                          -- select the current table
 --    The tables that reference this table by their FK.
-            SELECT array_agg(DISTINCT n.nspname || '.' || t.relname ORDER BY n.nspname || '.' || t.relname) INTO v_referencedTables
-              FROM pg_catalog.pg_constraint c, pg_catalog.pg_namespace n, pg_catalog.pg_class t
-              WHERE contype = 'f'                                           -- FK constraints only
-                AND c.conrelid  = t.oid  AND t.relnamespace  = n.oid        -- join for table and namespace
-                AND c.confrelid = r_tbl.table_oid;                          -- select the current table
+        SELECT array_agg(DISTINCT n.nspname || '.' || t.relname ORDER BY n.nspname || '.' || t.relname) INTO v_referencedTables
+          FROM pg_catalog.pg_constraint c, pg_catalog.pg_namespace n, pg_catalog.pg_class t
+          WHERE contype = 'f'                                           -- FK constraints only
+            AND c.conrelid  = t.oid  AND t.relnamespace  = n.oid        -- join for table and namespace
+            AND c.confrelid = r_tbl.table_oid;                          -- select the current table
 -- Get statistics for the table.
-            EXECUTE format (
-                'SELECT stat_rows, stat_kbytes
-                    FROM @extschema@.%I
-                    WHERE stat_schema = %L AND stat_table = %L',
-                p_sourceTableStatLoc, v_sourceSchema, v_sourceTable)
-                INTO v_sourceRows, v_sourceKBytes;
+        EXECUTE format (
+            'SELECT stat_rows, stat_kbytes
+                FROM @extschema@.%I
+                WHERE stat_schema = %L AND stat_table = %L',
+            p_sourceTableStatLoc, v_sourceSchema, v_sourceTable)
+            INTO v_sourceRows, v_sourceKBytes;
 -- Register the table into the table_to_process table.
-            INSERT INTO @extschema@.table_to_process (
-                    tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name,
-                    tbl_rows, tbl_kbytes,
-                    tbl_copy_sort_order, tbl_some_gen_alw_id_col,
-                    tbl_referencing_tables, tbl_referenced_tables
-                ) VALUES (
-                    p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname, v_sourceSchema, v_sourceTable,
-                    coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
-                    v_copySortOrder, v_anyGenAlwaysIdentCol,
-                    v_referencingTables, v_referencedTables
-                );
+        INSERT INTO @extschema@.table_to_process (
+                tbl_schema, tbl_name, tbl_migration, tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name,
+                tbl_rows, tbl_kbytes,
+                tbl_copy_sort_order, tbl_some_gen_alw_id_col,
+                tbl_referencing_tables, tbl_referenced_tables
+            ) VALUES (
+                p_schema, r_tbl.relname, p_migration, v_foreignSchema, r_tbl.relname, v_sourceSchema, v_sourceTable,
+                coalesce(v_sourceRows, 0), coalesce(v_sourceKBytes, 0),
+                v_copySortOrder, v_anyGenAlwaysIdentCol,
+                v_referencingTables, v_referencedTables
+            );
 -- Register the columns of the target table.
 --   Look at the indexes associated to the table.
-            v_pkOid = NULL;
-            v_uniqueOid = NULL;
+        v_pkOid = NULL;
+        v_uniqueOid = NULL;
 --   Get the PK index id to be used to sort for a COMPARE step, if it exists.
-            SELECT indexrelid INTO v_pkOid
-                FROM pg_catalog.pg_index
-                WHERE indrelid = r_tbl.table_oid
-                  AND indisprimary;
+        SELECT indexrelid INTO v_pkOid
+            FROM pg_catalog.pg_index
+            WHERE indrelid = r_tbl.table_oid
+              AND indisprimary;
 --   If there is no PK, get a UNIQUE index id to be used to sort for a COMPARE step, if one exists.
 --     If there are several UNIQUE index, the choosen index will be the non partial index with the
 --     least number of columns and then the index defined first (i.e. having the lowest oid).
-            IF v_pkOid IS NULL THEN
-                SELECT indexrelid INTO v_uniqueOid
-                    FROM pg_catalog.pg_index
-                    WHERE indrelid = r_tbl.table_oid
-                      AND indisunique
-                      AND indpred IS NULL
-                    ORDER BY indnatts, indexrelid
-                    LIMIT 1;
-            END IF;
+        IF v_pkOid IS NULL THEN
+            SELECT indexrelid INTO v_uniqueOid
+                FROM pg_catalog.pg_index
+                WHERE indrelid = r_tbl.table_oid
+                  AND indisunique
+                  AND indpred IS NULL
+                ORDER BY indnatts, indexrelid
+                LIMIT 1;
+        END IF;
 --   Get the array of columns numbers composing the sort key for COMPARE steps (included columns being ignored).
-            IF coalesce(v_pkOid,v_uniqueOid) IS NOT NULL THEN
-                SELECT indkey, indnatts, indnkeyatts
-                    INTO v_compareKeyColNb, v_nbColInIdx, v_nbColInKey
-                    FROM pg_catalog.pg_index
-                    WHERE indexrelid = coalesce(v_pkOid, v_uniqueOid);
-                IF v_nbColInIdx > v_nbColInKey THEN
+        IF coalesce(v_pkOid,v_uniqueOid) IS NOT NULL THEN
+            SELECT indkey, indnatts, indnkeyatts
+                INTO v_compareKeyColNb, v_nbColInIdx, v_nbColInKey
+                FROM pg_catalog.pg_index
+                WHERE indexrelid = coalesce(v_pkOid, v_uniqueOid);
+            IF v_nbColInIdx > v_nbColInKey THEN
 --   Remove the included columns, if any (they are at the array end and do not belong to the key).
-                    FOR i IN v_nbColInKey + 1 .. v_nbColInIdx LOOP
-                        v_compareKeyColNb = array_remove(v_compareKeyColNb, v_compareKeyColNb[i]);
-                    END LOOP;
-                END IF;
-            ELSE
---   Without PK or UNIQUE index, use all columns.
-                SELECT array_agg(attnum ORDER BY attnum)
-                    INTO v_compareKeyColNb
-                    FROM pg_catalog.pg_attribute
-                    WHERE attrelid = r_tbl.table_oid
-                      AND attnum > 0 AND NOT attisdropped;
+                FOR i IN v_nbColInKey + 1 .. v_nbColInIdx LOOP
+                    v_compareKeyColNb = array_remove(v_compareKeyColNb, v_compareKeyColNb[i]);
+                END LOOP;
             END IF;
+        ELSE
+--   Without PK or UNIQUE index, use all columns.
+            SELECT array_agg(attnum ORDER BY attnum)
+                INTO v_compareKeyColNb
+                FROM pg_catalog.pg_attribute
+                WHERE attrelid = r_tbl.table_oid
+                  AND attnum > 0 AND NOT attisdropped;
+        END IF;
 --   Insert into the table_column table
-            EXECUTE format(
-                     'INSERT INTO @extschema@.table_column'
-                     '         (tco_schema, tco_table, tco_name, tco_number, tco_type,'
-                     '          tco_copy_source_expr, tco_copy_dest_col,'
-                     '          tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank)'
-                     '    SELECT %L, %L, attname, attnum,'
-                     '           CASE WHEN typname = ''bpchar'' OR typname = ''varchar'''
-                     '                  THEN typname || ''('' || atttypmod::text || '')'''
-                     '                WHEN typname = ''numeric'' AND atttypmod <> -1 '
-                     '                  THEN typname || ''('' || (((atttypmod - 4) >> 16) & 65535)::text || '','' || ((atttypmod - 4) & 65535)::text || '')'''
-                     '                ELSE typname'
-                     '           END,'                                                            -- type format
-                     '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy source expression
-                     '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy destination column
-                     '           quote_ident(attname),'                                           -- compare source expression
-                     '           quote_ident(attname),'                                           -- compare destination column
-                     '           array_position(%L, attnum) + 1'                                  -- compare sort rank
-                     '        FROM pg_catalog.pg_attribute'
-                     '             JOIN pg_type ON (atttypid = pg_type.oid)'
-                     '        WHERE attrelid = %s'
-                     '          AND attnum > 0 AND NOT attisdropped'
-                     '        ORDER BY attnum',
-                     p_schema, r_tbl.relname,
-                     CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
-                     CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
-                     v_compareKeyColNb, r_tbl.table_oid);
+        EXECUTE format(
+                 'INSERT INTO @extschema@.table_column'
+                 '         (tco_schema, tco_table, tco_name, tco_number, tco_type,'
+                 '          tco_copy_source_expr, tco_copy_dest_col,'
+                 '          tco_compare_source_expr, tco_compare_dest_expr, tco_compare_sort_rank)'
+                 '    SELECT %L, %L, attname, attnum,'
+                 '           CASE WHEN typname = ''bpchar'' OR typname = ''varchar'''
+                 '                  THEN typname || ''('' || atttypmod::text || '')'''
+                 '                WHEN typname = ''numeric'' AND atttypmod <> -1 '
+                 '                  THEN typname || ''('' || (((atttypmod - 4) >> 16) & 65535)::text || '','' || ((atttypmod - 4) & 65535)::text || '')'''
+                 '                ELSE typname'
+                 '           END,'                                                            -- type format
+                 '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy source expression
+                 '           CASE WHEN %s = '''' THEN quote_ident(attname) ELSE NULL END,'    -- copy destination column
+                 '           quote_ident(attname),'                                           -- compare source expression
+                 '           quote_ident(attname),'                                           -- compare destination column
+                 '           array_position(%L, attnum) + 1'                                  -- compare sort rank
+                 '        FROM pg_catalog.pg_attribute'
+                 '             JOIN pg_type ON (atttypid = pg_type.oid)'
+                 '        WHERE attrelid = %s'
+                 '          AND attnum > 0 AND NOT attisdropped'
+                 '        ORDER BY attnum',
+                 p_schema, r_tbl.relname,
+                 CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
+                 CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
+                 v_compareKeyColNb, r_tbl.table_oid);
 -- Insert the indexes and constraints into the table_index table.
 -- Start with PKEY, UNIQUE or EXCLUDE constraints.
 -- Constraints will be dropped and recreated only if there are enough rows to justify it and if they are not linked to another constraint (like a FK).
-            INSERT INTO @extschema@.table_index
-                    (tic_schema, tic_table, tic_object, tic_type, tic_definition,
-                     tic_drop_for_copy)
-                SELECT p_schema, r_tbl.relname, c1.conname, 'C' || c1.contype, pg_get_constraintdef(c1.oid),
-                       coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
-                           AND NOT EXISTS(
-                                           SELECT 0 FROM pg_catalog.pg_constraint c2
-                                           WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
-                                          )
-                    FROM pg_catalog.pg_constraint c1
-                    WHERE c1.conrelid = r_tbl.table_oid
-                      AND c1.contype IN ('p', 'u', 'x');
+        INSERT INTO @extschema@.table_index
+                (tic_schema, tic_table, tic_object, tic_type, tic_definition,
+                 tic_drop_for_copy)
+            SELECT p_schema, r_tbl.relname, c1.conname, 'C' || c1.contype, pg_get_constraintdef(c1.oid),
+                   coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
+                       AND NOT EXISTS(
+                                       SELECT 0 FROM pg_catalog.pg_constraint c2
+                                       WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
+                                      )
+                FROM pg_catalog.pg_constraint c1
+                WHERE c1.conrelid = r_tbl.table_oid
+                  AND c1.contype IN ('p', 'u', 'x');
 -- Continue with indexes
 -- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
 -- Indexes will be dropped and recreated only if there are enough rows to justify it, if it is not a cluster index
 --   and if they are not linked to another constraint (like a FK).
-            INSERT INTO @extschema@.table_index
-                    (tic_schema, tic_table, tic_object, tic_type, tic_definition,
-                     tic_drop_for_copy)
-                SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
-                       coalesce(v_sourceRows > v_rowsThreshold, TRUE)
-                           AND NOT indisclustered
-                           AND NOT EXISTS(
-                                           SELECT 0 FROM pg_catalog.pg_constraint
-                                           WHERE pg_constraint.conindid = pg_class.oid
-                                          )
-                    FROM pg_catalog.pg_index
-                         JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
-                    WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-                ON CONFLICT DO NOTHING;
+        INSERT INTO @extschema@.table_index
+                (tic_schema, tic_table, tic_object, tic_type, tic_definition,
+                 tic_drop_for_copy)
+            SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
+                   coalesce(v_sourceRows > v_rowsThreshold, TRUE)
+                       AND NOT indisclustered
+                       AND NOT EXISTS(
+                                       SELECT 0 FROM pg_catalog.pg_constraint
+                                       WHERE pg_constraint.conindid = pg_class.oid
+                                      )
+                FROM pg_catalog.pg_index
+                     JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
+                WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
+            ON CONFLICT DO NOTHING;
 -- For dropable indexes/constraints, set the tic_separate_creation_step to TRUE if requested.
-            IF p_separateCreateIndex THEN
-                UPDATE @extschema@.table_index
-                    SET tic_separate_creation_step = TRUE
-                    WHERE tic_schema = p_schema
-                      AND tic_table = r_tbl.relname
-                      AND tic_drop_for_copy;
-            END IF;
+        IF p_separateCreateIndex THEN
+            UPDATE @extschema@.table_index
+                SET tic_separate_creation_step = TRUE
+                WHERE tic_schema = p_schema
+                  AND tic_table = r_tbl.relname
+                  AND tic_drop_for_copy;
+        END IF;
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
 --    This will let the optimizer choose a proper plan for the _compare_table() function, without the cost of an ANALYZE.
-            IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
-                UPDATE pg_catalog.pg_class
-                    SET reltuples = coalesce(v_sourceRows, 0), relpages = coalesce(v_sourceKBytes / 8, 0)
-                    WHERE oid = (quote_ident(v_foreignSchema) || '.' || quote_ident(r_tbl.relname))::regclass;
-            END IF;
-        END LOOP;
-    END IF;
+        IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
+            UPDATE pg_catalog.pg_class
+                SET reltuples = coalesce(v_sourceRows, 0), relpages = coalesce(v_sourceKBytes / 8, 0)
+                WHERE oid = (quote_ident(v_foreignSchema) || '.' || quote_ident(r_tbl.relname))::regclass;
+        END IF;
+    END LOOP;
 --
     RETURN v_nbTables;
 END;
