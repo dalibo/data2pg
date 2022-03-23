@@ -1065,6 +1065,7 @@ $register_table$;
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
 -- It allows to manage columns with different names, with different types and or with specific computation rule.
 -- The target column is defined with the schema, table and column name.
+-- It returns the number of registered column transformations, i.e. 1.
 -- Several transformation rule may be applied for the same column. In this case, the last one defines the real transformation that will be applied.
 CREATE FUNCTION register_column_transform_rule(
     p_schema                 TEXT,               -- The schema name of the related table
@@ -1074,7 +1075,7 @@ CREATE FUNCTION register_column_transform_rule(
                                                  --   another column name if the column is renamed or an expression if the column content requires a
                                                  --   transformation rule. The column name may need to be double-quoted.
     )
-    RETURNS VOID LANGUAGE plpgsql AS
+    RETURNS INT LANGUAGE plpgsql AS
 $register_column_transform_rule$
 DECLARE
     v_migrationName          TEXT;
@@ -1111,7 +1112,7 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'register_column_transform_rule: The column % is not found in the list of columns to copy.', p_column;
     END IF;
-    RETURN;
+    RETURN 1;
 END;
 $register_column_transform_rule$;
 
@@ -1119,6 +1120,7 @@ $register_column_transform_rule$;
 -- It allows to either simply mask the column for the COMPARE operation, or to compare the result of an expression on both source and tardet tables.
 -- The target column is defined with the schema, table and column name.
 -- The expression on the source and the target databases may be different.
+-- It returns the number of registered column transformations, i.e. 1.
 -- Several comparison rules may be applied for the same column. In this case, the last one defines the real way to compare the column.
 CREATE FUNCTION register_column_comparison_rule(
     p_schema                 TEXT,               -- The schema name of the target table
@@ -1127,7 +1129,7 @@ CREATE FUNCTION register_column_comparison_rule(
     p_sourceExpression       TEXT DEFAULT NULL,  -- The expression to use on the source table for the comparison operation ; a NULL simply masks the column
     p_targetExpression       TEXT DEFAULT NULL   -- The expression to use on the target table for the comparison operation ; equals p_sourceExpression when NULL
     )
-    RETURNS VOID LANGUAGE plpgsql AS
+    RETURNS INT LANGUAGE plpgsql AS
 $register_column_comparison_rule$
 DECLARE
     v_migrationName          TEXT;
@@ -1165,7 +1167,7 @@ BEGIN
     IF v_sortRank IS NOT NULL THEN
         RAISE WARNING 'register_column_comparison_rule: The column % is used in the sorts at tables comparison time. Applying a comparison rule may have a side effect.', p_column;
     END IF;
-    RETURN;
+    RETURN 1;
 END;
 $register_column_comparison_rule$;
 
