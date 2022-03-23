@@ -696,6 +696,8 @@ CREATE FUNCTION register_tables(
     p_tablesToExclude        TEXT,               -- Regexp defining the tables to exclude (NULL to exclude no table)
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL,
+    p_sourceTableNamesFnct   TEXT                -- A function name to use to compute the source table name using the target table name
+                             DEFAULT NULL,       -- NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
     p_sourceTableStatLoc     TEXT                -- The data2pg table that contains statistics about these target tables
                              DEFAULT 'source_table_stat',
     p_createForeignTable     BOOLEAN             -- Boolean indicating whether the FOREIGN TABLE have to be created
@@ -721,10 +723,11 @@ DECLARE
     v_sourceTable            TEXT;
     v_pgVersion              INT;
     v_tablesArray            TEXT[];
+    v_sourceTablesArray      TEXT[];
     v_tablesList             TEXT;
-    v_foreingTablesList      TEXT;
+    v_sourceTablesList       TEXT;
+    v_tableName              TEXT;
     v_missingTablesList      TEXT;
-    v_nbTables               INT;
     v_prevMigration          TEXT;
     v_copySortOrder          TEXT;
     v_anyGenAlwaysIdentCol   BOOLEAN;
@@ -790,22 +793,39 @@ BEGIN
         v_tablesArray = array_remove(v_tablesArray, r_tbl.tbl_name);
         RAISE NOTICE 'register_tables: The table % is already registered to a migration.', r_tbl.tbl_name;
     END LOOP;
--- Process the selected tables.
-    v_nbTables = cardinality(v_tablesArray);
-    IF v_nbTables = 0 THEN
+-- Stop if no tables are selected.
+    IF v_tablesArray IS NULL THEN
         RAISE EXCEPTION 'register_tables: No table has been found in the schema "%" using the provided selection criteria.', p_schema;
     END IF;
--- Create the foreign tables mapped on the tables in the source database, using an IMPORT FOREIGN SCHEMA statement.
+--
+-- Process the selected tables.
+--
+-- Unless it is not requested, create the foreign tables mapped on the tables in the source database, using an IMPORT FOREIGN SCHEMA statement.
     IF p_createForeignTable THEN
-        SELECT string_agg(quote_ident(relname), ',') INTO v_foreingTablesList
-            FROM (SELECT unnest(v_tablesArray) AS relname) AS t;
+-- Build the source tables list, using the name transformation function, if any.
+        IF p_sourceTableNamesFnct IS NULL THEN
+            v_sourceTablesArray = v_tablesArray;
+        ELSE
+            v_sourceTablesArray = '{}';
+            FOREACH v_tableName IN ARRAY v_tablesArray
+            LOOP
+-- There is no previous check on the supplied table names conversion function.
+--   If it does not exist, or has not the right parameters set, the next statement fails with a clear enough message.
+                EXECUTE format('SELECT %s(%L)', p_sourceTableNamesFnct, v_tableName)
+                    INTO v_tableName;
+                v_sourceTablesArray = array_append(v_sourceTablesArray, v_tableName);
+            END LOOP;
+        END IF;
+        SELECT string_agg(quote_ident(relname), ',') INTO v_sourceTablesList
+            FROM (SELECT unnest(v_sourceTablesArray) AS relname) AS t;
+-- Create all foreign tables at once.
         EXECUTE format(
             'IMPORT FOREIGN SCHEMA %s LIMIT TO (%s) FROM SERVER %I INTO %I %s',
-            quote_ident(v_sourceSchema), v_foreingTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
--- Check that all tables have been found.
+            quote_ident(v_sourceSchema), v_sourceTablesList, v_serverName, v_foreignSchema, v_importSchemaOptClause);
+-- Check that all expected tables have been found.
         SELECT string_agg(relname, ', ') INTO v_missingTablesList
             FROM (
-                SELECT unnest(v_tablesArray) AS relname
+                SELECT unnest(v_sourceTablesArray) AS relname
                   EXCEPT
                 SELECT relname
                     FROM pg_catalog.pg_class
@@ -826,8 +846,13 @@ BEGIN
               AND relname = ANY(v_tablesArray)
             ORDER BY relname
     LOOP
--- TODO: improve naming adjustment for other RDBMS or if the table names differ between the source and the target database
-        v_sourceTable = CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(r_tbl.relname) ELSE r_tbl.relname END;
+-- If the source and target table names are not equal, rename the foreign table to match the target table name
+        v_sourceTable = v_sourceTablesArray[array_position(v_tablesArray, r_tbl.relname::text)];
+        IF v_sourceTable <> r_tbl.relname THEN
+            EXECUTE format(
+                'ALTER FOREIGN TABLE %I.%I RENAME TO %I',
+                v_foreignSchema, v_sourceTable, r_tbl.relname);
+        END IF;
 -- Alter the foreign table with the provided options.
         IF p_ForeignTableOptions IS NOT NULL THEN
             EXECUTE format(
@@ -864,11 +889,14 @@ BEGIN
             AND c.conrelid  = t.oid  AND t.relnamespace  = n.oid        -- join for table and namespace
             AND c.confrelid = r_tbl.table_oid;                          -- select the current table
 -- Get statistics for the table.
+-- For Oracle tables, the FDW (with the default "case 'smart'" option of the import foreign schema statement) generates lower case table names
+-- while the source tables names are in upper case. So no table name conversion function is required but the source statistics have upper case table names.
         EXECUTE format (
             'SELECT stat_rows, stat_kbytes
                 FROM @extschema@.%I
                 WHERE stat_schema = %L AND stat_table = %L',
-            p_sourceTableStatLoc, v_sourceSchema, v_sourceTable)
+            p_sourceTableStatLoc, v_sourceSchema,
+            CASE WHEN v_sourceDbms = 'Oracle' THEN UPPER(v_sourceTable) ELSE v_sourceTable END )
             INTO v_sourceRows, v_sourceKBytes;
 -- Register the table into the table_to_process table.
         INSERT INTO @extschema@.table_to_process (
@@ -1000,7 +1028,7 @@ BEGIN
         END IF;
     END LOOP;
 --
-    RETURN v_nbTables;
+    RETURN cardinality(v_tablesArray);
 END;
 $register_tables$;
 
@@ -1012,6 +1040,8 @@ CREATE FUNCTION register_table(
     p_table                  TEXT,               -- The table name to register
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL,
+    p_sourceTableNamesFnct   TEXT                -- A function name to use to compute the source table name using the target table name
+                             DEFAULT NULL,       -- NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
     p_sourceTableStatLoc     TEXT                -- The data2pg table that contains statistics about these target tables
                              DEFAULT 'source_table_stat',
     p_createForeignTable     BOOLEAN             -- Boolean indicating whether the FOREIGN TABLE have to be created
@@ -1028,8 +1058,8 @@ CREATE FUNCTION register_table(
     RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively assigned tables
     AS
 $register_table$
-    SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableStatLoc,
-                                       p_createForeignTable, p_ForeignTableOptions, p_separateCreateIndex, p_sortByPKey);
+    SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableNamesFnct,
+                                       p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_separateCreateIndex, p_sortByPKey);
 $register_table$;
 
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.

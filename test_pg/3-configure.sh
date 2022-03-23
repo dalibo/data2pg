@@ -70,9 +70,18 @@ SELECT create_migration(
 );
 
 --
+-- Create a custom function to convert table names
+--
+CREATE FUNCTION tables_renaming_rules(TEXT) RETURNS TEXT LANGUAGE SQL AS
+\$\$
+    SELECT CASE WHEN \$1 = 'MYTBL4' THEN 'mytbl4' ELSE \$1 END;
+\$\$;
+
+--
 -- Register the tables and sequences
 --
 
+SELECT register_table('PG''s db', 'myschema1', '^MYTBL4$', NULL, p_sourceTableNamesFnct => 'data2pg03.tables_renaming_rules');
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_table('PG''s db', 'myschema2', 'myTbl3', p_separateCreateIndex => true);
 SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
@@ -204,7 +213,7 @@ SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'phil''s schema3', '.*', NU
 --
 
 SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl1');
-SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema1', 'mytbl4');
+SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema1', 'MYTBL4');
 SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl4', 'mytbl4_col44_fkey');
 SELECT assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl4_col44_fkey');
 

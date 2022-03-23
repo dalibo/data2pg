@@ -124,6 +124,9 @@ begin transaction;
 
 \i test_pg/setup.sql
 
+-- Rename a table
+ALTER TABLE myschema1.mytbl4 RENAME TO "MYTBL4";
+
 commit;
 EOF
 
