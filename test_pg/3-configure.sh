@@ -89,7 +89,7 @@ SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL,
        p_ForeignTableOptions => 'OPTIONS(updatable ''false'')', p_createForeignTable => true);
 
 SELECT register_sequences('PG''s db', 'myschema1', '.*', NULL);
-SELECT register_sequence('PG''s db', 'myschema2', 'myseq2');
+SELECT register_sequence('PG''s db', 'myschema2', 'MYSEQ2', p_sourceSequenceNamesFnct => 'lower');
 SELECT register_sequences('PG''s db', 'myschema2', '.*', NULL);
 SELECT register_sequences('PG''s db', 'phil''s schema3', '.*', NULL);
 

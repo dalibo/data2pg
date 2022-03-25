@@ -124,8 +124,9 @@ begin transaction;
 
 \i test_pg/setup.sql
 
--- Rename a table
+-- Rename a table and a sequence
 ALTER TABLE myschema1.mytbl4 RENAME TO "MYTBL4";
+ALTER SEQUENCE myschema2.mySeq2 RENAME TO "MYSEQ2";
 
 commit;
 EOF

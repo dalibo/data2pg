@@ -177,6 +177,7 @@ CREATE TABLE sequence_to_process (
     seq_foreign_schema         TEXT NOT NULL,           -- The schema of the schema containing the foreign table representing the source sequence
     seq_foreign_name           TEXT NOT NULL,           -- The name of the foreign table representing the source sequence
     seq_source_schema          TEXT NOT NULL,           -- The schema or user owning the sequence in the source database
+    seq_source_name            TEXT NOT NULL,           -- The sequence name in the source database
     PRIMARY KEY (seq_schema, seq_name),
     FOREIGN KEY (seq_migration) REFERENCES migration (mgr_name)
 );
@@ -794,7 +795,7 @@ BEGIN
         RAISE NOTICE 'register_tables: The table % is already registered to a migration.', r_tbl.tbl_name;
     END LOOP;
 -- Stop if no tables are selected.
-    IF v_tablesArray IS NULL THEN
+    IF v_tablesArray IS NULL OR v_tablesArray = '{}' THEN
         RAISE EXCEPTION 'register_tables: No table has been found in the schema "%" using the provided selection criteria.', p_schema;
     END IF;
 --
@@ -1243,7 +1244,9 @@ CREATE FUNCTION register_sequences(
     p_sequencesToInclude     TEXT,               -- Regexp defining the sequences to register for the schema
     p_sequencesToExclude     TEXT,               -- Regexp defining the sequences to exclude (NULL to exclude no sequence)
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
-                             DEFAULT NULL
+                             DEFAULT NULL,
+    p_sourceSequenceNamesFnct TEXT               -- The sequence name transfomation function in the source database.
+                             DEFAULT NULL        -- NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
     )
     RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively registered sequences
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -1251,9 +1254,10 @@ $register_sequences$
 DECLARE
     v_serverName             TEXT;
     v_sourceDbms             TEXT;
+    v_sourceSchema           TEXT;
+    v_sourceSequenceName     TEXT;
     v_sequencesArray         TEXT[];
     v_sequencesList          TEXT;
-    v_nbSequences            INT;
     v_foreignSchema          TEXT;
     v_prevMigration          TEXT;
     r_seq                    RECORD;
@@ -1289,41 +1293,65 @@ BEGIN
         v_sequencesArray = array_remove(v_sequencesArray, r_seq.seq_name);
         RAISE NOTICE 'register_sequences: The sequence % is already assigned to a migration.', r_seq.seq_name;
     END LOOP;
--- Process the selected sequences.
-    v_nbSequences = cardinality(v_sequencesArray);
-    IF v_nbSequences = 0 THEN
+    IF v_sequencesArray IS NULL OR v_sequencesArray = '{}' THEN
         RAISE EXCEPTION 'register_sequences: No sequence has been found in the schema "%" using the provided selection criteria.', p_schema;
-    ELSE
--- Get the selected sequences.
-        FOR r_seq IN
-            SELECT relname
-                FROM pg_catalog.pg_class
-                     JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
-                WHERE nspname = p_schema
-                  AND relname = ANY(v_sequencesArray)
-                ORDER BY relname
-        LOOP
+    END IF;
+-- Process the selected sequences.
+    v_sourceSchema = coalesce(p_sourceSchema, p_schema);
+-- Get each selected sequence.
+    FOR r_seq IN
+        SELECT relname
+            FROM pg_catalog.pg_class
+                 JOIN pg_catalog.pg_namespace ON (relnamespace = pg_namespace.oid)
+            WHERE nspname = p_schema
+              AND relname = ANY(v_sequencesArray)
+            ORDER BY relname
+    LOOP
+-- Compute the sequence name on the source database.
+        v_sourceSequenceName = CASE WHEN v_sourceDbms = 'Oracle' THEN upper(r_seq.relname) ELSE r_seq.relname END;
+        IF p_sourceSequenceNamesFnct IS NOT NULL THEN
+-- There is no previous check on the supplied table names conversion function.
+--   If it does not exist, or has not the right parameters set, the next statement fails with a clear enough message.
+            EXECUTE format('SELECT %s(%L)', p_sourceSequenceNamesFnct, v_sourceSequenceName)
+                INTO v_sourceSequenceName;
+        END IF;
+-- Check that the sequence exists in the source database.
+        IF v_sourceDbms = 'Oracle' THEN
+            PERFORM 0
+                FROM @extschema@.ora_sequences
+                WHERE sequence_owner = v_sourceSchema
+                  AND sequence_name = v_sourceSequenceName;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'register_sequences: The sequence "%.%" has not been found in the source database.', p_schema, v_sourceSequenceName;
+            END IF;
+        ELSIF v_sourceDbms = 'PostgreSQL' THEN
 -- For PostgreSQL source database only,
 -- Create the foreign table mapped on the sequence in the source database to get its current value.
-            IF v_sourceDbms = 'PostgreSQL' THEN
+            EXECUTE format(
+                'CREATE FOREIGN TABLE %I.%I (last_value BIGINT, is_called BOOLEAN)'
+                '    SERVER %I OPTIONS (schema_name %L, table_name %L)',
+                v_foreignSchema, r_seq.relname, v_serverName, v_sourceSchema, v_sourceSequenceName);
+            EXECUTE format(
+                'ALTER FOREIGN TABLE %I.%I OWNER TO data2pg',
+                v_foreignSchema, r_seq.relname);
+-- Check that the sequence exists, by accessing the foreign table.
+            BEGIN
                 EXECUTE format(
-                    'CREATE FOREIGN TABLE %I.%I (last_value BIGINT, is_called BOOLEAN)'
-                    '    SERVER %I OPTIONS (schema_name %L)',
-                    v_foreignSchema, r_seq.relname, v_serverName, coalesce(p_sourceSchema, p_schema));
-                EXECUTE format(
-                    'ALTER FOREIGN TABLE %I.%I OWNER TO data2pg',
+                    'SELECT count(*) FROM %I.%I',
                     v_foreignSchema, r_seq.relname);
-            END IF;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE EXCEPTION 'register_sequences: The sequence "%.%" has not been found in the source database.', p_schema, v_sourceSequenceName;
+            END;
+        END IF;
 -- Register the sequence into the sequence_to_process table.
-            INSERT INTO @extschema@.sequence_to_process (
-                    seq_schema, seq_name, seq_migration, seq_foreign_schema, seq_foreign_name, seq_source_schema
-                ) VALUES (
-                    p_schema, r_seq.relname, p_migration, v_foreignSchema, r_seq.relname, coalesce(p_sourceSchema, p_schema)
-                );
-        END LOOP;
-    END IF;
+        INSERT INTO @extschema@.sequence_to_process (
+                seq_schema, seq_name, seq_migration, seq_foreign_schema, seq_foreign_name, seq_source_schema, seq_source_name
+            ) VALUES (
+                p_schema, r_seq.relname, p_migration, v_foreignSchema, r_seq.relname, v_sourceSchema, v_sourceSequenceName
+            );
+    END LOOP;
 --
-    RETURN v_nbSequences;
+    RETURN cardinality(v_sequencesArray);
 END;
 $register_sequences$;
 
@@ -1334,12 +1362,14 @@ CREATE FUNCTION register_sequence(
     p_schema                 TEXT,               -- The schema holding the sequence to register
     p_sequence               TEXT,               -- The sequence name to register for the schema
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
-                             DEFAULT NULL
+                             DEFAULT NULL,
+    p_sourceSequenceNamesFnct TEXT               -- The sequence name transfomation function in the source database.
+                             DEFAULT NULL        -- NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
     )
     RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively registered sequences
     AS
 $register_sequence$
-    SELECT @extschema@.register_sequences(p_migration, p_schema, '^' || p_sequence || '$', NULL, p_sourceSchema);
+    SELECT @extschema@.register_sequences(p_migration, p_schema, '^' || p_sequence || '$', NULL, p_sourceSchema, p_sourceSequenceNamesFnct);
 $register_sequence$;
 
 -- The assign_tables_to_batch() function assigns a set of tables of a single schema to a batch.
@@ -2882,14 +2912,15 @@ DECLARE
     v_sequence                 TEXT;
     v_foreignSchema            TEXT;
     v_sourceSchema             TEXT;
+    v_sourceSequenceName       TEXT;
     v_sourceDbms               TEXT;
     v_lastValue                BIGINT;
     v_isCalled                 TEXT;
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the sequence.
-    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
-      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
+    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, mgr_source_dbms, seq_source_schema, seq_source_name
+      INTO v_schema, v_sequence, v_foreignSchema, v_sourceDbms, v_sourceSchema, v_sourceSequenceName
         FROM @extschema@.step
              JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
              JOIN @extschema@.migration ON (seq_migration = mgr_name)
@@ -2900,7 +2931,7 @@ BEGIN
     END IF;
 -- Depending on the source DBMS, get the sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_lastValue, v_isCalled
-       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_sourceSequenceName, v_foreignSchema, v_sequence);
 -- Set the sequence's characteristics.
     EXECUTE format(
         'SELECT setval(%L, %s, %s)',
@@ -2924,8 +2955,9 @@ $_copy_sequence$;
 CREATE FUNCTION _get_source_sequence(
     p_sourceDbms               TEXT,
     p_sourceSchema             TEXT,
+    p_sourceSequenceName       TEXT,
     p_foreignSchema            TEXT,
-    p_sequence                 TEXT,
+    p_foreignSequence          TEXT,
     OUT p_lastValue            BIGINT,
     OUT p_isCalled             TEXT
     )
@@ -2938,11 +2970,11 @@ BEGIN
         SELECT last_number, 'true' INTO p_lastValue, p_isCalled
            FROM @extschema@.ora_sequences
            WHERE sequence_owner = p_sourceSchema
-             AND sequence_name = upper(p_sequence);
+             AND sequence_name = p_sourceSequenceName;
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
         EXECUTE format(
             'SELECT last_value, CASE WHEN is_called THEN ''true'' ELSE ''false'' END FROM %I.%I',
-            p_foreignSchema, p_sequence
+            p_foreignSchema, p_foreignSequence
             ) INTO p_lastValue, p_isCalled;
     ELSE
         RAISE EXCEPTION '_get_source_sequence: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
@@ -3363,8 +3395,9 @@ DECLARE
     v_schema                   TEXT;
     v_sequence                 TEXT;
     v_foreignSchema            TEXT;
-    v_sourceSchema             TEXT;
     v_sourceDbms               TEXT;
+    v_sourceSchema             TEXT;
+    v_sourceSequenceName       TEXT;
     v_srcLastValue             BIGINT;
     v_srcIsCalled              TEXT;
     v_destLastValue            BIGINT;
@@ -3373,8 +3406,8 @@ DECLARE
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the sequence.
-    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, seq_source_schema, mgr_source_dbms
-      INTO v_schema, v_sequence, v_foreignSchema, v_sourceSchema, v_sourceDbms
+    SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, mgr_source_dbms, seq_source_schema, seq_source_name
+      INTO v_schema, v_sequence, v_foreignSchema, v_sourceDbms, v_sourceSchema, v_sourceSequenceName
         FROM @extschema@.step
              JOIN @extschema@.sequence_to_process ON (seq_schema = stp_schema AND seq_name = stp_object)
              JOIN @extschema@.migration ON (seq_migration = mgr_name)
@@ -3385,7 +3418,7 @@ BEGIN
     END IF;
 -- Depending on the source DBMS, get the source sequence's characteristics.
     SELECT p_lastValue, p_isCalled INTO v_srcLastValue, v_srcIsCalled
-       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_foreignSchema, v_sequence);
+       FROM @extschema@._get_source_sequence(v_sourceDbms, v_sourceSchema, v_sourceSequenceName, v_foreignSchema, v_sequence);
 -- Get the destination sequence's characteristics.
     EXECUTE format(
         'SELECT last_value, is_called
