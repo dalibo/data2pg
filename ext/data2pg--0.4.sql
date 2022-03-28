@@ -3076,7 +3076,7 @@ DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
     v_serverName               TEXT;
-    v_isFtAsQueryPossible      BOOLEAN;
+    v_sourceDbms               TEXT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_aggForeignTable          TEXT;
@@ -3086,6 +3086,7 @@ DECLARE
     v_colDefList               TEXT;
     v_stmt                     TEXT;
     v_foreignTableQuery        TEXT;
+    v_foreignTableOptions      TEXT;
     v_nbRows                   BIGINT;
     v_nbAggregates             INT;
     v_nbDiff                   INT;
@@ -3101,8 +3102,8 @@ BEGIN
         RAISE EXCEPTION '_check_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Read the migration table to get the FDW server name and source RDBMS.
-    SELECT mgr_server_name, (mgr_source_dbms IN ('Oracle', 'SQLServer', 'Sybase_ASA')) AS mgr_is_ft_as_query_possible
-        INTO v_serverName, v_isFtAsQueryPossible
+    SELECT mgr_server_name, mgr_source_dbms
+        INTO v_serverName, v_sourceDbms
         FROM @extschema@.migration
              JOIN @extschema@.batch ON (bat_migration = mgr_name)
         WHERE bat_name = p_batchName;
@@ -3127,17 +3128,28 @@ BEGIN
     EXECUTE v_stmt;
 --
 -- Process the source table.
-    IF v_isFtAsQueryPossible THEN
+    IF v_sourceDbms IN ('Oracle', 'SQLServer', 'Sybase_ASA') THEN
 -- With FDW allowing to create a foreign table defined as query, use this technic to let the source DBMS compute the aggregates.
         v_colDefList = 'nb_rows BIGINT';
 -- Create the aggregate foreign table.
         v_foreignTableQuery := format(
-            '(SELECT count(*) AS nb_rows FROM %I.%I)',
+            'SELECT count(*) AS nb_rows FROM %I.%I',
             v_sourceSchema, v_sourceTable
         );
+        IF v_sourceDbms = 'Oracle' THEN
+            v_foreignTableOptions = format(
+                'table %L',
+                '(' || v_foreignTableQuery || ')'
+                );
+        ELSE
+            v_foreignTableOptions = format(
+                'query %L',
+                v_foreignTableQuery
+                );
+        END IF;
         v_stmt = format(
-            'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS ( table %L )',
-            v_foreignSchema, v_aggForeignTable, v_colDefList, v_serverName, v_foreignTableQuery
+            'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS (%s)',
+            v_foreignSchema, v_aggForeignTable, v_colDefList, v_serverName, v_foreignTableOptions
         );
         EXECUTE v_stmt;
 -- Analyze the source table content by querying the aggregate foreign table and record the resulting aggregates into the counter table.
