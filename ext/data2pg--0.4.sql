@@ -2659,6 +2659,7 @@ DECLARE
     v_nbRows                   BIGINT = 0;
     v_nbDroppedIndex           SMALLINT = 0;
     v_nbCreatedIndex           SMALLINT = 0;
+    v_nbMissingIndex           SMALLINT = 0;
     r_obj                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -2795,9 +2796,22 @@ BEGIN
                   AND tic_type LIKE 'C%'
                   AND tic_drop_for_copy
         LOOP
-            IF NOT r_obj.tic_separate_creation_step THEN
--- The index related to the constraint has not been already created (the most common case).
+-- Look at the catalog to know whether the related index exists.
+            PERFORM 0 
+                FROM pg_catalog.pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
+                WHERE relkind = 'i'
+                  AND nspname = v_schema
+                  AND relname = r_obj.tic_object;
+            IF NOT FOUND THEN 
+-- The index related to the constraint does not exist (this is the usual case), so just recreate the constraint with the common syntax.
                 v_nbCreatedIndex = v_nbCreatedIndex + 1;
+                IF r_obj.tic_separate_creation_step THEN
+-- The index related to the constraint should have been recreated. This is probably an error in the migration conofiguration.
+                    v_nbMissingIndex = v_nbMissingIndex + 1;
+                    RAISE WARNING '_copy_table: For the constraint %.%.%, the index should have been already recreated. Some steps are probably missing in the batch. However, recrete the constraint.',
+                        v_schema, v_table, r_obj.tic_object;
+                END IF;
 -- Record the recreation start timestamp.
                 UPDATE @extschema@.table_index
                     SET tic_last_create_ts = clock_timestamp()
@@ -2816,7 +2830,7 @@ BEGIN
                       AND tic_table = v_table
                       AND tic_object = r_obj.tic_object;
             ELSE
--- The index related to the constraint has been already created by a separate step. So just add the constraint using the existing index.
+-- The index already exists. So recreate the constraint using it.
                 EXECUTE format(
                     'ALTER TABLE %I.%I ADD CONSTRAINT %I %s USING INDEX %I',
                     v_schema, v_table, r_obj.tic_object,
@@ -2887,6 +2901,13 @@ BEGIN
         r_output.sr_indicator = 'RECREATED_INDEXES';
         r_output.sr_value = v_nbCreatedIndex;
         r_output.sr_rank = 13;
+        r_output.sr_is_main_indicator = FALSE;
+        RETURN NEXT r_output;
+    END IF;
+    IF v_nbMissingIndex > 0 THEN
+        r_output.sr_indicator = 'MISSING_INDEXES';
+        r_output.sr_value = v_nbMissingIndex;
+        r_output.sr_rank = 14;
         r_output.sr_is_main_indicator = FALSE;
         RETURN NEXT r_output;
     END IF;
