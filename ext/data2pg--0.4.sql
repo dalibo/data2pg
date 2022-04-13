@@ -1599,14 +1599,14 @@ BEGIN
         RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% has not been set as to be created by a separate step.',
                         p_object, p_schema, p_table;
     END IF;
--- Check that the index has not been already assigned to another batch.
+-- Warn if the index has been already assigned to another batch.
     SELECT stp_batch_name INTO v_prevBatchName
         FROM @extschema@.step
              JOIN @extschema@.batch ON (bat_name = stp_batch_name)
         WHERE stp_name = p_schema || '.' || p_table || '.' || p_object
           AND bat_type = 'COPY';
     IF FOUND THEN
-        RAISE EXCEPTION 'assign_index_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
+        RAISE WARNING 'assign_index_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
                         p_object, p_schema, p_table, v_prevBatchName;
     END IF;
 -- Record the index creation into the step table.
