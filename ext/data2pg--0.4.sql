@@ -2797,13 +2797,13 @@ BEGIN
                   AND tic_drop_for_copy
         LOOP
 -- Look at the catalog to know whether the related index exists.
-            PERFORM 0 
+            PERFORM 0
                 FROM pg_catalog.pg_class
                      JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
                 WHERE relkind = 'i'
                   AND nspname = v_schema
                   AND relname = r_obj.tic_object;
-            IF NOT FOUND THEN 
+            IF NOT FOUND THEN
 -- The index related to the constraint does not exist (this is the usual case), so just recreate the constraint with the common syntax.
                 v_nbCreatedIndex = v_nbCreatedIndex + 1;
                 IF r_obj.tic_separate_creation_step THEN
@@ -2842,31 +2842,45 @@ BEGIN
                 );
             END IF;
         END LOOP;
--- Recreate the indexes that have been previously dropped and that are not recreated by a separate step.
+-- Recreate the indexes that have been previously dropped and that have not been recreated by a separate step.
         FOR r_obj IN
-            SELECT tic_object, tic_definition
+            SELECT tic_object, tic_definition, tic_separate_creation_step
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
                   AND tic_type = 'I'
                   AND tic_drop_for_copy
-                  AND NOT tic_separate_creation_step
         LOOP
-            v_nbCreatedIndex = v_nbCreatedIndex + 1;
--- Record the recreation start timestamp
-            UPDATE @extschema@.table_index
-                SET tic_last_create_ts = clock_timestamp()
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
+-- Look at the catalog to know whether the index has already been recreated by a separate step.
+            PERFORM 0
+                FROM pg_catalog.pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
+                WHERE relkind = 'i'
+                  AND nspname = v_schema
+                  AND relname = r_obj.tic_object;
+            IF NOT FOUND THEN
+                v_nbCreatedIndex = v_nbCreatedIndex + 1;
+                IF r_obj.tic_separate_creation_step THEN
+-- The index should have been recreated. This is probably an error in the migration conofiguration.
+                    v_nbMissingIndex = v_nbMissingIndex + 1;
+                    RAISE WARNING '_copy_table: The index %.%.% should have been already recreated. Some steps are probably missing in the batch. However, recreate it.',
+                        v_schema, v_table, r_obj.tic_object;
+                END IF;
+-- Record the recreation start timestamp.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_ts = clock_timestamp()
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
 -- Create the index.
-            EXECUTE r_obj.tic_definition;
--- Record the recreation duration
-            UPDATE @extschema@.table_index
-                SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
+                EXECUTE r_obj.tic_definition;
+-- Record the recreation duration.
+                UPDATE @extschema@.table_index
+                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                    WHERE tic_schema = v_schema
+                      AND tic_table = v_table
+                      AND tic_object = r_obj.tic_object;
+            END IF;
         END LOOP;
 -- Get the statistics (and let the autovacuum do its job).
         EXECUTE format(
