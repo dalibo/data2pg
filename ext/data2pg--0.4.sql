@@ -2394,6 +2394,21 @@ BEGIN
     IF v_list IS NOT NULL THEN
         RAISE EXCEPTION '_verify_objects: Missing schemas detected (%).', v_list;
     END IF;
+-- Check target sequences.
+    SELECT string_agg(seq_schema || '.' || seq_name, ', ' ORDER BY seq_schema || '.' || seq_name) INTO v_list
+        FROM (
+            SELECT DISTINCT seq_schema, seq_name
+                FROM @extschema@.sequence_to_process
+                WHERE seq_migration = p_migration
+            EXCEPT
+            SELECT nspname, relname
+                FROM pg_class
+                     JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
+                WHERE relkind = 'S'
+             ) AS t;
+    IF v_list IS NOT NULL THEN
+        RAISE EXCEPTION '_verify_objects: Missing target sequences detected (%).', v_list;
+    END IF;
 -- Check target tables.
     SELECT string_agg(tbl_schema || '.' || tbl_name, ', ' ORDER BY tbl_schema || '.' || tbl_name) INTO v_list
         FROM (
@@ -2462,21 +2477,6 @@ BEGIN
              ) AS t;
     IF v_list IS NOT NULL THEN
         RAISE EXCEPTION '_verify_objects: Missing constraint detected (%).', v_list;
-    END IF;
--- Check target sequences.
-    SELECT string_agg(seq_schema || '.' || seq_name, ', ' ORDER BY seq_schema || '.' || seq_name) INTO v_list
-        FROM (
-            SELECT DISTINCT seq_schema, seq_name
-                FROM @extschema@.sequence_to_process
-                WHERE seq_migration = p_migration
-            EXCEPT
-            SELECT nspname, relname
-                FROM pg_class
-                     JOIN pg_catalog.pg_namespace ON (pg_class.relnamespace = pg_namespace.oid)
-                WHERE relkind = 'S'
-             ) AS t;
-    IF v_list IS NOT NULL THEN
-        RAISE EXCEPTION '_verify_objects: Missing target sequences detected (%).', v_list;
     END IF;
 --
     RETURN;
