@@ -319,32 +319,32 @@ sub showRunDetails {
         while (($lines == 0 || $currLine <= $lines) && ($row = $sth->fetchrow_hashref())) {
             if ($row->{'stp_status'} ne $previousStatus) {
                 if ($row->{'stp_status'} eq 'In_progress') {
-                    print "    'In_progress' steps               Estim.Cost Sess.      Start         Elapse    Backend_Pid";
+                    print "        'In_progress' steps                   Estim.Cost Sess.      Start         Elapse    Backend_Pid";
                 } elsif ($row->{'stp_status'} eq 'Ready') {
-                    print "    'Ready' steps                     Estim.Cost ";
+                    print "        'Ready' steps                         Estim.Cost ";
                 } elsif ($row->{'stp_status'} eq 'Blocked') {
-                    print "    'Blocked' steps                   Estim.Cost Blocking";
+                    print "        'Blocked' steps                       Estim.Cost Blocking";
                 } elsif ($row->{'stp_status'} eq 'Completed') {
-                    print "    'Completed' steps                 Estim.Cost Sess.       Start               End             Elapse      Main indicator";
+                    print "        'Completed' steps                     Estim.Cost Sess.       Start               End             Elapse      Main indicator";
                 }
                 print "\n"; $currLine++;
             }
             if ($row->{'stp_status'} eq 'In_progress') {
-                printf("%-35.35s %12u %3u %-19.19s %-12.12s %u",
+                printf("%-43.43s %12u %3u %-19.19s %-12.12s %u",
                     $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'}, $row->{'stp_start_ts'}, $row->{'stp_elapse'}, $row->{'ses_backend_pid'});
             } elsif ($row->{'stp_status'} eq 'Ready') {
-                printf("%-35.35s %12u",
+                printf("%-43.43s %12u",
                     $row->{'stp_name'}, $row->{'stp_cost'});
             } elsif ($row->{'stp_status'} eq 'Blocked') {
-                printf("%-35.35s %12u  %3u",
+                printf("%-43.43s %12u  %3u",
                     $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'nb_blocking'});
             } elsif ($row->{'stp_status'} eq 'Completed') {
                 if (defined($row->{'sr_value'})) {
-                    printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s %14u",
+                    printf("%-43.43s %12u %3u %-19.19s %-19.19s %15.15s %14u",
                         $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
                         $row->{'stp_start_ts'}, $row->{'stp_end_ts'}, $row->{'stp_elapse'}, $row->{'sr_value'});
                 } else {
-                    printf("%-35.35s %12u %3u %-19.19s %-19.19s %15.15s",
+                    printf("%-43.43s %12u %3u %-19.19s %-19.19s %15.15s",
                         $row->{'stp_name'}, $row->{'stp_cost'}, $row->{'stp_ses_id'},
                         $row->{'stp_start_ts'}, $row->{'stp_end_ts'}, $row->{'stp_elapse'});
                 }
