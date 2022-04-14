@@ -2082,6 +2082,24 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_name = r_step.stp_name;
     END LOOP;
+-- The table parts set as the first step and that do not copy any row must be the parents of all tables of the same batch.
+-- This ensures that their table parts will be able to start as soon as possible by avoiding that other large tables use sessions for a long time.
+    FOR r_step IN
+        SELECT stp_batch_name, array_agg(stp_name) AS stp_names
+            FROM @extschema@.step
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
+            WHERE stp_type = 'TABLE_PART'
+              AND tbl_migration = p_migration
+              AND prt_is_first_step
+              AND prt_condition IS NULL
+            GROUP BY stp_batch_name
+    LOOP
+        UPDATE @extschema@.step
+            SET stp_parents = array_cat(stp_parents, r_step.stp_names)
+            WHERE stp_batch_name = r_step.stp_batch_name
+              AND stp_type = 'TABLE';
+    END LOOP;
 -- Create the links for table checks steps.
 -- All the related table or table parts of the same batch are parents of each table check step.
     FOR r_step IN

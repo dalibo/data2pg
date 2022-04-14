@@ -113,7 +113,8 @@ SELECT register_column_comparison_rule('myschema1','myTbl3','col33','trunc(col33
 -- Register the table parts
 --
 
-SELECT register_table_part('myschema2', 'mytbl1', 1, 'col11 < 50000', TRUE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 0, NULL, TRUE, FALSE);
+SELECT register_table_part('myschema2', 'mytbl1', 1, 'col11 < 50000', FALSE, FALSE);
 SELECT register_table_part('myschema2', 'mytbl1', 2, 'col11 >= 50000 and col12 = ''ABC''', FALSE, FALSE);
 SELECT register_table_part('myschema2', 'mytbl1', 3, 'col11 >= 50000 and col12 = ''DEF''', FALSE, FALSE);
 SELECT register_table_part('myschema2', 'mytbl1', 4, 'col11 >= 50000 and col12 = ''GHI''', FALSE, FALSE);
@@ -177,6 +178,7 @@ SELECT assign_sequences_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 -- assign the table parts to batches
 --
 
+SELECT assign_table_part_to_batch('BATCH0', 'myschema2', 'mytbl1', 0);
 SELECT assign_table_part_to_batch('BATCH0', 'myschema2', 'mytbl1', 1);
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 2);
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 3);
