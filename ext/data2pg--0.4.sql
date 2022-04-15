@@ -41,7 +41,8 @@ CREATE TYPE step_report_type AS (
                                                         --   ('COPIED_ROWS'/'COPIED_SEQUENCES'/'COMPARED_ROWS'/...)
     sr_value                   BIGINT,                  -- The numeric value associated to the message, if any
     sr_rank                    SMALLINT,                -- The rank of the indicator when displayed by the scheduler
-    sr_is_main_indicator       BOOLEAN                  -- Boolean indicating whether the indicator is the main indicator to display by the monitoring clients
+    sr_is_main_indicator       BOOLEAN                  -- Boolean indicating whether the indicator is the main indicator to display
+                                                        --   by the monitoring clients
 );
 
 --
@@ -68,7 +69,7 @@ CREATE TABLE batch (
     bat_name                   TEXT NOT NULL,           -- The batch name
     bat_migration              TEXT NOT NULL,           -- The migration the batch belongs to
     bat_type                   TEXT NOT NULL            -- The batch type, i.e. the type of action to perform
-                               CHECK (bat_type IN ('COPY', 'CHECK', 'COMPARE', 'DISCOVER')),
+                               CHECK (bat_type IN ('COPY', 'COMPARE', 'DISCOVER')),
     bat_with_init_step         BOOLEAN,                 -- Boolean indicating whether a INIT step has to be included in the batch working plan
     bat_with_end_step          BOOLEAN,                 -- Boolean indicating whether a END step has to be included in the batch working plan
     PRIMARY KEY (bat_name),
@@ -111,7 +112,8 @@ CREATE TABLE table_to_process (
     tbl_rows                   BIGINT,                  -- The approximative number of rows of the source table
     tbl_kbytes                 FLOAT,                   -- The size in K-Bytes of the source table
     tbl_copy_sort_order        TEXT,                    -- The ORDER BY clause, if needed, for the INSERT SELECT copy statement (NULL if no sort)
-    tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table's definition
+    tbl_some_gen_alw_id_col    BOOLEAN,                 -- TRUE when there are some "generated always as identity columns" in the table
+                                                        --    definition
     tbl_referencing_tables     TEXT[],                  -- The other tables that are referenced by FKeys on this table
     tbl_referenced_tables      TEXT[],                  -- The other tables whose FKeys references this table
     PRIMARY KEY (tbl_schema, tbl_name),
@@ -163,8 +165,10 @@ CREATE TABLE table_part (
     prt_number                 INTEGER,                 -- The part number
     prt_condition              TEXT,                    -- The condition to be set as a WHERE clause in the copy statement.
                                                         -- Set to  NULL if no table copy for this part (ie, only processing of first_step or last_step).
-    prt_is_first_step          BOOLEAN,                 -- TRUE when this is the first step for the table (to truncate the table and drop the secondary indexes)
-    prt_is_last_step           BOOLEAN,                 -- TRUE when this is the last step for the table (to recreate the secondary indexes and analyze the table)
+    prt_is_first_step          BOOLEAN,                 -- TRUE when this is the first step for the table (to truncate the table and drop
+                                                        --   the secondary indexes)
+    prt_is_last_step           BOOLEAN,                 -- TRUE when this is the last step for the table (to recreate the secondary indexes
+                                                        --   and analyze the table)
     PRIMARY KEY (prt_schema, prt_table, prt_number),
     FOREIGN KEY (prt_schema, prt_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
@@ -216,9 +220,11 @@ CREATE TABLE content_diff (
     diff_rank                BIGINT,                     -- A difference number
     diff_database            CHAR NOT NULL               -- The database the rows comes from ; either Source or Destination
                              CHECK (diff_database IN ('S', 'D')),
-    diff_key_cols            JSON,                       -- The JSON representation of the table key, for rows that are different between both databases
-    diff_other_cols          JSON                        -- The JSON representation of the table columns not in key, for rows that are different between
-                                                         --   both databases or the sequence characteristics that are different between both databases
+    diff_key_cols            JSON,                       -- The JSON representation of the table key, for rows that are different
+                                                         --   between both databases
+    diff_other_cols          JSON                        -- The JSON representation of the table columns not in key, for rows that are
+                                                         --   different between both databases or the sequence characteristics that are
+                                                         --   different between both databases
 );
 
 -- The discovery_table table is populated with the result of elementary discover_table steps.
@@ -265,8 +271,10 @@ CREATE TABLE discovery_advice (
     dscv_column_num          INTEGER,                    -- The column rank in the pg_attribute table (i.e. its attnum)
     dscv_advice_type         TEXT NOT NULL               -- The advice type (W = Warning, A = Advice)
                              CHECK (dscv_advice_type IN ('W', 'A')),
-    dscv_advice_code         TEXT,                       -- A coded representation of the advice, like 'INTEGER' for the message "column ... could be an INTEGER"
-    dscv_advice_msg          TEXT,                       -- The textual representation of the piece of advice that can be infered from collected data
+    dscv_advice_code         TEXT,                       -- A coded representation of the advice, like 'INTEGER' for the message
+                                                         --   "column ... could be an INTEGER"
+    dscv_advice_msg          TEXT,                       -- The textual representation of the piece of advice that can be infered from
+                                                         --   collected data
     FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
 );
 
@@ -598,7 +606,7 @@ $drop_migration$;
 CREATE FUNCTION create_batch(
     p_batchName              TEXT,                    -- Batch name
     p_migration              TEXT,                    -- Migration name
-    p_batchType              TEXT,                    -- Batch type (either 'COPY', 'CHECK', 'COMPARE' or 'DISCOVER')
+    p_batchType              TEXT,                    -- Batch type (either 'COPY', 'COMPARE' or 'DISCOVER')
     p_withInitStep           BOOLEAN,                 -- Boolean indicating whether an INIT step will need to be added to the batch working plan
     p_withEndStep            BOOLEAN                  -- Boolean indicating whether an END step will need to be added to the batch working plan
     )
@@ -625,8 +633,8 @@ BEGIN
     IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
         RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
     END IF;
-    IF p_batchType <> 'COPY' AND p_batchType <> 'CHECK' AND p_batchType <> 'COMPARE' AND p_batchType <> 'DISCOVER' THEN
-        RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY, CHECK, COMPARE or DISCOVER.', p_batchType;
+    IF p_batchType <> 'COPY' AND p_batchType <> 'COMPARE' AND p_batchType <> 'DISCOVER' THEN
+        RAISE EXCEPTION 'create_batch: Illegal batch type (%). It must be eiter COPY, COMPARE or DISCOVER.', p_batchType;
     END IF;
 -- Checks are OK.
 -- Record the batch into the batch table.
@@ -638,7 +646,6 @@ BEGIN
             VALUES ('INIT_' || p_migration, p_batchName, 'INIT',
                     CASE p_batchType
                         WHEN 'COPY' THEN '_copy_init'
---                        WHEN 'CHECK' THEN '_check_init'
                         WHEN 'COMPARE' THEN '_compare_init'
                         WHEN 'DISCOVER' THEN '_discover_init'
                     END,
@@ -649,7 +656,6 @@ BEGIN
             VALUES ('END_' || p_migration, p_batchName, 'END',
                     CASE p_batchType
                         WHEN 'COPY' THEN '_copy_end'
---                        WHEN 'CHECK' THEN '_check_end'
                         WHEN 'COMPARE' THEN '_compare_end'
                         WHEN 'DISCOVER' THEN '_discover_end'
                     END,
@@ -1448,7 +1454,6 @@ BEGIN
                 p_schema || '.' || r_tbl.tbl_name, p_batchName, 'TABLE', p_schema, r_tbl.tbl_name,
                 CASE v_batchType
                     WHEN 'COPY' THEN '_copy_table'
-                    WHEN 'CHECK' THEN '_check_table'
                     WHEN 'COMPARE' THEN '_compare_table'
                     WHEN 'DISCOVER' THEN '_discover_table'
                 END,
@@ -1551,7 +1556,6 @@ BEGIN
             p_schema || '.' || p_table || '.' || p_partNum, p_batchName, 'TABLE_PART', p_schema, p_table, p_partNum,
             CASE v_batchType
                 WHEN 'COPY' THEN '_copy_table'
-                WHEN 'CHECK' THEN '_check_table'
                 WHEN 'COMPARE' THEN '_compare_table'
             END,
             v_kbytes
@@ -1702,8 +1706,8 @@ BEGIN
     END IF;
 -- Check that the batch exists, get its migration name and set the migration as in-progress.
     SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
--- Check that the batch is not of type 'CHECK' OR 'DISCOVER'.
-    IF v_batchType = 'CHECK' OR v_batchType = 'DISCOVER' THEN
+-- Check that the batch is not of type 'DISCOVER'.
+    IF v_batchType = 'DISCOVER' THEN
         RAISE EXCEPTION 'assign_sequences_to_batch: sequences cannot be assigned to a batch of type %.', v_batchType;
     END IF;
 -- Get the selected sequences.
