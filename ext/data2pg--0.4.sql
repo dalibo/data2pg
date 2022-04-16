@@ -88,8 +88,7 @@ CREATE TABLE step (
                                                         --   NULL if the step is not related to a sequence or a table
     stp_object                 TEXT,                    -- Object name, typically the sequence or table to process,
                                                         --   NULL if the step is not related to a sequence or a table
-    stp_part_num               INTEGER,                 -- table part number for tables processed by several steps, NULL if NA
-    stp_sub_object             TEXT,                    -- Sub-object, typically a foreign key to process, NULL if NA
+    stp_sub_object             TEXT,                    -- Sub-object, typically a table part id or a foreign key to process, NULL if NA
     stp_sql_function           TEXT,                    -- The sql function to execute (for common cases)
     stp_shell_script           TEXT,                    -- A shell script to execute (for specific purpose only)
     stp_cost                   BIGINT,                  -- A relative cost indication used to plan the run
@@ -162,14 +161,14 @@ CREATE TABLE table_index (
 CREATE TABLE table_part (
     prt_schema                 TEXT NOT NULL,           -- The schema of the target table
     prt_table                  TEXT NOT NULL,           -- The name of the target table
-    prt_number                 INTEGER,                 -- The part number
+    prt_part_id                TEXT,                    -- The part identifier
     prt_condition              TEXT,                    -- The condition to be set as a WHERE clause in the copy statement.
                                                         -- Set to  NULL if no table copy for this part (ie, only processing of first_step or last_step).
     prt_is_first_step          BOOLEAN,                 -- TRUE when this is the first step for the table (to truncate the table and drop
                                                         --   the secondary indexes)
     prt_is_last_step           BOOLEAN,                 -- TRUE when this is the last step for the table (to recreate the secondary indexes
                                                         --   and analyze the table)
-    PRIMARY KEY (prt_schema, prt_table, prt_number),
+    PRIMARY KEY (prt_schema, prt_table, prt_part_id),
     FOREIGN KEY (prt_schema, prt_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
 
@@ -1189,7 +1188,7 @@ $register_column_comparison_rule$;
 CREATE FUNCTION register_table_part(
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
-    p_partNum                INTEGER,            -- The part number, which is unique for a table. But part numbers are not necessarily in sequence
+    p_partId                 TEXT,               -- The part id, which is unique for a table
     p_condition              TEXT,               -- The condition that will filter the rows to copy at migration time. NULL if no row to copy
     p_isFirstPart            BOOLEAN             -- Boolean indicating that the part is the first one for the table
                              DEFAULT FALSE,      --   (if TRUE, the pre-processing action is performed)
@@ -1202,7 +1201,7 @@ DECLARE
     v_migrationName          TEXT;
 BEGIN
 -- Check that the first 3 parameters are not NULL.
-    IF p_schema IS NULL OR p_table IS NULL OR p_partNum IS NULL THEN
+    IF p_schema IS NULL OR p_table IS NULL OR p_partId IS NULL THEN
         RAISE EXCEPTION 'register_table_part: None of the first 3 input parameters can be NULL.';
     END IF;
 -- Check that the table is already registered and get its migration name.
@@ -1220,10 +1219,10 @@ BEGIN
 -- Check that the table part doesn't exist yet.
     PERFORM 0
         FROM @extschema@.table_part
-        WHERE prt_schema = p_schema AND prt_table = p_table AND prt_number = p_partNum;
+        WHERE prt_schema = p_schema AND prt_table = p_table AND prt_part_id = p_partId;
     IF FOUND THEN
         RAISE EXCEPTION 'register_table_part: A part % already exists for the table %.%.',
-                        p_partNum, p_schema, p_table;
+                        p_partId, p_schema, p_table;
     END IF;
 -- Check that at least an action will be executed for this part.
     IF p_condition IS NULL AND NOT p_isFirstPart AND NOT p_isLastPart THEN
@@ -1231,9 +1230,9 @@ BEGIN
     END IF;
 -- Register the table part into the ... table_part table.
     INSERT INTO @extschema@.table_part (
-            prt_schema, prt_table, prt_number, prt_condition, prt_is_first_step, prt_is_last_step
+            prt_schema, prt_table, prt_part_id, prt_condition, prt_is_first_step, prt_is_last_step
         ) VALUES (
-            p_schema, p_table, p_partNum, p_condition, p_isFirstPart, p_isLastPart
+            p_schema, p_table, p_partId, p_condition, p_isFirstPart, p_isLastPart
         );
 --
     RETURN 1;
@@ -1487,7 +1486,7 @@ CREATE FUNCTION assign_table_part_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
-    p_partNum                INTEGER             -- The part number to assign
+    p_partId                 TEXT                -- The part id to assign
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table part, ie. 1
 $assign_table_part_to_batch$
@@ -1498,7 +1497,7 @@ DECLARE
     v_prevBatchName          TEXT;
 BEGIN
 -- Check that all parameter are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_partNum IS NULL THEN
+    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_partId IS NULL THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: No input parameter can be NULL.';
     END IF;
 -- Check that the batch exists, get its type and set its migration as in-progress.
@@ -1511,25 +1510,25 @@ BEGIN
     SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
         FROM @extschema@.table_part
              JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
-        WHERE prt_schema = p_schema AND prt_table = p_table AND prt_number = p_partNum;
+        WHERE prt_schema = p_schema AND prt_table = p_table AND prt_part_id = p_partId;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% has not been registered.',
-                        p_partNum, p_schema, p_table;
+                        p_partId, p_schema, p_table;
     END IF;
     IF v_batchType = 'COPY' THEN
 -- For batches of type COPY, check if the table part has been already assigned.
         SELECT stp_batch_name INTO v_prevBatchName
             FROM @extschema@.step
                  JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-            WHERE stp_name = p_schema || '.' || p_table || '.' || p_partNum
+            WHERE stp_name = p_schema || '.' || p_table || '.' || p_partId
               AND bat_type = 'COPY';
         IF FOUND THEN
             IF v_prevBatchName <> p_batchName THEN
                 RAISE WARNING 'assign_table_part_to_batch: The part % of the table %.% is already assigned to the batch %.',
-                                p_partNum, p_schema, p_table, v_prevBatchName;
+                                p_partId, p_schema, p_table, v_prevBatchName;
             ELSE
                 RAISE EXCEPTION 'assign_table_part_to_batch: The part % of the table %.% is already assigned to this batch.',
-                                p_partNum, p_schema, p_table;
+                                p_partId, p_schema, p_table;
             END IF;
         END IF;
 -- ... and check if the table is already fully assigned to a batch of the same type.
@@ -1550,10 +1549,10 @@ BEGIN
     END IF;
 -- Record the table part into the step table.
     INSERT INTO @extschema@.step (
-            stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_part_num,
+            stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
             stp_sql_function, stp_cost
         ) VALUES (
-            p_schema || '.' || p_table || '.' || p_partNum, p_batchName, 'TABLE_PART', p_schema, p_table, p_partNum,
+            p_schema || '.' || p_table || '.' || p_partId, p_batchName, 'TABLE_PART', p_schema, p_table, p_partId,
             CASE v_batchType
                 WHEN 'COPY' THEN '_copy_table'
                 WHEN 'COMPARE' THEN '_compare_table'
@@ -1981,7 +1980,7 @@ BEGIN
     FOR r_tbl IN
         SELECT tic_schema, tic_table
             FROM (
-                SELECT tic_schema, tic_table, count(prt_number) AS nb_part
+                SELECT tic_schema, tic_table, count(prt_part_id) AS nb_part
                     FROM @extschema@.table_index
                          JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
                          LEFT OUTER JOIN @extschema@.table_part ON (tic_schema = prt_schema AND tic_table = prt_table)
@@ -2015,9 +2014,9 @@ BEGIN
 -- Create the links between table parts.
 -- The table parts set as the first step for their table must be the parents of all the others parts of the same batch.
     FOR r_step IN
-        SELECT stp_batch_name, stp_name, stp_schema, stp_object, stp_part_num
+        SELECT stp_batch_name, stp_name, stp_schema, stp_object, stp_sub_object
             FROM @extschema@.step
-                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_part_id = stp_sub_object)
                  JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
             WHERE stp_type = 'TABLE_PART'
               AND tbl_migration = p_migration
@@ -2028,13 +2027,13 @@ BEGIN
             WHERE stp_batch_name = r_step.stp_batch_name
               AND stp_schema = r_step.stp_schema
               AND stp_object = r_step.stp_object
-              AND stp_part_num <> r_step.stp_part_num;
+              AND stp_sub_object <> r_step.stp_sub_object;
     END LOOP;
 -- Process the table parts set as the last step for their table.
     FOR r_step IN
-        SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_part_num
+        SELECT stp_name, stp_batch_name, stp_schema, stp_object, stp_sub_object
             FROM @extschema@.step
-                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_part_id = stp_sub_object)
             WHERE stp_batch_name = ANY (v_batchArray)
               AND stp_type = 'TABLE_PART'
               AND prt_is_last_step
@@ -2042,12 +2041,12 @@ BEGIN
 -- They must have all the other parts of the same batch as parents.
         SELECT array_agg(stp_name) INTO v_parents
             FROM @extschema@.step
-                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_part_id = stp_sub_object)
                  JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
             WHERE stp_type = 'TABLE_PART'
               AND stp_schema = r_step.stp_schema
               AND stp_object = r_step.stp_object
-              AND stp_part_num <> r_step.stp_part_num
+              AND stp_sub_object <> r_step.stp_sub_object
               AND stp_batch_name = r_step.stp_batch_name;
         UPDATE @extschema@.step
             SET stp_parents = array_cat(stp_parents, v_parents)
@@ -2075,7 +2074,7 @@ BEGIN
     LOOP
         SELECT array_agg(stp_name) INTO v_parents
             FROM @extschema@.step
-                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_part_id = stp_sub_object)
             WHERE stp_type = 'TABLE_PART'
               AND NOT prt_is_last_step
               AND stp_schema = r_step.stp_schema
@@ -2091,7 +2090,7 @@ BEGIN
     FOR r_step IN
         SELECT stp_batch_name, array_agg(stp_name) AS stp_names
             FROM @extschema@.step
-                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_number = stp_part_num)
+                 JOIN @extschema@.table_part ON (prt_schema = stp_schema AND prt_table = stp_object AND prt_part_id = stp_sub_object)
                  JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
             WHERE stp_type = 'TABLE_PART'
               AND tbl_migration = p_migration
@@ -2659,7 +2658,7 @@ $_copy_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
-    v_partNum                  INTEGER;
+    v_partId                   TEXT;
     v_partCondition            TEXT;
     v_isFirstStep              BOOLEAN = TRUE;
     v_isLastStep               BOOLEAN = TRUE;
@@ -2686,7 +2685,7 @@ DECLARE
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table.
-    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
+    SELECT stp_schema, stp_object, stp_sub_object INTO v_schema, v_table, v_partId
         FROM @extschema@.step
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
@@ -2711,11 +2710,11 @@ BEGIN
                ORDER BY tco_number
              ) AS t;
 -- If the step concerns a table part, get additional details about the part.
-    IF v_partNum IS NOT NULL THEN
+    IF v_partId IS NOT NULL THEN
         SELECT prt_condition, prt_is_first_step, prt_is_last_step
             INTO v_partCondition, v_isFirstStep, v_isLastStep
             FROM @extschema@.table_part
-            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
+            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_part_id = v_partId;
     END IF;
 -- Analyze the step options.
     v_copyMaxRows = p_stepOptions->>'COPY_MAX_ROWS';
@@ -2781,7 +2780,7 @@ BEGIN
 -- Copy processing.
 --
 -- The copy processing is not performed for a 'TABLE_PART' step without condition.
-    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
+    IF v_partId IS NULL OR v_partCondition IS NOT NULL THEN
 -- Do not sort the source data when the table is processed with a WHERE clause or a LIMIT clause.
         IF v_partCondition IS NOT NULL OR v_copyMaxRows IS NOT NULL THEN
             v_copySortOrder = NULL;
@@ -3286,7 +3285,7 @@ $_compare_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
-    v_partNum                  INTEGER;
+    v_partId                   TEXT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
     v_sourceExprList           TEXT;
@@ -3303,7 +3302,7 @@ DECLARE
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the table identity.
-    SELECT stp_schema, stp_object, stp_part_num INTO v_schema, v_table, v_partNum
+    SELECT stp_schema, stp_object, stp_sub_object INTO v_schema, v_table, v_partId
         FROM @extschema@.step
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
@@ -3341,11 +3340,11 @@ BEGIN
              ) AS t;
 -- If the step concerns a table part, warn if no WHERE clause exists.
 --   Pre-processing or post-processing only steps are only useful for batches of type COPY.
-    IF v_partNum IS NOT NULL THEN
+    IF v_partId IS NOT NULL THEN
         SELECT prt_condition
             INTO v_partCondition
             FROM @extschema@.table_part
-            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_number = v_partNum;
+            WHERE prt_schema = v_schema AND prt_table = v_table AND prt_part_id = v_partId;
         IF v_partCondition IS NULL THEN
             RAISE WARNING '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
         END IF;
@@ -3357,7 +3356,7 @@ BEGIN
 -- Compare processing.
 --
 -- The compare processing is not performed for a 'TABLE_PART' step without condition.
-    IF v_partNum IS NULL OR v_partCondition IS NOT NULL THEN
+    IF v_partId IS NULL OR v_partCondition IS NOT NULL THEN
 -- Compare the foreign table and the destination table.
         v_stmt = format(
             'WITH ft (%s) AS (
@@ -3416,7 +3415,7 @@ BEGIN
         EXECUTE v_stmt INTO v_nbDiff;
     END IF;
 -- Return the step report.
-    IF v_partNum IS NULL THEN
+    IF v_partId IS NULL THEN
         r_output.sr_indicator = 'COMPARED_TABLES';
         r_output.sr_rank = 50;
     ELSE
@@ -3427,7 +3426,7 @@ BEGIN
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
 --
-    IF v_partNum IS NULL THEN
+    IF v_partId IS NULL THEN
         r_output.sr_indicator = 'NON_EQUAL_TABLES';
         r_output.sr_rank = 60;
     ELSE
@@ -3606,7 +3605,6 @@ $_discover_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
-    v_partNum                  INTEGER;
     v_maxRows                  BIGINT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
@@ -3634,8 +3632,8 @@ DECLARE
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the table to discover.
-    SELECT stp_schema, stp_object, stp_part_num
-        INTO v_schema, v_table, v_partNum
+    SELECT stp_schema, stp_object
+        INTO v_schema, v_table
         FROM @extschema@.step
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
