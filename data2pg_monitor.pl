@@ -13,7 +13,7 @@ use POSIX qw(strftime floor);
 use vars qw($VERSION $PROGRAM $APPNAME);
 use Data::Dumper;
 
-$VERSION = '0.4';
+$VERSION = '0.5';
 $PROGRAM = 'data2pg_monitor.pl';
 $APPNAME = 'data2pg_monitor';
 
