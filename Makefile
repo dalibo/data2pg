@@ -11,20 +11,20 @@ help: ## Display callable targets.
 all: stop build up
 
 .PHONY: init-database ## Initializes data2pg.
-init-database: init-admin-db init-test-database init-schema configure-test-migration
+init-database: init-admin-db init-test-database init-extension configure-test-migration
 
 .PHONY: init-admin-db ## Initializes the data2pg administration database.
 init-admin-db:
 	cd ext/ ; sudo make install
-	bash data2pg_init_db.sh
+	bash data2pg_init_admin_db.sh
 
 .PHONY: test-init-database ## Initializes postgres test environment.
 init-test-database:
 	bash test_pg/1-init.sh
 
-.PHONY: init-schema ## Initializes the data2pg schema.
-init-schema:
-	bash data2pg_init_schema.sh
+.PHONY: init-extension ## Initializes the data2pg extension.
+init-extension:
+	bash data2pg_init_extension.sh
 
 .PHONY: configure-test-migration ## Configure the test migration.
 configure-test-migration:

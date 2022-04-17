@@ -1,6 +1,6 @@
 #!/usr/bin/bash
-# data2pg_init_db.sh
-# This shell script initializes the data2pg management database
+# data2pg_init_admin_db.sh
+# This shell script initializes the data2pg administration database
 
 echo "=================================================="
 echo "    Create the Data2Pg administration database    "

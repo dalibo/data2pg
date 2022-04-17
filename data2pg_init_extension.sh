@@ -1,10 +1,10 @@
 #!/usr/bin/bash
-# data2pg_init_schema.sh
-# This shell script initializes the data2pg schema in a target database.
+# data2pg_init_extension.sh
+# This shell script initializes the data2pg extension in a target database.
 
-echo "======================================================================================"
-echo "Create the data2pg role on the instance and the schema on the target database"
-echo "======================================================================================"
+echo "=========================================================================================="
+echo "Create the data2pg role on the instance and the data2pg extension into the target database"
+echo "=========================================================================================="
 
 # Environment variables to setup
 PGHOST_DEFAULT_VALUE=localhost
@@ -60,8 +60,8 @@ else
   echo "Environment variable DATA2PG_SCHEMA is already defined to ${DATA2PG_SCHEMA}."
 fi
 
-echo "Create the role, if needed"
-echo "--------------------------"
+echo "Perform checks and create the role, if needed"
+echo "---------------------------------------------"
 
 psql postgres <<EOF
 \set ON_ERROR_STOP ON
