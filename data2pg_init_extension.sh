@@ -120,3 +120,18 @@ if [ $? -ne 0 ]; then
 else
   echo "  => the data2pg extension is successfuly created"
 fi
+
+echo "Load the data2pg addons, if any"
+echo "-------------------------------"
+
+if [ -f data2pg_addons.sql ]; then
+  psql -f data2pg_addons.sql
+  if [ $? -ne 0 ]; then
+    echo "  => Problem encountered"
+    exit
+  else
+    echo "  => the data2pg addons have been successfuly loaded"
+  fi
+else
+  echo "Warning: no data2pg_addons.sql file found."
+fi

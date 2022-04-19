@@ -1858,6 +1858,53 @@ BEGIN
 END;
 $assign_fkey_checks_to_batch$;
 
+-- The assign_custom_step_to_batch() function assigns a step that will call a custom function, which must already exist.
+-- It is intended to excute any specific processing for a component to migrate.
+-- If the custom step needs to have parent steps, these relationship must be set using the add_step_parent() function.
+CREATE FUNCTION assign_custom_step_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_stepName               TEXT,               -- Step identifier
+    p_function               TEXT,               -- A function name, whose API must conform the step execution functions
+    p_schema                 TEXT,               -- A schema name, if it is meaningful for the processing
+    p_object                 TEXT,               -- An object name (for instsance a table name), if it is meaningful for the processing
+    p_subObject              TEXT,               -- An sub_object name (for instance a part id), if it is meaningful for the processing
+    p_cost                   BIGINT              -- The cost to use at steps scheduling time
+    )
+    RETURNS INT LANGUAGE plpgsql AS              -- returns the number of added step, i.e. 1.
+$assign_custom_step_to_batch$
+DECLARE
+    v_fctPrototype           TEXT;
+    v_fctReturn              TEXT;
+BEGIN
+-- Check that the first 3 parameters are not NULL.
+    IF p_batchName IS NULL OR p_stepName IS NULL OR p_function IS NULL THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: The first 3 input parameters can''t be NULL.';
+    END IF;
+-- Check that the batch exists, get its migration name and set the migration as in-progress.
+    PERFORM 0 FROM @extschema@.check_batch(p_batchName);
+-- Check that the supplied step name does not already exist for the batch
+    IF EXISTS(SELECT 0 FROM @extschema@.step WHERE stp_batch_name = p_batchName AND stp_name = p_stepName) THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: A step % already exists for the batch %.', p_stepName, p_batchName;
+    END IF;
+-- Check that a function exists in the data2pg extension schema, with the supplied name and the expected interface
+    v_fctPrototype = '@extschema@.' || quote_ident(p_function) || '(TEXT,TEXT,JSONB)';
+    IF to_regprocedure(v_fctPrototype) IS NULL THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: The function % has not been found.', v_fctPrototype;
+    END IF;
+    v_fctReturn = pg_get_function_result(v_fctPrototype::regprocedure);
+    IF v_fctReturn NOT LIKE 'SETOF %step_report_type' THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: The function % returns "%" instead of "SETOF step_report_type".',
+                        v_fctPrototype, v_fctReturn;
+    END IF;
+-- Record the custom step into the step table.
+    INSERT INTO @extschema@.step (stp_batch_name, stp_name, stp_type, stp_schema, stp_object, stp_sub_object, stp_sql_function, stp_cost)
+        VALUES (
+            p_batchName, p_stepName, 'CUSTOM', p_schema, p_object, p_subObject, p_function, p_cost);
+--
+    RETURN 1;
+END;
+$assign_custom_step_to_batch$;
+
 -- The add_step_parent() function creates an additional dependancy between 2 steps.
 -- It is the user's responsability to set appropriate dependancy and avoid create loops between steps.
 CREATE FUNCTION add_step_parent(

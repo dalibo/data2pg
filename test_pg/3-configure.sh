@@ -220,6 +220,11 @@ SELECT assign_fkey_checks_to_batch('BATCH1', 'myschema2', 'mytbl4', 'mytbl4_col4
 SELECT assign_fkey_checks_to_batch('BATCH1', 'phil''s schema3', 'mytbl4', 'mytbl4_col44_fkey');
 
 --
+-- Add custom steps
+--
+SELECT assign_custom_step_to_batch('BATCH1','custom_step.1', '_do_nothing', null, null, null, 1);
+
+--
 -- Add manual steps dependancies
 --
 
