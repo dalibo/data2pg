@@ -3070,7 +3070,8 @@ $_get_source_sequence$
 BEGIN
 -- Depending on the source DBMS, get the sequence's characteristics.
     IF p_sourceDbms = 'Oracle' THEN
-        SELECT last_number, 'true' INTO p_lastValue, p_isCalled
+-- For Oracle, the last_number column actually represents the next value that will be returned (not taking into account the CACHEd values).
+        SELECT last_number, 'false' INTO p_lastValue, p_isCalled
            FROM @extschema@.ora_sequences
            WHERE sequence_owner = p_sourceSchema
              AND sequence_name = p_sourceSequenceName;
