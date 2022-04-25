@@ -3515,13 +3515,14 @@ DECLARE
     v_sourceSchema             TEXT;
     v_sourceSequenceName       TEXT;
     v_srcLastValue             BIGINT;
-    v_srcIsCalled              TEXT;
+    v_srcIsCalled              BOOLEAN;
     v_destLastValue            BIGINT;
-    v_destIsCalled             TEXT;
+    v_destIsCalled             BOOLEAN;
+    v_destIncrement            BIGINT;
     v_areSequencesEqual        BOOLEAN;
     r_output                   @extschema@.step_report_type;
 BEGIN
--- Get the identity of the sequence.
+-- Get the sequence identity.
     SELECT stp_schema, stp_object, 'srcdb_' || stp_schema, mgr_source_dbms, seq_source_schema, seq_source_name
       INTO v_schema, v_sequence, v_foreignSchema, v_sourceDbms, v_sourceSchema, v_sourceSequenceName
         FROM @extschema@.step
@@ -3542,8 +3543,11 @@ BEGIN
         quote_ident(v_schema) || '.' || quote_ident(v_sequence)
         )
         INTO v_destLastValue, v_destIsCalled;
--- If both sequences don't match, record it.
-    v_areSequencesEqual = (v_srcLastValue = v_destLastValue AND v_srcIsCalled = v_destIsCalled);
+    SELECT seqincrement INTO v_destIncrement
+        FROM pg_catalog.pg_sequence
+        WHERE seqrelid = (quote_ident(v_schema) || '.' || quote_ident(v_sequence))::regclass;
+-- If both sequences don't match (i.e., their next value are different), record it.
+    v_areSequencesEqual = (v_srcLastValue + v_destIncrement * v_srcIsCalled::int) = (v_destLastValue + v_destIncrement * v_destIsCalled::int);
     IF NOT v_areSequencesEqual THEN
         INSERT INTO @extschema@.content_diff
             (diff_schema, diff_relation, diff_rank, diff_database, diff_key_cols, diff_other_cols)
