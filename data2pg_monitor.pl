@@ -163,7 +163,8 @@ sub showLatestRuns {
     }
     $sql = qq(
         SELECT run_id, run_database, run_batch_name, run_status, run_max_sessions, run_start_ts,
-               coalesce(run_end_ts::TEXT,'') AS run_end_ts, coalesce((run_end_ts - run_start_ts)::TEXT,'') AS run_elapse,
+               coalesce(run_end_ts::TEXT,'') AS run_end_ts,
+               coalesce(to_char(date_part('epoch', run_end_ts - run_start_ts) * interval '1 second','HH24:MI:SS.US'),'') AS run_elapse,
                coalesce(run_error_msg,'') AS run_error_msg
           FROM run ORDER BY run_id DESC $limit
     );
@@ -211,8 +212,9 @@ sub showRunDetails {
         $currLine++;
 # Get global information and statistics for the run.
         $sql = qq(
-            SELECT run_id, run_database, run_batch_name, run_batch_type, run_step_options, run_status, run_max_sessions, run_start_ts,
-                   run_end_ts, to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS') AS run_elapse,
+            SELECT run_id, run_database, run_batch_name, run_batch_type, run_step_options, run_status, run_max_sessions,
+                   run_start_ts, run_end_ts,
+                   to_char(date_part('epoch', coalesce(run_end_ts, current_timestamp) - run_start_ts) * interval '1 second','HH24:MI:SS') AS run_elapse,
                    run_error_msg, run_comment, run_restart_id, run_restarted_id,
                    count(step.*) AS total_steps, sum(stp_cost) AS total_cost,
                    count(step.*) FILTER (WHERE stp_status = 'Completed') AS completed_steps,
@@ -260,7 +262,7 @@ sub showRunDetails {
             printf("   End:%-19.19s", $row->{'run_end_ts'});
         }
         if ($row->{run_status} ne 'Aborted') {
-            printf("   Elapse:%-19.19s", $row->{'run_elapse'});
+            printf("   Elapse: %-19.19s", $row->{'run_elapse'});
         }
         print "\n"; $currLine++;
 # Display global counters about the steps
@@ -295,8 +297,10 @@ sub showRunDetails {
         $sql = qq(
             SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking,
                    stp_ses_id, stp_start_ts, stp_end_ts,
-                   CASE WHEN stp_status = 'Completed' THEN to_char(stp_end_ts - stp_start_ts, 'HH24:MI:SS.US')
-                        WHEN stp_status = 'In_progress' THEN to_char(current_timestamp - stp_start_ts, 'HH24:MI:SS')
+                   CASE WHEN stp_status = 'Completed' THEN
+                            to_char(date_part('epoch', stp_end_ts - stp_start_ts) * interval '1 second', 'HH24:MI:SS.US')
+                        WHEN stp_status = 'In_progress' THEN
+                            to_char(date_part('epoch', current_timestamp - stp_start_ts) * interval '1 second', 'HH24:MI:SS')
                         ELSE NULL
                    END AS stp_elapse,
                    ses_backend_pid,

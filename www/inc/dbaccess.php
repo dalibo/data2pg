@@ -202,10 +202,7 @@ function sql_getAllRuns(){
 				   run_init_max_ses, run_init_asc_ses, run_comment,
 				   to_char(run_start_ts, 'YYYY-MM-DD HH24:MI:SS') as run_start_ts,
 				   to_char(run_end_ts, 'YYYY-MM-DD HH24:MI:SS') as run_end_ts,
-				   CASE WHEN coalesce(run_end_ts, current_timestamp) - run_start_ts < '1 DAY'
-							THEN to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS')
-						ELSE to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'FMDDD \"days\" HH24:MI:SS')
-						END as elapse,
+				   to_char(date_part('epoch', coalesce(run_end_ts, current_timestamp) - run_start_ts) * interval '1 second', 'HH24:MI:SS.US') as elapse,
 				   run_status, run_max_sessions, run_asc_sessions,
 				   run_error_msg, run_restart_id, run_perl_pid
 			FROM run
@@ -222,10 +219,7 @@ function sql_getInProgressRuns(){
 				   run_init_max_ses, run_init_asc_ses, run_comment,
 				   to_char(run_start_ts, 'YYYY-MM-DD HH24:MI:SS') as run_start_ts,
 				   to_char(run_end_ts, 'YYYY-MM-DD HH24:MI:SS') as run_end_ts,
-				   CASE WHEN coalesce(run_end_ts, current_timestamp) - run_start_ts < '1 DAY'
-							THEN to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS')
-						ELSE to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'FMDDD \"days\" HH24:MI:SS')
-						END as elapse,
+				   to_char(date_part('epoch', coalesce(run_end_ts, current_timestamp) - run_start_ts) * interval '1 second', 'HH24:MI:SS.US') as elapse,
 				   run_status, run_max_sessions, run_asc_sessions,
 				   run_error_msg, run_restart_id, run_perl_pid,
 				   count(step.*) AS total_steps,
@@ -260,10 +254,7 @@ function sql_getRun($runId) {
 				   run_init_max_ses, run_init_asc_ses, run_comment, run_ref_id,
 				   to_char(run_start_ts, 'YYYY-MM-DD HH24:MI:SS') as run_start_ts,
 				   to_char(run_end_ts, 'YYYY-MM-DD HH24:MI:SS') as run_end_ts,
-				   CASE WHEN coalesce(run_end_ts, current_timestamp) - run_start_ts < '1 DAY'
-							THEN to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'HH24:MI:SS')
-						ELSE to_char(coalesce(run_end_ts, current_timestamp) - run_start_ts, 'FMDDD \"days\" HH24:MI:SS')
-						END as elapse,
+				   to_char(date_part('epoch', coalesce(run_end_ts, current_timestamp) - run_start_ts) * interval '1 second', 'HH24:MI:SS.US') as elapse,
 				   run_status, run_max_sessions, run_asc_sessions,
 				   run_error_msg, run_restart_id, run_restarted_id, run_perl_pid,
 				   tdb_host, tdb_port, tdb_dbname, tdb_description,
@@ -301,17 +292,12 @@ function sql_getSteps($runId, $runStatus) {
 
 	$sql = "SELECT stp_name, stp_cost, stp_status, array_length(stp_blocking, 1) AS nb_blocking, stp_ses_id, ses_backend_pid, 
 				   to_char(stp_start_ts, 'YYYY-MM-DD HH24:MI:SS.US') AS stp_start_ts, to_char(stp_end_ts, 'YYYY-MM-DD HH24:MI:SS.US') AS stp_end_ts,
-				   CASE WHEN stp_status = 'Completed' AND stp_end_ts - stp_start_ts < '1 DAY'
-							THEN to_char(stp_end_ts - stp_start_ts, 'HH24:MI:SS.US')
-						WHEN stp_status = 'Completed' AND stp_end_ts - stp_start_ts >= '1 DAY'
-							THEN to_char(stp_end_ts - stp_start_ts, 'FMDDD \"days\" HH24:MI:SS.US')";
+				   CASE WHEN stp_status = 'Completed' THEN
+					   to_char(date_part('epoch', stp_end_ts - stp_start_ts) * interval '1 second', 'HH24:MI:SS.US')";
 // Only compute elapse time of the in progress steps when the run is effectively in progress (i.e. has not been aborted)
 	if ($runStatus == 'In_progress') {
-		$sql .= "
-						WHEN stp_status = 'In_progress' AND coalesce(stp_end_ts, current_timestamp) - stp_start_ts < '1 DAY'
-							THEN to_char(current_timestamp - stp_start_ts, 'HH24:MI:SS')
-						WHEN stp_status = 'In_progress' AND coalesce(stp_end_ts, current_timestamp) - stp_start_ts >= '1 DAY'
-							THEN to_char(coalesce(stp_end_ts, current_timestamp) - stp_start_ts, 'FMDDD \"days\" HH24:MI:SS')";
+		$sql .= "  CASE WHEN stp_status = 'In_progress' THEN
+					   to_char(date_part('epoch', current_timestamp - stp_start_ts) * interval '1 second', 'HH24:MI:SS.US')";
 	}
 	$sql .= "
 						ELSE NULL
