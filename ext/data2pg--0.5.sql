@@ -54,7 +54,7 @@ CREATE TABLE migration (
     mgr_name                   TEXT NOT NULL,           -- The migration name
     mgr_source_dbms            TEXT NOT NULL            -- The RDBMS as source database
                                CHECK (mgr_source_dbms IN ('Oracle', 'SQLServer', 'Sybase_ASA', 'PostgreSQL')),
-    mgr_extension              TEXT NOT NULL,           -- Extension name
+    mgr_extension              TEXT NOT NULL,           -- The FDW extension name
     mgr_server_name            TEXT NOT NULL,           -- The FDW server name
     mgr_server_options         TEXT NOT NULL,           -- The options for the server, like 'host ''localhost'', port ''5432'', dbname ''test1'''
     mgr_user_mapping_options   TEXT NOT NULL,           -- The user mapping options used by the data2pg role to reach the source database
@@ -305,13 +305,13 @@ CREATE VIEW counter_diff AS
 --   * and the User Mapping to use to reach the source database.
 -- It returns the number of created migration, i.e. 1.
 CREATE FUNCTION create_migration(
-    p_migration              TEXT,
-    p_sourceDbms             TEXT,
-    p_extension              TEXT,
-    p_serverOptions          TEXT,
-    p_userMappingOptions     TEXT,
-    p_userHasPrivileges      BOOLEAN DEFAULT false,
-    p_importSchemaOptions    TEXT DEFAULT NULL
+    p_migration              TEXT,                    -- Migration name
+    p_sourceDbms             TEXT,                    -- The source DBMS name (must comply the migration.mgr_source_dbms CHECK constraint)
+    p_extension              TEXT,                    -- The FDW extension name
+    p_serverOptions          TEXT,                    -- The options to add when creating the FDW server
+    p_userMappingOptions     TEXT,                    -- The FDW user_mapping to use to reach the source database
+    p_userHasPrivileges      BOOLEAN DEFAULT false,   -- A boolean indicating whether the user has DBA priviledges (Oracle specific)
+    p_importSchemaOptions    TEXT DEFAULT NULL        -- Options to add to the IMPORT SCHEMA statement for foreign tables creation
     )
     RETURNS INTEGER LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -490,7 +490,7 @@ $load_dbms_specific_objects$;
 -- by all subsequent functions that assigned tables, sequences to batches.
 -- It returns the number of dropped foreign tables.
 CREATE FUNCTION drop_migration(
-    p_migration               TEXT
+    p_migration              TEXT                     -- Migration name
     )
     RETURNS INTEGER LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -1072,7 +1072,7 @@ $register_table$;
 -- It allows to manage columns with different names, with different types and or with specific computation rule.
 -- The target column is defined with the schema, table and column name.
 -- It returns the number of registered column transformations, i.e. 1.
--- Several transformation rule may be applied for the same column. In this case, the last one defines the real transformation that will be applied.
+-- Several transformation rules may be applied for the same column. In this case, the last one defines the real transformation that will be applied.
 CREATE FUNCTION register_column_transform_rule(
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
@@ -1123,7 +1123,7 @@ END;
 $register_column_transform_rule$;
 
 -- The register_column_comparison_rule() functions defines a specific rule in comparing a column between the source and the target databases.
--- It allows to either simply mask the column for the COMPARE operation, or to compare the result of an expression on both source and tardet tables.
+-- It allows to either simply mask the column for the COMPARE operation, or to compare the result of an expression on both source and target tables.
 -- The target column is defined with the schema, table and column name.
 -- The expression on the source and the target databases may be different.
 -- It returns the number of registered column transformations, i.e. 1.
@@ -1195,7 +1195,7 @@ CREATE FUNCTION register_table_part(
     p_isLastPart             BOOLEAN             -- Boolean indicating that the part is the last one for the table
                              DEFAULT FALSE       --   (if TRUE, the post-processing action is performed)
     )
-    RETURNS INT LANGUAGE plpgsql AS              -- Returns the number of effectively assigned table part, i.e. 1
+    RETURNS INT LANGUAGE plpgsql AS              -- Returns the number of effectively registered table parts, i.e. 1
 $register_table_part$
 DECLARE
     v_migrationName          TEXT;
@@ -1481,7 +1481,6 @@ $assign_table_to_batch$
 $assign_table_to_batch$;
 
 -- The assign_table_part_to_batch() function assigns a table's part to a batch.
--- Two regexp filter tables already registered to a migration to include and exclude to the batch.
 CREATE FUNCTION assign_table_part_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
@@ -1564,7 +1563,8 @@ BEGIN
 END;
 $assign_table_part_to_batch$;
 
--- The assign_index_to_batch() function assigns an index re-creation to a batch.
+-- The assign_index_to_batch() function assigns an index re-creation to a batch. At table registration time, the flag p_separateCreateIndex
+-- must have been set to TRUE.
 CREATE FUNCTION assign_index_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
@@ -1866,11 +1866,11 @@ CREATE FUNCTION assign_custom_step_to_batch(
     p_stepName               TEXT,               -- Step identifier
     p_function               TEXT,               -- A function name, whose API must conform the step execution functions
     p_schema                 TEXT,               -- A schema name, if it is meaningful for the processing
-    p_object                 TEXT,               -- An object name (for instsance a table name), if it is meaningful for the processing
+    p_object                 TEXT,               -- An object name (for instance a table name), if it is meaningful for the processing
     p_subObject              TEXT,               -- An sub_object name (for instance a part id), if it is meaningful for the processing
     p_cost                   BIGINT              -- The cost to use at steps scheduling time
     )
-    RETURNS INT LANGUAGE plpgsql AS              -- returns the number of added step, i.e. 1.
+    RETURNS INT LANGUAGE plpgsql AS              -- returns the number of added steps, i.e. 1.
 $assign_custom_step_to_batch$
 DECLARE
     v_fctPrototype           TEXT;
@@ -1908,11 +1908,11 @@ $assign_custom_step_to_batch$;
 -- The add_step_parent() function creates an additional dependancy between 2 steps.
 -- It is the user's responsability to set appropriate dependancy and avoid create loops between steps.
 CREATE FUNCTION add_step_parent(
-    p_batchName              TEXT,
-    p_step                   TEXT,
-    p_parent_step            TEXT
+    p_batchName              TEXT,                -- Batch identifier
+    p_step                   TEXT,                -- Step identifier
+    p_parent_step            TEXT                 -- Parent step identifier
     )
-    RETURNS INT LANGUAGE plpgsql AS          -- returns the number of effectively assigned parent, ie. 1
+    RETURNS INT LANGUAGE plpgsql AS               -- returns the number of effectively assigned parents, ie. 1
 $add_step_parent$
 BEGIN
 -- Check that the first 3 parameters are not NULL.
@@ -1952,7 +1952,7 @@ $add_step_parent$;
 -- The complete_migration_configuration() function is the final function in migration's configuration.
 -- It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
 CREATE FUNCTION complete_migration_configuration(
-    p_migration              TEXT
+    p_migration              TEXT                     -- Migration name
     )
     RETURNS VOID LANGUAGE plpgsql AS
 $complete_migration_configuration$
