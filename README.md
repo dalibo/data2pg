@@ -48,9 +48,9 @@ The Data2Pg installation can be splitted into 4 steps.
 
 ## Installing the software
 
-As Data2Pg uses a Foreign Data Wrapper to access the data located on the source database, a Foreign Data Wrapper extension needs to be installed into the target PostgreSQL instance and database. It depends on the source database type. Refer to its documentation for its installation.
+As Data2Pg uses a Foreign Data Wrapper to access data located on the source database, a Foreign Data Wrapper extension needs to be installed into the target PostgreSQL instance and database. It depends on the source database type. Refer to its documentation for its installation.
 
-To install both data2pg and data2pg_admin extensions, go to the extension directory and install files.
+To install both `data2pg` and `data2pg_admin` extensions, go to the extension directory and install files.
 
 ```sh
 cd ext/
@@ -61,9 +61,9 @@ The scheduler and the monitor clients are written in perl and use the DBI and DB
 
 ## Creating the administration database
 
-Data2Pg needs its own adminstration database. This database may be created into the same PostgreSQL instance as a database to populate. It will be dropped once the migration project will be completed.
+Data2Pg needs its own adminstration database. This database may be created into the same PostgreSQL instance as a database to populate. Its size and SQL load are very low. It will be dropped once the migration project will be completed.
 
-This database contains a `target_database` table that describes the target databases concerned by the migration project. This table can be fed by the Web client. It can also be populated at creation time by loading a `target_database.dat` file. In this case, the provided template file must be adjusted. The first line is a header and must be left as is. Each subsequent lines describes a target database. It contains the following fields:
+This database contains a `target_database` table that describes all PostgreSQL databases concerned by the migration project. This table can be fed by the Web client. It can also be populated at creation time by loading a `target_database.dat` file. In this case, the provided template file must be adjusted. The first line is a header and must be left as is. Each subsequent lines describes a target database. It contains the following fields:
 
    * tdb_id : a Data2Pg target database identifier (this name will be used for Data2Pg operations)
    * tdb_host : the IP address to reach the PostgreSQL target database
@@ -72,7 +72,7 @@ This database contains a `target_database` table that describes the target datab
    * tdb_description : a textual description of the database (optional)
    * tdb_locked : a flag to protect the database against unattended data copy ; set it to FALSE to run batches of type COPY.
 
-The administration database creation can be performed using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Then type:
+The administration database can be created using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Then type:
 
 ```sh
 ./data2pg_init_db.sh
@@ -82,12 +82,12 @@ The script:
 
    * creates a database named `data2pg`;
    * creates a role named `data2pg`, if it does not exist yet;
-   * creates the extension `data2pg_admin` inside the `data2pg` database;
+   * creates the `data2pg_admin` extension inside the `data2pg` database;
    * loads the file that populates the `target_database` table.
 
 ## Installing the Web client
 
-In order to install the optional Web client, the data2pg/www subdirectory must be accessible for a web server with php activated.
+In order to install the optional Web client, the `data2pg/www` subdirectory must be accessible for a web server with php activated.
 
 Then the `data2pg/www/conf/config.inc.php` must be created using the `config.inc.php-dist` template.
 
@@ -103,14 +103,14 @@ On each target database, the `data2pg` extension must be created using the suppl
 The script:
 
    * creates a role named `data2pg`, if it does not already exist in the instance;
-   * creates the extension `data2pg` inside the target database;
+   * creates the `data2pg` extension inside the target database;
    * loads custom components that may be needed for specific migration steps, by executing the `data2pg_addons.sql` SQL script file.
 
 # How to configure migrations
 
 Before configuring migrations, the target database application schemas must be fully created: tables, sequences, indexes, constraints, etc.
 
-A migration is configured by using a functions set provided by the data2pg extension. It typically chains several main steps:
+A migration is configured by using a functions set provided by the `data2pg` extension. It typically chains several main steps:
 
   * create a migration object, defining the source database and the way to reach it
   * register all tables and sequences to process, defining their migration specificities, if any
@@ -578,6 +578,47 @@ Just for testing purpose, the proposed migration migrates a source PostgreSQL da
   perl data2pg_monitor.pl -r <run_id>
   ```
 
+# How to uninstall Data2Pg
+
+## Completing a database migration
+
+Once a database is definitely migrated, its Data2Pg components can be dropped.
+
+First log on the target database with a SUPERUSER role and execute the following SQL commandes:
+
+```sql
+SELECT drop_migration(<migration_name>);
+DROP EXTENSION data2pg;
+DROP SCHEMA data2pg CASCADE;
+```
+
+The `drop_migration()`function drops:
+
+  * the *FOREIGN TABLEs* et the schemas that hold them;
+  * the *USER MAPPING* and the *FOREIGN SERVER* associated to the migration.
+
+However, it kepts the *FOREIGN DATA WRAPPER* object that may be used for other purposes. If it needs to be dropped, just type:
+
+```sql
+DROP EXTENSION <fdw_extension_name> CASCADE;
+```
+
+It the `data2pg` role is not used anymore by other databases of the instance it can be dropped also:
+
+```sql
+DROP ROLE data2pg;
+```
+
+## Completing the migration program
+
+If all migration works are over, the Data2Pg administration database can be dropped. This can be done with the shell commands:
+
+```shell
+dropdb data2pg -h ... -p ... -U postgres
+dropuser data2pg -h ... -p ... -U postgres
+```
+
+If the Web client has been installed, it can also be uninstalled from the web server.
 
 # Contributing
 
