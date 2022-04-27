@@ -413,7 +413,7 @@ The function returns the number of effectively assigned parents, i.e. 1.
 How to start the scheduler
 --------------------------
 
-## Running a batch
+## Running a batch
 
 There are two ways to start the scheduler: either using the web client interface or typing a shell command in a terminal.
 
@@ -443,7 +443,7 @@ Usage: data2pg.pl [--help] | [<options to log on the data2pg>] --action <action>
 (*) the option may also be set in the configuration file. The command line parameters overide the configuration file content, if any
 ```
 
-## The scheduler configuration file
+## The scheduler configuration file
 
 Most parameters of the command line can be stored into a scheduler configuration file. In this file:
 
@@ -472,7 +472,7 @@ REFERENCE_RUN      = <rrr>                  # Default = no reference run
 STEP_OPTIONS = {<json_formatted_options>}   # Default = no step option
 ```
 
-## The step options
+## The step options
 
 The migration configuration describes most technical details of the operations. But some options are also available at execution time. They depend on the batch type. When the scheduler is spawned in command line, these options can be set through either the parameters file read by the scheduler, if any, or directly in the --step_options parameter. In both cases, the set of options is formatted as a JSON structure.
 
@@ -515,6 +515,38 @@ Note that a batch run that has unexpectedly aborted must be "officialy" aborted 
 
 When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
 
+How to monitor runs
+-------------------
+
+There are two ways to monitor in-progress or completed batch run: either using the web client interface or running the data2pg_monitor client in a terminal.
+
+The shell command syntax can be displayed with the --help option.
+
+```
+perl data2pg_monitor.pl --help
+data2pg_monitor.pl belongs to the data2pg project (version 0.5).
+It monitors data migrations towards PostgreSQL performed by the data2pg scheduler.
+
+Usage:
+  data2pg_monitor.pl [OPTION]...
+
+Options:
+  --host      IP host of the data2pg database (default = PGHOST env. var.)
+  --port      IP port of the data2pg database (default = PGPORT env. var.)
+  --lines     maximum number of lines to display (0 = default = no page size limit)
+  --run       optional run id to examine. If no specific run is specified, display the latest runs
+                registered into the data2pg database
+  --delay     delay in seconds between 2 displays of details for a specific 'Initializing',
+                'In_progress' or 'Ending' run (default = 5)
+  --help      shows this help, then exit
+  --version   outputs version information, then exit
+
+Examples:
+  data2pg_monitor.pl --host localhost --port 5432 --lines 40 --delay 10
+              displays the list of the latest registered run, with no more than 40 generated lines
+  data2pg_monitor.pl --host localhost --port 5432 --lines 40 --run 58 --delay 10
+              monitors the run #58 and refresh the screen every 10 seconds
+```
 
 
 Contributing

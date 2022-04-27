@@ -24,7 +24,7 @@ my $port;                                 # IP port of the data2pg database
 my $help = 0;
 my $version = 0;
 my $lines = 0;                            # --lines (0 means no page size limit)
-my $delay = 5;                            # --delay (in seconds, default=5s)
+my $delay = 5;                            # --delay (in seconds, default = 5s)
 my $run = undef;                          # --run identifier
 
 # Global variables to manage the sessions and the statements to the databases.
@@ -77,7 +77,7 @@ Options:
   --run       optional run id to examine. If no specific run is specified, display the latest runs
                 registered into the data2pg database
   --delay     delay in seconds between 2 displays of details for a specific 'Initializing',
-                'In_progress' or 'Ending' run (default = 3)
+                'In_progress' or 'Ending' run (default = 5)
   --help      shows this help, then exit
   --version   outputs version information, then exit
 
