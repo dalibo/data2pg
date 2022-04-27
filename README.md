@@ -5,13 +5,11 @@ Data2Pg is a tools framework that helps migrating non-PostgreSQL database conten
 
 Version: 0.5
 
-License
--------
+# License
 
 Data2Pg is distributed under the GNU General Public License.
 
-Objectives
-----------
+# Objectives
 
 The main goal of Data2Pg is to help in database migration projects moving data from a non-PostgreSQL RDBMS into PostgreSQL. Three functions are available:
 
@@ -21,8 +19,7 @@ The main goal of Data2Pg is to help in database migration projects moving data f
 
 These 3 functions use the same infrastructure. The source database is directly accessed from PostgreSQL using a Foreign Data Wrapper.
 
-Architecture
-------------
+# Architecture
 
 The Data2Pg framework has several components:
 
@@ -32,8 +29,7 @@ The Data2Pg framework has several components:
   * a monitor tool that reports the migration progress in real time and display detailed information about past migrations
   * a web client that may be used to ease the scheduler run and the batches monitoring.
 
-Concepts
---------
+# Concepts
 
 A few concepts must be defined:
 
@@ -46,69 +42,71 @@ A few concepts must be defined:
   * Session: a scheduler connection on the target Database to execute Steps
 
 
-How to install Data2Pg
-----------------------
+# How to install Data2Pg
 
-Go to the extension directory and install files
+The Data2Pg installation can be splitted into 4 steps.
+
+## Installing the software
+
+As Data2Pg uses a Foreign Data Wrapper to access the data located on the source database, a Foreign Data Wrapper extension needs to be installed into the target PostgreSQL instance and database. It depends on the source database type. Refer to its documentation for its installation.
+
+To install both data2pg and data2pg_admin extensions, go to the extension directory and install files.
 
 ```sh
 cd ext/
 make PG_CONFIG=<path/to/pg_config> install
 ```
 
-On the administration database which stores migrations projects, install the `data2pg_admin` extension.
-
-```sql
-CREATE EXTENSION data2pg_admin SCHEMA data2pg;
-```
-
-On target databases, deploy the `data2pg` extension.
-
-```sql
-CREATE EXTENSION data2pg SCHEMA data2pg;
-```
-
 The scheduler and the monitor clients are written in perl and use the DBI and DBD::Postgres modules. These components may need to be installed on your machine.
 
-If you want to use the web client (it is optional), the data2pg/www subdirectory must be accessible for a web server with php activated. A data2pg/www/conf/config.inc.php must be created using the config.inc.php-dist template.
+## Creating the administration database
 
-How to test Data2Pg
--------------------
+Data2Pg needs its own adminstration database. This database may be created into the same PostgreSQL instance as a database to populate. It will be dropped once the migration project will be completed.
 
-Just for testing purpose, the proposed migration migrates a source PostgreSQL database into another PostgreSQL target database. The following steps must be executed:
+This database contains a `target_database` table that describes the target databases concerned by the migration project. This table can be fed by the Web client. It can also be populated at creation time by loading a `target_database.dat` file. In this case, the provided template file must be adjusted. The first line is a header and must be left as is. Each subsequent lines describes a target database. It contains the following fields:
 
-  * Initialize the administration data2pg database by executing the `data2pg_init_db.sh` shell script (once the environment variables adjusted)
-  ```
-  bash data2pg_init_db.sh
-  ```
-  * Initialize both postgres source and target databases by executing the `test_pg/1-init.sh` shell script (once environment variables adjusted)
-  ```
-  bash test_pg/1-init.sh
-  ```
-  * Initialize the data2pg extension into the target database by executing the `data2pg_init_schema.sh` shell script (once environment variables adjusted)
-  ```
-  bash data2pg_init_extension.sh
-  ```
-  * Configure the `migration` by executing the `test_pg/3-configure.sh` shell script (once the environment variables adjusted)
-  ```
-  bash test_pg/3-configure.sh
-  ```
-  * Run the scheduler with commands like
-  ```
-  export PGHOST=localhost
-  perl data2pg.pl --conf test_pg/batch0.conf --action run
-  perl data2pg.pl --conf test_pg/batch1.conf --action run
-  perl data2pg.pl --conf test_pg/batch_tables_check.conf --action run
-  perl data2pg.pl --conf test_pg/batch_compare.conf --action run
-  ```
-  * Run the monitor with commands like
-  ```
-  export PGHOST=localhost
-  perl data2pg_monitor.pl -r <run_id>
-  ```
+   * tdb_id : a Data2Pg target database identifier (this name will be used for Data2Pg operations)
+   * tdb_host : the IP address to reach the PostgreSQL target database
+   * tdb_port : the IP port to reach the PostgreSQL target database
+   * tdb_dbname : the PostgreSQL database name
+   * tdb_description : a textual description of the database (optional)
+   * tdb_locked : a flag to protect the database against unattended data copy ; set it to FALSE to run batches of type COPY.
 
-How to configure migrations
----------------------------
+The administration database creation can be performed using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Then type:
+
+```sh
+./data2pg_init_db.sh
+```
+
+The script:
+
+   * creates a database named `data2pg`;
+   * creates a role named `data2pg`, if it does not exist yet;
+   * creates the extension `data2pg_admin` inside the `data2pg` database;
+   * loads the file that populates the `target_database` table.
+
+## Installing the Web client
+
+In order to install the optional Web client, the data2pg/www subdirectory must be accessible for a web server with php activated.
+
+Then the `data2pg/www/conf/config.inc.php` must be created using the `config.inc.php-dist` template.
+
+
+## Creating the data2pg extension
+
+On each target database, the `data2pg` extension must be created using the supplied `data2pg_init_extension.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Then type:
+
+```sh
+./data2pg_init_extension.sh
+```
+
+The script:
+
+   * creates a role named `data2pg`, if it does not already exist in the instance;
+   * creates the extension `data2pg` inside the target database;
+   * loads custom components that may be needed for specific migration steps, by executing the `data2pg_addons.sql` SQL script file.
+
+# How to configure migrations
 
 Before configuring migrations, the target database application schemas must be fully created: tables, sequences, indexes, constraints, etc.
 
@@ -410,8 +408,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned parents, i.e. 1.
 
-How to start the scheduler
---------------------------
+# How to start the scheduler
 
 ## Running a batch
 
@@ -419,7 +416,7 @@ There are two ways to start the scheduler: either using the web client interface
 
 The shell command syntax can be displayed with the --help option.
 
-```
+```sh
 perl data2pg.pl --help
 
  Data2Pg - version 0.5
@@ -515,14 +512,13 @@ Note that a batch run that has unexpectedly aborted must be "officialy" aborted 
 
 When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
 
-How to monitor runs
--------------------
+# How to monitor runs
 
-There are two ways to monitor in-progress or completed batch run: either using the web client interface or running the data2pg_monitor client in a terminal.
+There are two ways to monitor in-progress or completed batch runs: either using the web client interface or running the data2pg_monitor client in a terminal.
 
 The shell command syntax can be displayed with the --help option.
 
-```
+```sh
 perl data2pg_monitor.pl --help
 data2pg_monitor.pl belongs to the data2pg project (version 0.5).
 It monitors data migrations towards PostgreSQL performed by the data2pg scheduler.
@@ -548,13 +544,42 @@ Examples:
               monitors the run #58 and refresh the screen every 10 seconds
 ```
 
+# How to test Data2Pg
 
-Contributing
-------------
+Just for testing purpose, the proposed migration migrates a source PostgreSQL database into another PostgreSQL target database. The following steps must be executed:
+
+  * Initialize the administration data2pg database by executing the `data2pg_init_db.sh` shell script (once the environment variables adjusted)
+  ```
+  bash data2pg_init_db.sh
+  ```
+  * Initialize both postgres source and target databases by executing the `test_pg/1-init.sh` shell script (once environment variables adjusted)
+  ```
+  bash test_pg/1-init.sh
+  ```
+  * Initialize the data2pg extension into the target database by executing the `data2pg_init_schema.sh` shell script (once environment variables adjusted)
+  ```
+  bash data2pg_init_extension.sh
+  ```
+  * Configure the `migration` by executing the `test_pg/3-configure.sh` shell script (once the environment variables adjusted)
+  ```
+  bash test_pg/3-configure.sh
+  ```
+  * Run the scheduler with commands like
+  ```
+  export PGHOST=localhost
+  perl data2pg.pl --conf test_pg/batch0.conf --action run
+  perl data2pg.pl --conf test_pg/batch1.conf --action run
+  perl data2pg.pl --conf test_pg/batch_tables_check.conf --action run
+  perl data2pg.pl --conf test_pg/batch_compare.conf --action run
+  ```
+  * Run the monitor with commands like
+  ```
+  export PGHOST=localhost
+  perl data2pg_monitor.pl -r <run_id>
+  ```
+
+
+# Contributing
 
 Any contribution on the project is welcome.
 
-Support
--------
-
-<TO BE DEFINED>
