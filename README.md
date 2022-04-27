@@ -122,7 +122,7 @@ A migration is configured by using a functions set provided by the data2pg exten
 
 Here are details about the migrations configuration API.
 
-## Migrations management
+## Migrations management
 
 The `create_migration()` function registers a new migration and creates:
 
@@ -156,7 +156,7 @@ The input parameter is:
 
   * p_migration             : (TEXT) The migration name
 
-## objects registration
+## Objects registration
 
 The `register_tables()` function links a set of tables from a single schema to a migration. It creates a foreign table for each registered table. The tables selection is defined by two regexp filters, one to specify the tables to include, and one to specify the tables to exclude.
 
@@ -264,7 +264,7 @@ The input parameters are:
 
 The function returns the number of effectively registered sequences, I.e. 1.
 
-## Batches management
+## Batches management
 
 The `create_batch()` function registers a new batch for an existing migration.
 
@@ -409,6 +409,112 @@ The input parameters are:
   * p_parent_step           : (TEXT) Parent step identifier
 
 The function returns the number of effectively assigned parents, i.e. 1.
+
+How to start the scheduler
+--------------------------
+
+## Running a batch
+
+There are two ways to start the scheduler: either using the web client interface or typing a shell command in a terminal.
+
+The shell command syntax can be displayed with the --help option.
+
+```
+perl data2pg.pl --help
+
+ Data2Pg - version 0.5
+-----------------------
+Data2Pg is a migration framework to load PostgreSQL databases (version 0.5)
+Usage: data2pg.pl [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]
+
+  --host         : IP host of the data2pg administration database (default = PGHOST env. var.)
+  --port         : IP port of the data2pg administration database (default = PGPORT env. var.)
+  --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)
+  --conf         : configuration file (default = no configuration file)
+  --verbose      : display additional information during the run
+  --target       : target database identifier (mandatory) (*)
+  --batch        : batch name for the run (mandatory, except for the 'check' action) (*)
+  --step_options : JSON formatted list of options sent to each step (*)
+  --sessions     : number of parallel sessions (default = 1) (*)
+  --asc_sessions : number of sessions for which steps will be assigned in estimated cost ascending order (default = 0) (*)
+  --comment      : comment describing the run (between single or double quotes to include spaces) (*)
+  --ref_run      : id of a run used as a reference for the steps duration, instead of tables size (default = no reference run) (*)
+  --run          : run_id supplied by external tools (should not be used for manual run start)
+(*) the option may also be set in the configuration file. The command line parameters overide the configuration file content, if any
+```
+
+## The scheduler configuration file
+
+Most parameters of the command line can be stored into a scheduler configuration file. In this file:
+
+   * the '#' character starts a comment
+   * a parameter if formated as : keyword = value
+
+The following parameters are available:
+
+```
+# Identifier of the target database to migrate (mandatory)
+TARGET_DATABASE    = <target_db>            # case sensitive, must match the target_database table content in the data2pg database
+
+# Identifier of the batch (mandatory)
+BATCH_NAME         = <batch_name>           # case sensitive, must match the migration configuration in the target database
+
+# The maximum number of opened sessions on the target database. This defines the parallelism degree for the run.
+MAX_SESSIONS       = <ss>                   # Default = 1
+
+# Among the opened sessions, number of sessions for which the steps will be assigned in estimated cost ascending order.
+ASC_SESSIONS       = <a>                    # Default = 0
+
+# Run id whose step durations are used as step estimated costs instead of table size.
+REFERENCE_RUN      = <rrr>                  # Default = no reference run
+
+# Step options, in JSON format. They are forwarded to each elementary step of the batch to adjust their behaviour.
+STEP_OPTIONS = {<json_formatted_options>}   # Default = no step option
+```
+
+## The step options
+
+The migration configuration describes most technical details of the operations. But some options are also available at execution time. They depend on the batch type. When the scheduler is spawned in command line, these options can be set through either the parameters file read by the scheduler, if any, or directly in the --step_options parameter. In both cases, the set of options is formatted as a JSON structure.
+
+For batches of type COPY, the following step options are available:
+
+   * COPY_MAX_ROWS to limit the number of copied rows per table or table part, based on a fixed value;
+   * COPY_PCT_ROWS to limit the number of copied rows per table or table part, based on a % of rows (computed from the source database statistics).
+
+For batches of type DISCOVER, the following step options are available:
+
+   * DISCOVER_MAX_ROWS to limit the number of analyzed rows per table, based on a fixed value;
+
+For batches of type COMPARE, the following step options are available:
+
+   * COMPARE_TRUNCATE_DIFF to truncate the content_diff table that collects the reported differences (boolean, 'false' by default);
+   * COMPARE_MAX_DIFF to limit the number of differences per table reported by a batch of type COMPARE (no limit by default);
+   * COMPARE_MAX_ROWS to limit the number of compared rows for a table.
+
+Examples:
+
+   * In a COPY batch parameter file, we could find a line:
+```
+STEP_OPTIONS = {"COPY_MAX_ROWS":10000}
+```
+
+   * In the scheduler spawn command line for a COMPARE batch, we could find the parameter:
+```
+ --step_options "{"COMPARE_TRUNCATE_DIFF":true, "COMPARE_MAX_DIFF":20}"
+```
+
+## Managing runs
+
+Once a batch run is spawned by a `perl data2pg.pl --action run ...` command, it is possible to:
+
+   * suspend its execution by issuing a `perl data2pg.pl --action suspend ...` command, i.e. let the steps in execution complete their task and then stop the run;
+   * abort its execution by issuing a `perl data2pg.pl --action abort ...` command, i.e. immediately stop the batch run;
+   * restart an aborted or suspended batch run by issuing a `perl data2pg.pl --action restart ...` command.
+
+Note that a batch run that has unexpectedly aborted must be "officialy" aborted by a `perl data2pg.pl --action abort ...` command before any rerun or restart attempt.
+
+When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
+
 
 
 Contributing
