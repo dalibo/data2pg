@@ -29,6 +29,8 @@ The Data2Pg framework has several components:
   * a monitor tool that reports the migration progress in real time and display detailed information about past migrations
   * a web client that may be used to ease the scheduler run and the batches monitoring.
 
+![Data2pg architecture](./img/architecture.png)
+
 # Concepts
 
 A few concepts must be defined:
@@ -511,6 +513,9 @@ Once a batch run is spawned by a `perl data2pg.pl --action run ...` command, it 
 Note that a batch run that has unexpectedly aborted must be "officialy" aborted by a `perl data2pg.pl --action abort ...` command before any rerun or restart attempt.
 
 When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
+
+This chart shows the actions that can be performed on a batch run and its possible states.
+![Batch runs actions and states](./img/batchRunActionsAndStates.png)
 
 # How to monitor runs
 
