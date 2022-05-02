@@ -4,6 +4,10 @@
 
 There are two ways to start the scheduler: either using the web client interface or typing a shell command in a terminal.
 
+The web client batch run form looks like
+
+![Web client new run form](../img/webClientNewRunForm.png)
+
 The shell command syntax can be displayed with the --help option.
 
 ```sh

@@ -21,7 +21,7 @@ These 3 functions use the same infrastructure. The source database is directly a
 
 # Architecture and concepts
 
-See [Data2Pg architeture and concepts](doc/architectureConcept.md).
+See [Data2Pg architecture and concepts](doc/architectureConcept.md).
 
 # How to install Data2Pg
 

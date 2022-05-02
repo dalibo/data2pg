@@ -30,3 +30,6 @@ Examples:
               monitors the run #58 and refresh the screen every 10 seconds
 ```
 
+The web client run details page looks like
+
+![Web client run details page](../img/webClientRunDetails.png)
