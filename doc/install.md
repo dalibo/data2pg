@@ -67,6 +67,6 @@ Most operations accessing PostgreSQL databases use a dedicated *data2pg* role. I
 
 This concerns the `CREATE ROLE` statement in both *data2pg_init_admin_db.sh* and *data2pg_init_extension.sh* script files.
 
-The *data2pg.pl* scheduler only rely on the `.pgpass` file content to reach the Data2Pg administration database as well as the target databases. The *data2pg_monitor.pl* monitor clients also use the `.pgpass` file content to reach the Data2Pg administration database (it never logs on the target databases). So the `~/.pgpass` file of the OS account used to run these commands must be adjusted accordingly.
+The *data2pg.pl* scheduler only relies on the `.pgpass` file content to reach the Data2Pg administration database as well as the target databases. The *data2pg_monitor.pl* monitor clients also uses the `.pgpass` file content to reach the Data2Pg administration database (it never logs on the target databases). So the `~/.pgpass` file of the OS account used to run these commands must be adjusted accordingly.
 
 The web client only accesses the Data2Pg administration database. It uses parameters set into its `config.inc.php` configuration file, including the *data2pg* password (see above).
