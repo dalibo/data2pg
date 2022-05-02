@@ -10,7 +10,7 @@ The Data2Pg framework has several components:
   * a monitor tool that reports the migration progress in real time and display detailed information about past migrations
   * a web client that may be used to ease the scheduler run and the batches monitoring.
 
-![Data2pg architecture](./img/architecture.png)
+![Data2pg architecture](../img/architecture.png)
 
 ## Concepts
 

@@ -103,7 +103,8 @@ Note that a batch run that has unexpectedly aborted must be "officialy" aborted 
 When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
 
 This chart shows the actions that can be performed on a batch run and its possible states.
-![Batch runs actions and states](./img/batchRunActionsAndStates.png)
+
+![Batch runs actions and states](../img/batchRunActionsAndStates.png)
 
 ## Run report
 

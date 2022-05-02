@@ -4,11 +4,7 @@ Before configuring migrations, the target database application schemas must be f
 
 A migration is configured by using a functions set provided by the `data2pg` extension. It typically chains several main steps:
 
-  * create a migration object, defining the source database and the way to reach it
-  * register all tables and sequences to process, defining their migration specificities, if any
-  * create batches
-  * assign steps to the batches: table copy, sequence copy, etc
-  * complete the migration configuration, building the batch working plans
+![Migration configuration steps](../img/configureMigration.png)
 
 Here are details about the migrations configuration API.
 
@@ -40,7 +36,7 @@ The input parameter is:
 
 The function returns the number of dropped foreign tables.
 
-The `complete_migration_configuration()` function is the final function in migration's configuration. It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
+The `complete_migration_configuration()` function is the final function in migration's configuration. It checks that all registered and assigned data are consistent and builds the working plan, including chaining constraints between steps.
 
 The input parameter is:
 
@@ -178,7 +174,7 @@ The input parameter is:
 
 The function returns the number of removed steps.
 
-## Steps assignment management
+## Objects assignment management
 
 The `assign_tables_to_batch()` function assigns a set of tables of a single schema to a batch. Two regexp filter tables already registered to a migration to include and exclude to the batch.
 
