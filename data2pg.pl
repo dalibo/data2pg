@@ -261,6 +261,7 @@ sub checkParameters
     $maxSessions = $cfMaxSessions if (!defined($maxSessions) && defined($cfMaxSessions));
     $ascSessions = $cfAscSessions if (!defined($ascSessions) && defined($cfAscSessions));
     $comment = $cfComment         if (!defined($comment) && defined($cfComment));
+    $refRun = $cfRefRun           if (!defined($refRun) && defined($cfRefRun));
 
     # Use hard coded default values, if needed.
     $maxSessions = 1         unless (defined ($maxSessions));
