@@ -2074,12 +2074,14 @@ $add_step_parent$;
 
 -- The complete_migration_configuration() function is the final function in migration's configuration.
 -- It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
+-- It returns the number of effectively processed migration configuration, i.e. 1, or 0 if the configuration is already completed.
 CREATE FUNCTION complete_migration_configuration(
     p_migration              TEXT                     -- Migration name
     )
-    RETURNS VOID LANGUAGE plpgsql AS
+    RETURNS INT LANGUAGE plpgsql AS
 $complete_migration_configuration$
 DECLARE
+    v_isConfigCompleted      BOOLEAN;
     v_batchArray             TEXT[];
     v_countBatchWithInitStep INT;
     v_countBatchWithEndStep  INT;
@@ -2095,13 +2097,22 @@ BEGIN
     IF p_migration IS NULL THEN
         RAISE EXCEPTION 'complete_migration_configuration: the p_migration parameter cannot be NULL.';
     END IF;
--- Check that the migration exist and set it config_completed flag as true.
-    UPDATE @extschema@.migration
-        SET mgr_config_completed = TRUE
+-- Check that the migration exist.
+    SELECT mgr_config_completed INTO v_isConfigCompleted
+        FROM @extschema@.migration
         WHERE mgr_name = p_migration;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'complete_migration_configuration: Migration "%" not found.', p_migration;
     END IF;
+-- If the configuration is already completed, notice it and stop.
+    IF v_isConfigCompleted THEN
+        RAISE NOTICE 'complete_migration_configuration: the migration configuration is already completed.';
+        RETURN 0;
+    END IF;
+-- Set the migration's config_completed flag as true.
+    UPDATE @extschema@.migration
+        SET mgr_config_completed = TRUE
+        WHERE mgr_name = p_migration;
 -- Get the list of related batches.
     SELECT array_agg(bat_name) INTO v_batchArray
         FROM @extschema@.batch
@@ -2379,7 +2390,7 @@ BEGIN
           AND step.stp_name = parent_rebuild.step_name
           AND step.stp_parents <> parent_rebuild.unique_parents;
 --
-    RETURN;
+    RETURN 1;
 END;
 $complete_migration_configuration$;
 

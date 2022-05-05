@@ -42,6 +42,8 @@ The input parameter is:
 
   * p_migration             : (TEXT) The migration name
 
+The function returns the number of completed migration, i.e. 1 in most cases.
+
 ## Objects registration
 
 The `register_tables()` function links a set of tables from a single schema to a migration. It creates a foreign table for each registered table. The tables selection is defined by two regexp filters, one to specify the tables to include, and one to specify the tables to exclude.
