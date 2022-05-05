@@ -50,7 +50,7 @@ The input parameters are:
 
   * p_migration             : (TEXT) The migration linked to the tables
   * p_schema                : (TEXT) The schema which tables have to be registered into the migration
-  * p_tablesToInclude       : (TEXT) The regexp defining the tables to register for the schema
+  * p_tablesToInclude       : (TEXT) The regexp defining the tables to register for the schema  (all tables by default)
   * p_tablesToExclude       : (TEXT) The regexp defining the tables to exclude (NULL to exclude no table)
   * p_sourceSchema          : (TEXT) The schema or user name in the source database (equals p_schema if NULL, which is the default)
   * p_sourceTableNamesFnct  : (TEXT) A function name to use to compute the source table names using the target table names, NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
@@ -131,7 +131,7 @@ The input parameters are:
 
   * p_migration             : (TEXT) The migration linked to the sequences
   * p_schema                : (TEXT) The schema which sequences have to be registered into the migration
-  * p_sequencesToInclude    : (TEXT) The regexp defining the sequences to register for the schema
+  * p_sequencesToInclude    : (TEXT) The regexp defining the sequences to register for the schema (all sequences by default)
   * p_sequencesToExclude    : (TEXT) The regexp defining the sequences to exclude (NULL to exclude no sequence)
   * p_sourceSchema          : (TEXT) The schema or user name in the source database (equals p_schema if NULL, which is the default)
   * p_sourceSequenceNamesFnct : (TEXT) A function name to use to compute the source sequence names using the target sequence names, NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
@@ -182,7 +182,7 @@ The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema which tables have to be assigned to the batch
-  * p_tablesToInclude       : (TEXT) The regexp defining the registered tables to assign for the schema
+  * p_tablesToInclude       : (TEXT) The regexp defining the registered tables to assign for the schema (all tables by default)
   * p_tablesToExclude       : (TEXT) The regexp defining the registered tables to exclude (NULL to exclude no table)
 
 The function returns the number of effectively assigned tables.
@@ -225,7 +225,7 @@ The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema holding the tables
-  * p_tablesToInclude       : (TEXT) The regexp defining the registered tables which check have to be assigned for the schema
+  * p_tablesToInclude       : (TEXT) The regexp defining the registered tables which check have to be assigned for the schema (all tables by default)
   * p_tablesToExclude       : (TEXT) The regexp defining the tables to exclude (NULL to exclude no table)
 
 The function returns the number of effectively assigned table checks.
@@ -246,7 +246,7 @@ The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema holding the sequences
-  * p_sequencesToInclude    : (TEXT) The regexp defining the sequences to assign for the schema
+  * p_sequencesToInclude    : (TEXT) The regexp defining the sequences to assign for the schema (all sequences by default)
   * p_sequencesToExclude    : (TEXT) The regexp defining the sequences to exclude (NULL to exclude no sequence)
 
 The function returns the number of effectively assigned sequences.

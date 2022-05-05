@@ -84,14 +84,14 @@ CREATE FUNCTION tables_renaming_rules(TEXT) RETURNS TEXT LANGUAGE SQL AS
 SELECT register_table('PG''s db', 'myschema1', '^MYTBL4$', NULL, p_sourceTableNamesFnct => 'data2pg03.tables_renaming_rules');
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_table('PG''s db', 'myschema2', 'myTbl3', p_separateCreateIndex => true);
-SELECT register_tables('PG''s db', 'myschema2', '.*', NULL);
-SELECT register_tables('PG''s db', 'phil''s schema3', '.*', NULL,
+SELECT register_tables('PG''s db', 'myschema2', '.*');
+SELECT register_tables('PG''s db', 'phil''s schema3',
        p_ForeignTableOptions => 'OPTIONS(updatable ''false'')', p_createForeignTable => true);
 
 SELECT register_sequences('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_sequence('PG''s db', 'myschema2', 'MYSEQ2', p_sourceSequenceNamesFnct => 'lower');
-SELECT register_sequences('PG''s db', 'myschema2', '.*', NULL);
-SELECT register_sequences('PG''s db', 'phil''s schema3', '.*', NULL);
+SELECT register_sequences('PG''s db', 'myschema2', '.*');
+SELECT register_sequences('PG''s db', 'phil''s schema3');
 
 --
 -- Register the columns transformation rules
@@ -153,13 +153,13 @@ SELECT assign_tables_to_batch('BATCH1', 'myschema1', '.*', NULL);
 --select assign_tables_to_batch('BATCH1', 'myschema1', '.*', '^mytbl2b$');
 SELECT assign_table_to_batch('BATCH1', 'myschema2', 'mytbl2');
 SELECT assign_tables_to_batch('BATCH1', 'myschema2', '.*', '^(mytbl1|mytbl2|myTbl3)$');
-SELECT assign_tables_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
+SELECT assign_tables_to_batch('BATCH1', 'phil''s schema3');
 --select assign_tables_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
 SELECT assign_sequences_to_batch('BATCH1', 'myschema1', '.*', NULL);
 SELECT assign_sequence_to_batch('BATCH1', 'myschema2', 'myseq2');
 SELECT assign_sequences_to_batch('BATCH1', 'myschema2', '.*', '^myseq2$');
-SELECT assign_sequences_to_batch('BATCH1', 'phil''s schema3', '.*', NULL);
+SELECT assign_sequences_to_batch('BATCH1', 'phil''s schema3');
 --select assign_sequences_to_batch('BATCH1', 'myschema4', '.*', NULL);
 
 SELECT assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
@@ -208,7 +208,7 @@ SELECT assign_tables_checks_to_batch('BATCH1', 'myschema2', '.*', NULL);
 SELECT create_batch('CHECK_TABLES', 'PG''s db', 'COPY', false, false);
 SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'myschema1', '.*', NULL);
 SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'myschema2', '.*', NULL);
-SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'phil''s schema3', '.*', NULL);
+SELECT assign_tables_checks_to_batch('CHECK_TABLES', 'phil''s schema3');
 
 --
 -- Assign FK checks

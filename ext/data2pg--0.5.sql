@@ -310,7 +310,7 @@ CREATE FUNCTION create_migration(
     p_extension              TEXT,                    -- The FDW extension name
     p_serverOptions          TEXT,                    -- The options to add when creating the FDW server
     p_userMappingOptions     TEXT,                    -- The FDW user_mapping to use to reach the source database
-    p_userHasPrivileges      BOOLEAN DEFAULT false,   -- A boolean indicating whether the user has DBA priviledges (Oracle specific)
+    p_userHasPrivileges      BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the user has DBA priviledges (Oracle specific)
     p_importSchemaOptions    TEXT DEFAULT NULL        -- Options to add to the IMPORT SCHEMA statement for foreign tables creation
     )
     RETURNS INTEGER LANGUAGE plpgsql
@@ -319,11 +319,23 @@ $create_migration$
 DECLARE
     v_serverName             TEXT;
 BEGIN
--- Check that no input parameter is NULL.
-    IF p_migration IS NULL OR p_sourceDbms IS NULL OR p_extension IS NULL OR p_serverOptions IS NULL OR p_userMappingOptions IS NULL THEN
-        RAISE EXCEPTION 'create_migration: No input parameter may be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'create_migration: the p_migration parameter cannot be NULL.';
     END IF;
--- Check that the migration does not exist yet.
+    IF p_sourceDbms IS NULL THEN
+        RAISE EXCEPTION 'create_migration: the p_sourceDbms parameter cannot be NULL.';
+    END IF;
+    IF p_extension IS NULL THEN
+        RAISE EXCEPTION 'create_migration: the p_extension parameter cannot be NULL.';
+    END IF;
+    IF p_serverOptions IS NULL THEN
+        RAISE EXCEPTION 'create_migration: the p_serverOptions parameter cannot be NULL.';
+    END IF;
+    IF p_userMappingOptions IS NULL THEN
+        RAISE EXCEPTION 'create_migration: the p_userMappingOptions parameter cannot be NULL.';
+    END IF;
+-- Check that the migration does not already exist.
     PERFORM 0
         FROM @extschema@.migration
         WHERE mgr_name = p_migration;
@@ -356,7 +368,7 @@ BEGIN
         '    OPTIONS (%s)',
         current_user, v_serverName, p_userMappingOptions);
 -- Load additional objects depending on the selected DBMS.
-    PERFORM @extschema@.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, p_userHasPrivileges);
+    PERFORM @extschema@.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, coalesce(p_userHasPrivileges, FALSE));
 --
     RETURN 1;
 END;
@@ -369,7 +381,7 @@ CREATE FUNCTION load_dbms_specific_objects(
     p_migration              TEXT,
     p_sourceDbms             TEXT,
     p_serverName             TEXT,
-    p_userHasPrivileges      BOOLEAN DEFAULT false
+    p_userHasPrivileges      BOOLEAN DEFAULT FALSE
     )
     RETURNS VOID LANGUAGE plpgsql AS
 $load_dbms_specific_objects$
@@ -501,6 +513,10 @@ DECLARE
     v_nbForeignTables        INT;
     r_tbl                    RECORD;
 BEGIN
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'drop_migration: the p_migration parameter cannot be NULL.';
+    END IF;
 -- Check that the migration exists and get its characteristics.
     SELECT mgr_server_name INTO v_serverName
         FROM @extschema@.migration
@@ -615,9 +631,15 @@ DECLARE
     v_dbms                   TEXT;
     v_firstBatch             TEXT;
 BEGIN
--- Check that no input parameter is NULL.
-    IF p_batchName IS NULL OR p_migration IS NULL OR p_batchType IS NULL THEN
-        RAISE EXCEPTION 'create_batch: None of the first 3 input parameters can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'create_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'create_batch: the p_migration parameter cannot be NULL.';
+    END IF;
+    IF p_batchType IS NULL THEN
+        RAISE EXCEPTION 'create_batch: the p_batchType parameter cannot be NULL.';
     END IF;
 -- Check that the batch does not exist yet.
     PERFORM 0
@@ -675,6 +697,10 @@ $drop_batch$
 DECLARE
     v_nbStep                 INT;
 BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'drop_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
 -- Delete rows from the step table.
     DELETE FROM @extschema@.step
         WHERE stp_batch_name = p_batchName;
@@ -698,8 +724,10 @@ $drop_batch$;
 CREATE FUNCTION register_tables(
     p_migration              TEXT,               -- The migration linked to the tables
     p_schema                 TEXT,               -- The schema which tables have to be registered into the migration
-    p_tablesToInclude        TEXT,               -- Regexp defining the tables to register for the schema
-    p_tablesToExclude        TEXT,               -- Regexp defining the tables to exclude (NULL to exclude no table)
+    p_tablesToInclude        TEXT                -- Regexp defining the tables to register for the schema (all tables by default)
+                             DEFAULT '.*',
+    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL to exclude no table)
+                             DEFAULT NULL,
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL,
     p_sourceTableNamesFnct   TEXT                -- A function name to use to compute the source table name using the target table name
@@ -751,9 +779,15 @@ DECLARE
     r_tbl                    RECORD;
     r_col                    RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_migration IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
-        RAISE EXCEPTION 'register_tables: None of the first 3 input parameters can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'register_tables: the p_migration parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_tables: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_tablesToInclude IS NULL THEN
+        RAISE EXCEPTION 'register_tables: the p_tablesToInclude parameter cannot be NULL.';
     END IF;
 -- Check the supplied migration and get its server name and source DBMS.
     SELECT p_serverName, p_sourceDbms, coalesce('OPTIONS (' || p_importSchemaOptions || ')', '')
@@ -1086,9 +1120,18 @@ $register_column_transform_rule$
 DECLARE
     v_migrationName          TEXT;
 BEGIN
--- Check that no parameter is not NULL.
-    IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL OR p_expression IS NULL THEN
-        RAISE EXCEPTION 'register_column_transform_rule: None of the input parameters can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_column_transform_rule: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'register_column_transform_rule: the p_table parameter cannot be NULL.';
+    END IF;
+    IF p_column IS NULL THEN
+        RAISE EXCEPTION 'register_column_transform_rule: the p_column parameter cannot be NULL.';
+    END IF;
+    IF p_expression IS NULL THEN
+        RAISE EXCEPTION 'register_column_transform_rule: the p_expression parameter cannot be NULL.';
     END IF;
 -- Check that the table is already registered and get its migration name.
     SELECT tbl_migration INTO v_migrationName
@@ -1142,8 +1185,14 @@ DECLARE
     v_sortRank               INT;
 BEGIN
 -- Check that no required parameter is NULL.
-    IF p_schema IS NULL OR p_table IS NULL OR p_column IS NULL THEN
-        RAISE EXCEPTION 'register_column_comparison_rule: None of the 3 first input parameters can be NULL.';
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: the p_table parameter cannot be NULL.';
+    END IF;
+    IF p_column IS NULL THEN
+        RAISE EXCEPTION 'register_column_comparison_rule: the p_column parameter cannot be NULL.';
     END IF;
 -- Check that the source expression is not NULL when the destination expression is also NOT NULL.
     IF p_sourceExpression IS NULL AND p_targetExpression IS NOT NULL THEN
@@ -1200,9 +1249,15 @@ $register_table_part$
 DECLARE
     v_migrationName          TEXT;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_schema IS NULL OR p_table IS NULL OR p_partId IS NULL THEN
-        RAISE EXCEPTION 'register_table_part: None of the first 3 input parameters can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_table_part: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'register_table_part: the p_table parameter cannot be NULL.';
+    END IF;
+    IF p_partId IS NULL THEN
+        RAISE EXCEPTION 'register_table_part: the p_partId parameter cannot be NULL.';
     END IF;
 -- Check that the table is already registered and get its migration name.
     SELECT tbl_migration INTO v_migrationName
@@ -1246,8 +1301,10 @@ $register_table_part$;
 CREATE FUNCTION register_sequences(
     p_migration              TEXT,               -- The migration linked to the sequences
     p_schema                 TEXT,               -- The schema which sequences have to be registered to the migration
-    p_sequencesToInclude     TEXT,               -- Regexp defining the sequences to register for the schema
-    p_sequencesToExclude     TEXT,               -- Regexp defining the sequences to exclude (NULL to exclude no sequence)
+    p_sequencesToInclude     TEXT                -- Regexp defining the sequences to register for the schema (all sequences by default)
+                             DEFAULT '.*',
+    p_sequencesToExclude     TEXT                -- Regexp defining the sequences to exclude (NULL to exclude no sequence)
+                             DEFAULT NULL,
     p_sourceSchema           TEXT                -- The schema or user name in the source database (equals p_schema if NULL)
                              DEFAULT NULL,
     p_sourceSequenceNamesFnct TEXT               -- The sequence name transfomation function in the source database.
@@ -1267,9 +1324,15 @@ DECLARE
     v_prevMigration          TEXT;
     r_seq                    RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_migration IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
-        RAISE EXCEPTION 'register_sequences: The first 3 input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'register_sequences: the p_migration parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_sequences: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_sequencesToInclude IS NULL THEN
+        RAISE EXCEPTION 'register_sequences: the p_sequencesToInclude parameter cannot be NULL.';
     END IF;
 -- Check the supplied migration and get its server name and source DBMS.
     SELECT p_serverName, p_sourceDbms INTO v_serverName, v_sourceDbms FROM @extschema@.check_migration(p_migration);
@@ -1382,8 +1445,10 @@ $register_sequence$;
 CREATE FUNCTION assign_tables_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
-    p_tablesToInclude        TEXT,               -- Regexp defining the tables to assign for the schema
-    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL to exclude no table)
+    p_tablesToInclude        TEXT                -- Regexp defining the tables to assign for the schema (all tables by default)
+                             DEFAULT '.*',
+    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL by default to exclude no table)
+                             DEFAULT NULL
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned tables
 $assign_tables_to_batch$
@@ -1394,9 +1459,15 @@ DECLARE
     v_prevBatchName          TEXT;
     r_tbl                    RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
-        RAISE EXCEPTION 'assign_tables_to_batch: The first 3 input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_tablesToInclude IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_to_batch: the p_tablesToInclude parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its migration name and set the migration as in-progress.
     SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1495,9 +1566,18 @@ DECLARE
     v_kbytes                 FLOAT;
     v_prevBatchName          TEXT;
 BEGIN
--- Check that all parameter are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_partId IS NULL THEN
-        RAISE EXCEPTION 'assign_table_part_to_batch: No input parameter can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_table_part_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_table_part_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_table_part_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+    IF p_partId IS NULL THEN
+        RAISE EXCEPTION 'assign_table_part_to_batch: the p_partId parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its type and set its migration as in-progress.
     SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1579,9 +1659,18 @@ DECLARE
     v_kbytes                 FLOAT;
     v_prevBatchName          TEXT;
 BEGIN
--- Check that all parameter are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL OR p_object IS NULL THEN
-        RAISE EXCEPTION 'assign_index_to_batch: No input parameter can be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_index_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_index_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_index_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+    IF p_object IS NULL THEN
+        RAISE EXCEPTION 'assign_index_to_batch: the p_object parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its type and set its migration as in-progress.
     SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1630,8 +1719,10 @@ $assign_index_to_batch$;
 CREATE FUNCTION assign_tables_checks_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema which tables have to be assigned to the batch
-    p_tablesToInclude        TEXT,               -- Regexp defining the tables to assign for the schema
-    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL to exclude no table)
+    p_tablesToInclude        TEXT                -- Regexp defining the tables to assign for the schema (all tables by default)
+                             DEFAULT '.*',
+    p_tablesToExclude        TEXT                -- Regexp defining the tables to exclude (NULL by default to exclude no table)
+                             DEFAULT NULL
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table checks
 $assign_tables_checks_to_batch$
@@ -1642,9 +1733,15 @@ DECLARE
     v_prevBatchName          TEXT;
     r_tbl                    RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_tablesToInclude IS NULL THEN
-        RAISE EXCEPTION 'assign_tables_checks_to_batch: The first 3 input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_tablesToInclude IS NULL THEN
+        RAISE EXCEPTION 'assign_tables_checks_to_batch: the p_tablesToInclude parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its migration name and set the migration as in-progress.
     SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1687,8 +1784,10 @@ $assign_table_to_batch$;
 CREATE FUNCTION assign_sequences_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema which sequences have to be assigned to the batch
-    p_sequencesToInclude     TEXT,               -- Regexp defining the sequences to assign for the schema
-    p_sequencesToExclude     TEXT                -- Regexp defining the sequences to exclude (NULL to exclude no sequence)
+    p_sequencesToInclude     TEXT                -- Regexp defining the sequences to assign for the schema ('.*' by default to select all sequences)
+                             DEFAULT '.*',
+    p_sequencesToExclude     TEXT                -- Regexp defining the sequences to exclude (NULL by default to exclude no sequence)
+                             DEFAULT NULL
     )
     RETURNS INT LANGUAGE plpgsql AS              -- returns the number of effectively assigned sequences
 $assign_sequences_to_batch$
@@ -1699,9 +1798,15 @@ DECLARE
     v_prevBatchName          TEXT;
     r_seq                    RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_sequencesToInclude IS NULL THEN
-        RAISE EXCEPTION 'assign_sequences_to_batch: The first 3 input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_sequences_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_sequences_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_sequencesToInclude IS NULL THEN
+        RAISE EXCEPTION 'assign_sequences_to_batch: the p_sequencesToInclude parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its migration name and set the migration as in-progress.
     SELECT p_migrationName, p_batchType INTO v_migrationName, v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1778,9 +1883,15 @@ DECLARE
     v_cost                   BIGINT;
     r_fk                     RECORD;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_schema IS NULL OR p_table IS NULL THEN
-        RAISE EXCEPTION 'assign_fkey_checks_to_batch: The first 3 input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_fkey_checks_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_fkey_checks_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_fkey_checks_to_batch: the p_table parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists and set its migration as in-progress.
     SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
@@ -1876,9 +1987,15 @@ DECLARE
     v_fctPrototype           TEXT;
     v_fctReturn              TEXT;
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_stepName IS NULL OR p_function IS NULL THEN
-        RAISE EXCEPTION 'assign_custom_step_to_batch: The first 3 input parameters can''t be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_stepName IS NULL THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: the p_stepName parameter cannot be NULL.';
+    END IF;
+    IF p_function IS NULL THEN
+        RAISE EXCEPTION 'assign_custom_step_to_batch: the p_function parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists, get its migration name and set the migration as in-progress.
     PERFORM 0 FROM @extschema@.check_batch(p_batchName);
@@ -1915,9 +2032,15 @@ CREATE FUNCTION add_step_parent(
     RETURNS INT LANGUAGE plpgsql AS               -- returns the number of effectively assigned parents, ie. 1
 $add_step_parent$
 BEGIN
--- Check that the first 3 parameters are not NULL.
-    IF p_batchName IS NULL OR p_step IS NULL OR p_parent_step IS NULL THEN
-        RAISE EXCEPTION 'add_step_parent: The input parameters cannot be NULL.';
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'add_step_parent: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_step IS NULL THEN
+        RAISE EXCEPTION 'add_step_parent: the p_step parameter cannot be NULL.';
+    END IF;
+    IF p_parent_step IS NULL THEN
+        RAISE EXCEPTION 'add_step_parent: the p_parent_step parameter cannot be NULL.';
     END IF;
 -- Check that the batch exists and set the migration as in-progress.
     PERFORM @extschema@.check_batch(p_batchName);
@@ -1968,6 +2091,10 @@ DECLARE
     r_function               RECORD;
     r_step                   RECORD;
 BEGIN
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'complete_migration_configuration: the p_migration parameter cannot be NULL.';
+    END IF;
 -- Check that the migration exist and set it config_completed flag as true.
     UPDATE @extschema@.migration
         SET mgr_config_completed = TRUE
