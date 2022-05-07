@@ -1691,7 +1691,7 @@ BEGIN
         RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% has not been set as to be created by a separate step.',
                         p_object, p_schema, p_table;
     END IF;
--- Warn if the index has been already assigned to another batch.
+-- Warn if the index has been already assigned to a batch.
     SELECT stp_batch_name INTO v_prevBatchName
         FROM @extschema@.step
              JOIN @extschema@.batch ON (bat_name = stp_batch_name)
