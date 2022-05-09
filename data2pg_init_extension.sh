@@ -106,6 +106,21 @@ echo "--------------------------------------------------------"
 psql -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
 \set ON_ERROR_STOP ON
 
+-- If the extension is already installed, drop the existing migrations, if any, to avoid to generate orphan srcdb_XXX schemas.
+SET search_path = :'data2pg_schema';
+DO LANGUAGE plpgsql
+\$do\$
+  BEGIN
+    BEGIN
+        PERFORM drop_migration(mgr_name) FROM migration;
+    EXCEPTION
+        WHEN OTHERS THEN  -- continue
+    END;
+    RETURN;
+  END;
+\$do\$;
+RESET search_path;
+
 DROP EXTENSION IF EXISTS :data2pg_schema CASCADE;
 DROP SCHEMA IF EXISTS :data2pg_schema CASCADE;
 
