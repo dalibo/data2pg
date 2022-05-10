@@ -1562,6 +1562,7 @@ CREATE FUNCTION assign_table_part_to_batch(
 $assign_table_part_to_batch$
 DECLARE
     v_batchType              TEXT;
+    v_condition              TEXT;
     v_rows                   BIGINT;
     v_kbytes                 FLOAT;
     v_prevBatchName          TEXT;
@@ -1586,7 +1587,7 @@ BEGIN
         RAISE EXCEPTION 'assign_table_part_to_batch: a table part cannot be assigned to a batch of type %.', v_batchType;
     END IF;
 -- Check that the table part has been registered and get the table statistics.
-    SELECT tbl_rows, tbl_kbytes INTO v_rows, v_kbytes
+    SELECT prt_condition, tbl_rows, tbl_kbytes INTO v_condition, v_rows, v_kbytes
         FROM @extschema@.table_part
              JOIN @extschema@.table_to_process ON (tbl_schema = prt_schema AND tbl_name = prt_table)
         WHERE prt_schema = p_schema AND prt_table = p_table AND prt_part_id = p_partId;
@@ -1626,22 +1627,62 @@ BEGIN
             END IF;
         END IF;
     END IF;
--- Record the table part into the step table.
-    INSERT INTO @extschema@.step (
-            stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
-            stp_sql_function, stp_cost
-        ) VALUES (
-            p_schema || '.' || p_table || '.' || p_partId, p_batchName, 'TABLE_PART', p_schema, p_table, p_partId,
-            CASE v_batchType
-                WHEN 'COPY' THEN '_copy_table'
-                WHEN 'COMPARE' THEN '_compare_table'
-            END,
-            v_kbytes
-        );
---
-    RETURN 1;
+-- Record the table part into the step table, except for COMPARE batch type when there is no row to process.
+    IF v_batchType = 'COMPARE' AND v_condition IS NULL THEN
+        RAISE NOTICE 'assign_table_part_to_batch: The table part %.%.% is ignored for this batch type (no row to process).',
+                        p_schema, p_table, p_partId;
+        RETURN 0;
+    ELSE
+        INSERT INTO @extschema@.step (
+                stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
+                stp_sql_function, stp_cost
+            ) VALUES (
+                p_schema || '.' || p_table || '.' || p_partId, p_batchName, 'TABLE_PART', p_schema, p_table, p_partId,
+                CASE v_batchType
+                    WHEN 'COPY' THEN '_copy_table'
+                    WHEN 'COMPARE' THEN '_compare_table'
+                END,
+                v_kbytes
+            );
+        RETURN 1;
+    END IF;
 END;
 $assign_table_part_to_batch$;
+
+-- The assign_table_parts_to_batch() function assigns all parts of a table to a batch.
+-- It calls to assign_table_part_to_batch() for each registered partition of the table.
+CREATE FUNCTION assign_table_parts_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema name of the related table
+    p_table                  TEXT                -- The table name
+    )
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table part
+$assign_table_parts_to_batch$
+DECLARE
+    v_nbPart                 INTEGER;
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_table_parts_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_table_parts_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_table_parts_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+-- Other checks are performed by the called assign_table_part_to_batch() function.
+    SELECT sum(@extschema@.assign_table_part_to_batch(p_batchName, p_schema, p_table, prt_part_id)) INTO v_nbPart
+        FROM @extschema@.table_part
+        WHERE prt_schema = p_schema AND prt_table = p_table;
+-- Check that at least 1 table part has been found.
+    IF v_nbPart IS NULL THEN
+        RAISE EXCEPTION 'assign_table_parts_to_batch: no table part has been found for %.%.', p_schema, p_table;
+    END IF;
+--
+    RETURN v_nbPart;
+END;
+$assign_table_parts_to_batch$;
 
 -- The assign_index_to_batch() function assigns an index re-creation to a batch. At table registration time, the flag p_separateCreateIndex
 -- must have been set to TRUE.
@@ -3532,7 +3573,7 @@ BEGIN
             FROM @extschema@.table_part
             WHERE prt_schema = v_schema AND prt_table = v_table AND prt_part_id = v_partId;
         IF v_partCondition IS NULL THEN
-            RAISE WARNING '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
+            RAISE EXCEPTION '_compare_table: A table part cannot be compared without a condition. This step % should not have been assigned to this batch.', p_step;
         END IF;
     END IF;
 -- Analyze the step options.

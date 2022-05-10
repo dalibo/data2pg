@@ -243,13 +243,13 @@ SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', '3');
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', '4');
 SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 'post');
 
-SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'myTbl3', '1');
-SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'myTbl3', '2');
+SELECT assign_table_parts_to_batch(
+    p_batchName                => 'BATCH1',
+    p_schema                   => 'myschema2',
+    p_table                    => 'myTbl3'
+);
 
-SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '1');
-SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '2');
-SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '3');
-SELECT assign_table_part_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '4');
+SELECT assign_table_parts_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1');
 
 --
 -- Assign the index creations

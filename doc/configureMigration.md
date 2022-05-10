@@ -210,6 +210,16 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts, i.e. 1.
 
+The `assign_table_parts_to_batch()` function assigns all tables parts of a given table to a batch.
+
+The input parameters are:
+
+  * p_batchName             : (TEXT) The batch name
+  * p_schema                : (TEXT) The schema holding the table
+  * p_table                 : (TEXT) The table name
+
+The function returns the number of effectively assigned table parts.
+
 The `assign_index_to_batch()` function assigns an index re-creation to a batch. At table registration time, the flag *p_separateCreateIndex* must have been set to TRUE.
 
 The input parameters are:
