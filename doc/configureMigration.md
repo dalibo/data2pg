@@ -59,7 +59,6 @@ The input parameters are:
   * p_sourceTableStatLoc    : (TEXT) The data2pg table that contains statistics about these target tables (source_table_stat by default, built by the *create_migration()* function)
   * p_createForeignTable    : (BOOLEAN) A boolean indicating whether the FOREIGN TABLE have to be created (TRUE by default; if FALSE, an external operation must create them before launching a scheduler run)
   * p_ForeignTableOptions   : (TEXT) A specific directive to apply to the created foreign tables (none by default; it will be appended as is to an ALTER FOREIGN TABLE statement; it may be "OTPIONS (<key> 'value', ...)" for options at table level, or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-  * p_separateCreateIndex   : (BOOLEAN) A boolean indicating whether the indexes of these tables have to be created by separate steps to speed-up index rebuild for large tables with a lof of indexes (FALSE by default)
   * p_sortByPKey            : (BOOLEAN) A boolean indicating whether the source data must be sorted on PKey at migration time (FALSE by default; they are sorted anyway if a clustered index exists)
 
 The function returns the number of effectively assigned tables.
@@ -76,7 +75,6 @@ The input parameters are:
   * p_sourceTableStatLoc    : (TEXT) The data2pg table that contains statistics about these target tables (source_table_stat by default, built by the *create_migration()* function)
   * p_createForeignTable    : (BOOLEAN) A boolean indicating whether the FOREIGN TABLE have to be created (TRUE by default; if FALSE, an external operation must create them before launching a scheduler run)
   * p_ForeignTableOptions   : (TEXT) A specific directive to apply to the created foreign tables (none by default; it will be appended as is to an ALTER FOREIGN TABLE statement; it may be "OTPIONS (<key> 'value', ...)" for options at table level, or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-  * p_separateCreateIndex   : (BOOLEAN) A boolean indicating whether the indexes of these tables have to be created by separate steps to speed-up index rebuild for large tables with a lof of indexes (FALSE by default)
   * p_sortByPKey            : (BOOLEAN) A boolean indicating whether the source data must be sorted on PKey at migration time (FALSE by default; they are sorted anyway if a clustered index exists)
 
 The function returns the number of effectively assigned tables, I.e. 1.
@@ -222,7 +220,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts.
 
-The `assign_index_to_batch()` function assigns an index re-creation to a batch. At table registration time, the flag *p_separateCreateIndex* must have been set to TRUE.
+The `assign_index_to_batch()` function assigns an index re-creation to a batch. This may speed up the index recreation of large tables having several indexes.
 
 The input parameters are:
 
@@ -232,6 +230,8 @@ The input parameters are:
   * p_object                : (TEXT) The index or constraint to assign
 
 The function returns the number of effectively assigned indexes, i.e. 1.
+
+The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
 
 The `assign_tables_checks_to_batch()` function assigns a set of table checks of a single schema to a batch. Two regexps filter tables already registered to a migration to include and exclude to the batch.
 

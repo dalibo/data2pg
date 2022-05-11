@@ -149,7 +149,6 @@ CREATE TABLE table_index (
                                CHECK (tic_type IN ('I', 'Cp', 'Cu', 'Cx')),
     tic_definition             TEXT NOT NULL,           -- The index or constraint definition
     tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
-    tic_separate_creation_step BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the index has to be created by a separate step
     tic_last_drop_ts           TIMESTAMPTZ,             -- The timestamp of the latest drop of this index or constraint
     tic_last_create_ts         TIMESTAMPTZ,             -- The timestamp of the latest re-creation of this index or constraint
     tic_last_create_duration   INTERVAL,                -- The last recreation duration
@@ -740,8 +739,6 @@ CREATE FUNCTION register_tables(
                              DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
                                                  --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
                                                  --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-    p_separateCreateIndex    BOOLEAN             -- Boolean indicating whether the indexes of these tables have to be created by
-                             DEFAULT FALSE,      --   separate steps (to speed-up index rebuild for large tables with a lof of indexes)
     p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
                              DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
     )
@@ -1051,14 +1048,6 @@ BEGIN
                      JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
                 WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
             ON CONFLICT DO NOTHING;
--- For dropable indexes/constraints, set the tic_separate_creation_step to TRUE if requested.
-        IF p_separateCreateIndex THEN
-            UPDATE @extschema@.table_index
-                SET tic_separate_creation_step = TRUE
-                WHERE tic_schema = p_schema
-                  AND tic_table = r_tbl.relname
-                  AND tic_drop_for_copy;
-        END IF;
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
 --    This will let the optimizer choose a proper plan for the _compare_table() function, without the cost of an ANALYZE.
         IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
@@ -1090,8 +1079,6 @@ CREATE FUNCTION register_table(
                              DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
                                                  --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
                                                  --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-    p_separateCreateIndex    BOOLEAN             -- Boolean indicating whether the indexes of these tables have to be created by
-                             DEFAULT FALSE,      --   separate steps (to speed-up index rebuild for large tables with a lof of indexes)
     p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
                              DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
     )
@@ -1099,7 +1086,7 @@ CREATE FUNCTION register_table(
     AS
 $register_table$
     SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableNamesFnct,
-                                       p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_separateCreateIndex, p_sortByPKey);
+                                       p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_sortByPKey);
 $register_table$;
 
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
@@ -1691,8 +1678,9 @@ BEGIN
 END;
 $assign_table_parts_to_batch$;
 
--- The assign_index_to_batch() function assigns an index re-creation to a batch. At table registration time, the flag p_separateCreateIndex
--- must have been set to TRUE.
+-- The assign_index_to_batch() function assigns an index re-creation to a batch.
+-- This speeds up the processing of large tables by parallelizing the index creation phase when there are several indexes to rebuild.
+-- The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
 CREATE FUNCTION assign_index_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
@@ -1703,7 +1691,6 @@ CREATE FUNCTION assign_index_to_batch(
 $assign_index_to_batch$
 DECLARE
     v_batchType              TEXT;
-    v_separateCreateIndex    BOOLEAN;
     v_kbytes                 FLOAT;
     v_prevBatchName          TEXT;
 BEGIN
@@ -1727,16 +1714,12 @@ BEGIN
         RAISE EXCEPTION 'assign_index_to_batch: an index creation cannot be assigned to a batch of type %.', v_batchType;
     END IF;
 -- Check that the index belongs to a registered table and has been set as to be created in a separate step and get the table statistics.
-    SELECT tic_separate_creation_step, tbl_kbytes INTO v_separateCreateIndex, v_kbytes
+    SELECT tbl_kbytes INTO v_kbytes
         FROM @extschema@.table_index
              JOIN @extschema@.table_to_process ON (tbl_schema = tic_schema AND tbl_name = tic_table)
         WHERE tic_schema = p_schema AND tic_table = p_table AND tic_object = p_object;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% is not known or the table is not registered.',
-                        p_object, p_schema, p_table;
-    END IF;
-    IF NOT v_separateCreateIndex THEN
-        RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% has not been set as to be created by a separate step.',
                         p_object, p_schema, p_table;
     END IF;
 -- Warn if the index has been already assigned to a batch.
@@ -2211,19 +2194,19 @@ BEGIN
     END IF;
 -- Check that tables having separetely created indexes have also separate first and last parts to enclose the indexes creation.
     FOR r_tbl IN
-        SELECT tic_schema, tic_table
+        SELECT stp_schema, stp_object
             FROM (
-                SELECT tic_schema, tic_table, count(prt_part_id) AS nb_part
-                    FROM @extschema@.table_index
-                         JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
-                         LEFT OUTER JOIN @extschema@.table_part ON (tic_schema = prt_schema AND tic_table = prt_table)
-                    WHERE tic_separate_creation_step
+                SELECT stp_schema, stp_object, count(prt_part_id) AS nb_part
+                    FROM @extschema@.step
+                         JOIN @extschema@.table_to_process ON (stp_schema = tbl_schema AND stp_object = tbl_name)
+                         LEFT OUTER JOIN @extschema@.table_part ON (stp_schema = prt_schema AND stp_object = prt_table)
+                    WHERE stp_type = 'INDEX'
                       AND tbl_migration = p_migration
                     GROUP BY 1,2
                  ) AS t
             WHERE nb_part < 2
     LOOP
-        RAISE EXCEPTION 'complete_migration_configuration: The table %.% has separately created indexes but no table parts have been registered.', r_tbl.tic_schema, r_tbl.tic_table;
+        RAISE EXCEPTION 'complete_migration_configuration: The table %.% has separately created indexes but no table parts have been registered.', r_tbl.stp_schema, r_tbl.stp_object;
     END LOOP;
 -- Check that all functions referenced in the step table for the migration exist and will be callable by the scheduler.
     FOR r_function IN
@@ -2913,7 +2896,6 @@ DECLARE
     v_nbRows                   BIGINT = 0;
     v_nbDroppedIndex           SMALLINT = 0;
     v_nbCreatedIndex           SMALLINT = 0;
-    v_nbMissingIndex           SMALLINT = 0;
     r_obj                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -3043,7 +3025,7 @@ BEGIN
     IF v_isLastStep THEN
 -- Recreate the constraints that have been previously dropped.
         FOR r_obj IN
-            SELECT tic_object, tic_type, tic_definition, tic_separate_creation_step
+            SELECT tic_object, tic_type, tic_definition
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
@@ -3060,12 +3042,6 @@ BEGIN
             IF NOT FOUND THEN
 -- The index related to the constraint does not exist (this is the usual case), so just recreate the constraint with the common syntax.
                 v_nbCreatedIndex = v_nbCreatedIndex + 1;
-                IF r_obj.tic_separate_creation_step THEN
--- The index related to the constraint should have been recreated. This is probably an error in the migration conofiguration.
-                    v_nbMissingIndex = v_nbMissingIndex + 1;
-                    RAISE WARNING '_copy_table: For the constraint %.%.%, the index should have been already recreated. Some steps are probably missing in the batch. However, recrete the constraint.',
-                        v_schema, v_table, r_obj.tic_object;
-                END IF;
 -- Record the recreation start timestamp.
                 UPDATE @extschema@.table_index
                     SET tic_last_create_ts = clock_timestamp()
@@ -3098,7 +3074,7 @@ BEGIN
         END LOOP;
 -- Recreate the indexes that have been previously dropped and that have not been recreated by a separate step.
         FOR r_obj IN
-            SELECT tic_object, tic_definition, tic_separate_creation_step
+            SELECT tic_object, tic_definition
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
@@ -3114,12 +3090,6 @@ BEGIN
                   AND relname = r_obj.tic_object;
             IF NOT FOUND THEN
                 v_nbCreatedIndex = v_nbCreatedIndex + 1;
-                IF r_obj.tic_separate_creation_step THEN
--- The index should have been recreated. This is probably an error in the migration conofiguration.
-                    v_nbMissingIndex = v_nbMissingIndex + 1;
-                    RAISE WARNING '_copy_table: The index %.%.% should have been already recreated. Some steps are probably missing in the batch. However, recreate it.',
-                        v_schema, v_table, r_obj.tic_object;
-                END IF;
 -- Record the recreation start timestamp.
                 UPDATE @extschema@.table_index
                     SET tic_last_create_ts = clock_timestamp()
@@ -3169,13 +3139,6 @@ BEGIN
         r_output.sr_indicator = 'RECREATED_INDEXES';
         r_output.sr_value = v_nbCreatedIndex;
         r_output.sr_rank = 13;
-        r_output.sr_is_main_indicator = FALSE;
-        RETURN NEXT r_output;
-    END IF;
-    IF v_nbMissingIndex > 0 THEN
-        r_output.sr_indicator = 'MISSING_INDEXES';
-        r_output.sr_value = v_nbMissingIndex;
-        r_output.sr_rank = 14;
         r_output.sr_is_main_indicator = FALSE;
         RETURN NEXT r_output;
     END IF;
@@ -3293,12 +3256,11 @@ DECLARE
     v_index                    TEXT;
     v_type                     TEXT;
     v_definition               TEXT;
-    v_separateCreationStep     BOOLEAN;
     r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the identity of the index/constraint.
-    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition, tic_separate_creation_step
-        INTO v_schema, v_table, v_index, v_type, v_definition, v_separateCreationStep
+    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition
+        INTO v_schema, v_table, v_index, v_type, v_definition
         FROM @extschema@.step
              JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_object = stp_sub_object)
         WHERE stp_batch_name = p_batchName
@@ -3306,9 +3268,15 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION '_create_index: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Check that the requested index/constraint creation is valid.
-    IF NOT v_separateCreationStep THEN
-        RAISE EXCEPTION '_create_index: internal error (the index %.% is not marked as to be created by a separate step).', v_schema, v_index;
+-- Check that the requested index does not exist.
+    PERFORM 0
+        FROM pg_catalog.pg_class
+             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
+        WHERE relkind = 'i'
+          AND nspname = v_schema
+          AND relname = v_index;
+    IF FOUND THEN
+        RAISE EXCEPTION '_create_index: the index %.% already exists.', v_schema, v_index;
     END IF;
 -- Record the recreation start timestamp.
     UPDATE @extschema@.table_index

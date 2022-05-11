@@ -88,7 +88,6 @@ SELECT register_tables(
     p_sourceTableStatLoc       => 'source_table_stat',                -- Default
     p_createForeignTable       => TRUE,                               -- Default
     p_ForeignTableOptions      => NULL,                               -- Default
-    p_separateCreateIndex      => FALSE,                              -- Default
     p_sortByPKey               => FALSE                               -- Default
 );
 SELECT register_table(
@@ -100,7 +99,6 @@ SELECT register_table(
     p_sourceTableStatLoc       => 'source_table_stat',                -- Default
     p_createForeignTable       => TRUE,                               -- Default
     p_ForeignTableOptions      => NULL,                               -- Default
-    p_separateCreateIndex      => TRUE,
     p_sortByPKey               => FALSE                               -- Default
 );
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
@@ -259,10 +257,11 @@ SELECT assign_table_parts_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '.*', '
 
 SELECT assign_index_to_batch(
     p_batchName                => 'BATCH1',
-    p_schema                   => tic_schema,
-    p_table                    => tic_table,
-    p_object                   => tic_object
-) FROM table_index WHERE tic_separate_creation_step;
+    p_schema                   => 'myschema2',
+    p_table                    => 'myTbl3',
+    p_object                   => 'myTbl3_pkey'
+);
+SELECT assign_index_to_batch('BATCH1', 'myschema2', 'myTbl3', 'myidx3');
 
 --
 -- Assign table checks
