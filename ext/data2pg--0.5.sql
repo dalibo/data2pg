@@ -1649,12 +1649,16 @@ BEGIN
 END;
 $assign_table_part_to_batch$;
 
--- The assign_table_parts_to_batch() function assigns all parts of a table to a batch.
+-- The assign_table_parts_to_batch() function assigns all or a set of parts of a table to a batch.
 -- It calls to assign_table_part_to_batch() for each registered partition of the table.
 CREATE FUNCTION assign_table_parts_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
-    p_table                  TEXT                -- The table name
+    p_table                  TEXT,               -- The table name
+    p_partsToInclude         TEXT                -- Regexp defining the table part ids to assign for the table (all parts by default)
+                             DEFAULT '.*',
+    p_partsToExclude         TEXT                -- Regexp defining the table part ids to exclude (NULL to exclude no part)
+                             DEFAULT NULL
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned table part
 $assign_table_parts_to_batch$
@@ -1674,7 +1678,10 @@ BEGIN
 -- Other checks are performed by the called assign_table_part_to_batch() function.
     SELECT sum(@extschema@.assign_table_part_to_batch(p_batchName, p_schema, p_table, prt_part_id)) INTO v_nbPart
         FROM @extschema@.table_part
-        WHERE prt_schema = p_schema AND prt_table = p_table;
+        WHERE prt_schema = p_schema
+          AND prt_table = p_table
+          AND prt_part_id ~ coalesce(p_partsToInclude, '.*')
+              AND (p_partsToExclude IS NULL OR prt_part_id !~ p_partsToExclude);
 -- Check that at least 1 table part has been found.
     IF v_nbPart IS NULL THEN
         RAISE EXCEPTION 'assign_table_parts_to_batch: no table part has been found for %.%.', p_schema, p_table;

@@ -246,10 +246,12 @@ SELECT assign_table_part_to_batch('BATCH1', 'myschema2', 'mytbl1', 'post');
 SELECT assign_table_parts_to_batch(
     p_batchName                => 'BATCH1',
     p_schema                   => 'myschema2',
-    p_table                    => 'myTbl3'
+    p_table                    => 'myTbl3',
+    p_partsToInclude           => '.*',
+    p_partsToExclude           => NULL
 );
 
-SELECT assign_table_parts_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1');
+SELECT assign_table_parts_to_batch('COMPARE_ALL', 'myschema2', 'mytbl1', '.*', '^(pre|post)$');
 
 --
 -- Assign the index creations

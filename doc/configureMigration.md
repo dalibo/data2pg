@@ -217,6 +217,8 @@ The input parameters are:
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema holding the table
   * p_table                 : (TEXT) The table name
+  * p_partsToInclude        : (TEXT) The regexp defining the table part ids to assign for the table (all parts by default)
+  * p_partsToExclude        : (TEXT) The regexp defining the table part ids to exclude (by default NULL, to exclude no part)
 
 The function returns the number of effectively assigned table parts.
 
