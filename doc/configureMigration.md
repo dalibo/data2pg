@@ -197,18 +197,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned tables, i.e. 1.
 
-The `assign_table_part_to_batch()` function assigns a table's part to a batch.
-
-The input parameters are:
-
-  * p_batchName             : (TEXT) The batch name
-  * p_schema                : (TEXT) The schema holding the table
-  * p_table                 : (TEXT) The table name
-  * p_partId                : (TEXT) The part id to assign to the batch
-
-The function returns the number of effectively assigned table parts, i.e. 1.
-
-The `assign_table_parts_to_batch()` function assigns all tables parts of a given table to a batch.
+The `assign_table_parts_to_batch()` function assigns a set of tables parts of a given table to a batch.
 
 The input parameters are:
 
@@ -220,7 +209,30 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts.
 
-The `assign_index_to_batch()` function assigns an index re-creation to a batch. This may speed up the index recreation of large tables having several indexes.
+The `assign_table_part_to_batch()` function assigns a single table's part to a batch.
+
+The input parameters are:
+
+  * p_batchName             : (TEXT) The batch name
+  * p_schema                : (TEXT) The schema holding the table
+  * p_table                 : (TEXT) The table name
+  * p_partId                : (TEXT) The part id to assign to the batch
+
+The function returns the number of effectively assigned table parts, i.e. 1.
+
+The `assign_indexes_to_batch()` function assigns a set of indexes re-creation to a batch. This may speed up the index recreation of large tables having several indexes.
+
+The input parameters are:
+
+  * p_batchName             : (TEXT) The batch name
+  * p_schema                : (TEXT) The schema holding the table
+  * p_table                 : (TEXT) The table name
+  * p_objectsToInclude      : (TEXT) The regexp defining the indexes/constraints to assign for the table (all by default)
+  * p_objectsToExclude      : (TEXT) The regexp defining the indexes/constraints to exclude (by default NULL to exclude no index)
+
+The function returns the number of effectively assigned indexes.
+
+The `assign_index_to_batch()` function assigns a single index re-creation to a batch.
 
 The input parameters are:
 

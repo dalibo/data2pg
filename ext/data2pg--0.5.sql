@@ -1680,6 +1680,88 @@ BEGIN
 END;
 $assign_table_parts_to_batch$;
 
+-- The assign_indexes_to_batch() function assigns a set of index re-creations to a batch for a given table.
+-- This speeds up the processing of large tables by parallelizing the index creation phase when there are several indexes to rebuild.
+-- The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
+CREATE FUNCTION assign_indexes_to_batch(
+    p_batchName              TEXT,               -- Batch identifier
+    p_schema                 TEXT,               -- The schema name of the related table
+    p_table                  TEXT,               -- The table name
+    p_objectsToInclude       TEXT                -- Regexp defining the indexes/constraints to assign for the table (all by default)
+                             DEFAULT '.*',
+    p_objectsToExclude       TEXT                -- Regexp defining the indexes/constraints to exclude (NULL to exclude none)
+                             DEFAULT NULL
+    )
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes
+$assign_indexes_to_batch$
+DECLARE
+    v_batchType              TEXT;
+    v_kbytes                 FLOAT;
+    v_nbIndex                INTEGER = 0;
+    v_prevBatchName          TEXT;
+    r_index                  RECORD;
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_indexes_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_indexes_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_indexes_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+-- Check that the batch exists, get its type and set its migration as in-progress.
+    SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
+-- Check that the batch type allows index creations.
+    IF v_batchType <> 'COPY' THEN
+        RAISE EXCEPTION 'assign_indexes_to_batch: index creations cannot be assigned to a batch of type %.', v_batchType;
+    END IF;
+-- Check that the t&ble is registered and get the table statistics.
+    SELECT tbl_kbytes INTO v_kbytes
+        FROM @extschema@.table_to_process
+        WHERE tbl_schema = p_schema
+          AND tbl_name = p_table;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'assign_indexes_to_batch: The table %.% is unknown or not registered.', p_schema, p_table;
+    END IF;
+-- Process indexes
+    FOR r_index IN
+        SELECT tic_object
+        FROM @extschema@.table_index
+        WHERE tic_schema = p_schema
+          AND tic_table = p_table
+          AND tic_drop_for_copy
+          AND tic_object ~ p_objectsToInclude
+          AND (p_objectsToExclude IS NULL OR tic_object !~ p_objectsToExclude)
+    LOOP
+    -- Warn if the index has been already assigned to a batch.
+        SELECT stp_batch_name INTO v_prevBatchName
+            FROM @extschema@.step
+                 JOIN @extschema@.batch ON (bat_name = stp_batch_name)
+            WHERE stp_name = p_schema || '.' || p_table || '.' || r_index.tic_object
+              AND bat_type = 'COPY';
+        IF FOUND THEN
+            RAISE WARNING 'assign_indexes_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
+                            r_index.tic_object, p_schema, p_table, v_prevBatchName;
+        END IF;
+    -- Record the index creation into the step table, except if already assigned to this batch.
+        IF v_prevBatchName IS NULL OR v_prevBatchName <> p_batchName THEN
+            v_nbIndex = v_nbIndex + 1;
+            INSERT INTO @extschema@.step (
+                    stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
+                    stp_sql_function, stp_cost
+                ) VALUES (
+                    p_schema || '.' || p_table || '.' || r_index.tic_object, p_batchName, 'INDEX', p_schema, p_table, r_index.tic_object,
+                    '_create_index', v_kbytes
+                );
+        END IF;
+    END LOOP;
+--
+    RETURN v_nbIndex;
+END;
+$assign_indexes_to_batch$;
+
 -- The assign_index_to_batch() function assigns an index re-creation to a batch.
 -- This speeds up the processing of large tables by parallelizing the index creation phase when there are several indexes to rebuild.
 -- The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
@@ -1689,12 +1771,10 @@ CREATE FUNCTION assign_index_to_batch(
     p_table                  TEXT,               -- The table name
     p_object                 TEXT                -- The index or constraint to assign
     )
-    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes, ie 1
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes, i.e. 1 in most cases
 $assign_index_to_batch$
 DECLARE
-    v_batchType              TEXT;
-    v_kbytes                 FLOAT;
-    v_prevBatchName          TEXT;
+    v_nbIndex                INTEGER;
 BEGIN
 -- Check that no required parameter is NULL.
     IF p_batchName IS NULL THEN
@@ -1709,41 +1789,15 @@ BEGIN
     IF p_object IS NULL THEN
         RAISE EXCEPTION 'assign_index_to_batch: the p_object parameter cannot be NULL.';
     END IF;
--- Check that the batch exists, get its type and set its migration as in-progress.
-    SELECT p_batchType INTO v_batchType FROM @extschema@.check_batch(p_batchName);
--- Check that the batch type allows index creations.
-    IF v_batchType <> 'COPY' THEN
-        RAISE EXCEPTION 'assign_index_to_batch: an index creation cannot be assigned to a batch of type %.', v_batchType;
-    END IF;
--- Check that the index belongs to a registered table and has been set as to be created in a separate step and get the table statistics.
-    SELECT tbl_kbytes INTO v_kbytes
-        FROM @extschema@.table_index
-             JOIN @extschema@.table_to_process ON (tbl_schema = tic_schema AND tbl_name = tic_table)
-        WHERE tic_schema = p_schema AND tic_table = p_table AND tic_object = p_object;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% is not known or the table is not registered.',
+-- Call the assign_indexes_to_batch() function to effectively perform the task
+    v_nbIndex = @extschema@.assign_indexes_to_batch(p_batchName, p_schema, p_table, '^' || p_object || '$', NULL);
+-- Check that the index has been found and processed.
+    IF v_nbIndex = 0 THEN
+        RAISE EXCEPTION 'assign_index_to_batch: The index % of the table %.% is either unknown, or not to be recreated or already assigned to this batch.',
                         p_object, p_schema, p_table;
     END IF;
--- Warn if the index has been already assigned to a batch.
-    SELECT stp_batch_name INTO v_prevBatchName
-        FROM @extschema@.step
-             JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-        WHERE stp_name = p_schema || '.' || p_table || '.' || p_object
-          AND bat_type = 'COPY';
-    IF FOUND THEN
-        RAISE WARNING 'assign_index_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
-                        p_object, p_schema, p_table, v_prevBatchName;
-    END IF;
--- Record the index creation into the step table.
-    INSERT INTO @extschema@.step (
-            stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
-            stp_sql_function, stp_cost
-        ) VALUES (
-            p_schema || '.' || p_table || '.' || p_object, p_batchName, 'INDEX', p_schema, p_table, p_object,
-            '_create_index', v_kbytes
-        );
 --
-    RETURN 1;
+    RETURN v_nbIndex;
 END;
 $assign_index_to_batch$;
 

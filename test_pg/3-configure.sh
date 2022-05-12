@@ -261,7 +261,13 @@ SELECT assign_index_to_batch(
     p_table                    => 'myTbl3',
     p_object                   => 'myTbl3_pkey'
 );
-SELECT assign_index_to_batch('BATCH1', 'myschema2', 'myTbl3', 'myidx3');
+SELECT assign_indexes_to_batch(
+    p_batchName                => 'BATCH1',
+    p_schema                   => 'myschema2',
+    p_table                    => 'myTbl3',
+    p_objectsToInclude         => '.*',                               -- Default
+    p_objectsToExclude         => NULL                                -- Default
+);
 
 --
 -- Assign table checks
