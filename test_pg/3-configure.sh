@@ -88,7 +88,7 @@ SELECT register_tables(
     p_sourceTableStatLoc       => 'source_table_stat',                -- Default
     p_createForeignTable       => TRUE,                               -- Default
     p_ForeignTableOptions      => NULL,                               -- Default
-    p_sortByPKey               => FALSE                               -- Default
+    p_sortByClusterIdx         => TRUE                                -- Default
 );
 SELECT register_table(
     p_migration                => 'PG''s db',
@@ -99,7 +99,7 @@ SELECT register_table(
     p_sourceTableStatLoc       => 'source_table_stat',                -- Default
     p_createForeignTable       => TRUE,                               -- Default
     p_ForeignTableOptions      => NULL,                               -- Default
-    p_sortByPKey               => FALSE                               -- Default
+    p_sortByClusterIdx         => TRUE                                -- Default
 );
 SELECT register_tables('PG''s db', 'myschema1', '.*', NULL);
 SELECT register_tables('PG''s db', 'myschema2', '.*');

@@ -59,7 +59,7 @@ The input parameters are:
   * p_sourceTableStatLoc    : (TEXT) The data2pg table that contains statistics about these target tables (source_table_stat by default, built by the *create_migration()* function)
   * p_createForeignTable    : (BOOLEAN) A boolean indicating whether the FOREIGN TABLE have to be created (TRUE by default; if FALSE, an external operation must create them before launching a scheduler run)
   * p_ForeignTableOptions   : (TEXT) A specific directive to apply to the created foreign tables (none by default; it will be appended as is to an ALTER FOREIGN TABLE statement; it may be "OTPIONS (<key> 'value', ...)" for options at table level, or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-  * p_sortByPKey            : (BOOLEAN) A boolean indicating whether the source data must be sorted on PKey at migration time (FALSE by default; they are sorted anyway if a clustered index exists)
+  * p_sortByClusterIdx      : (BOOLEAN) A boolean indicating whether the source data must be sorted on the cluster index, if any (TRUE by default)
 
 The function returns the number of effectively assigned tables.
 
@@ -75,7 +75,7 @@ The input parameters are:
   * p_sourceTableStatLoc    : (TEXT) The data2pg table that contains statistics about these target tables (source_table_stat by default, built by the *create_migration()* function)
   * p_createForeignTable    : (BOOLEAN) A boolean indicating whether the FOREIGN TABLE have to be created (TRUE by default; if FALSE, an external operation must create them before launching a scheduler run)
   * p_ForeignTableOptions   : (TEXT) A specific directive to apply to the created foreign tables (none by default; it will be appended as is to an ALTER FOREIGN TABLE statement; it may be "OTPIONS (<key> 'value', ...)" for options at table level, or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-  * p_sortByPKey            : (BOOLEAN) A boolean indicating whether the source data must be sorted on PKey at migration time (FALSE by default; they are sorted anyway if a clustered index exists)
+  * p_sortByClusterIdx      : (BOOLEAN) A boolean indicating whether the source data must be sorted on the cluster index, if any (TRUE by default)
 
 The function returns the number of effectively assigned tables, I.e. 1.
 

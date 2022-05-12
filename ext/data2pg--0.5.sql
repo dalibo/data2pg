@@ -739,8 +739,8 @@ CREATE FUNCTION register_tables(
                              DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
                                                  --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
                                                  --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-    p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
-                             DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
+    p_sortByClusterIdx       BOOLEAN             -- Boolean indicating whether the source data must be sorted on the cluster index, if any
+                             DEFAULT TRUE
     )
     RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively assigned tables
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp  AS
@@ -897,11 +897,13 @@ BEGIN
                 v_foreignSchema, r_tbl.relname, p_ForeignTableOptions);
         END IF;
 -- Get the clustered index columns list, if it exists.
--- This list will be used in an ORDER BY clause of the table copy function.
-        SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
-            FROM pg_catalog.pg_index
-            WHERE indrelid = r_tbl.table_oid
-              AND indisclustered;
+-- This list will be used in an ORDER BY clause of the table copy function, if requested.
+        IF p_sortByClusterIdx THEN
+            SELECT substring(pg_get_indexdef(indexrelid) FROM ' USING .*\((.+)\)') INTO v_copySortOrder
+                FROM pg_catalog.pg_index
+                WHERE indrelid = r_tbl.table_oid
+                  AND indisclustered;
+        END IF;
 -- Are there any columns declared GENERATED ALWAYS AS IDENTITY in the target table?
         IF v_pgVersion < 100000 THEN
             v_anyGenAlwaysIdentCol = FALSE;
@@ -1079,14 +1081,14 @@ CREATE FUNCTION register_table(
                              DEFAULT NULL,       --   (it will be appended as is to an ALTER FOREIGN TABLE statement,
                                                  --    it may be "OTPIONS (<key> 'value', ...)" for options at table level,
                                                  --    or "ALTER COLUMN <column> (ADD OPTIONS <key> 'value', ...), ...' for column level options)
-    p_sortByPKey             BOOLEAN             -- Boolean indicating whether the source data must be sorted on PKey at migration time
-                             DEFAULT FALSE       --   (they are sorted anyway if a clustered index exists)
+    p_sortByClusterIdx       BOOLEAN             -- Boolean indicating whether the source data must be sorted on the cluster index, if any
+                             DEFAULT TRUE
     )
     RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively assigned tables
     AS
 $register_table$
     SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableNamesFnct,
-                                       p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_sortByPKey);
+                                       p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_sortByClusterIdx);
 $register_table$;
 
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
