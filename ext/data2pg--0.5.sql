@@ -1084,11 +1084,24 @@ CREATE FUNCTION register_table(
     p_sortByClusterIdx       BOOLEAN             -- Boolean indicating whether the source data must be sorted on the cluster index, if any
                              DEFAULT TRUE
     )
-    RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively assigned tables
+    RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively assigned tables
     AS
 $register_table$
-    SELECT @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableNamesFnct,
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'register_table: the p_migration parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_table: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'register_table: the p_table parameter cannot be NULL.';
+    END IF;
+-- Effectively register the table.
+    RETURN @extschema@.register_tables(p_migration, p_schema, '^' || p_table || '$', NULL, p_sourceSchema, p_sourceTableNamesFnct,
                                        p_sourceTableStatLoc, p_createForeignTable, p_ForeignTableOptions, p_sortByClusterIdx);
+END;
 $register_table$;
 
 -- The register_column_transform_rule() functions defines a column change from the source table to the destination table.
@@ -1423,10 +1436,23 @@ CREATE FUNCTION register_sequence(
     p_sourceSequenceNamesFnct TEXT               -- The sequence name transfomation function in the source database.
                              DEFAULT NULL        -- NULL means both names are equals. May be 'upper', 'lower' or any schema qualified custom function
     )
-    RETURNS INTEGER LANGUAGE sql                 -- Returns the number of effectively registered sequences
+    RETURNS INTEGER LANGUAGE plpgsql             -- Returns the number of effectively registered sequences
     AS
 $register_sequence$
-    SELECT @extschema@.register_sequences(p_migration, p_schema, '^' || p_sequence || '$', NULL, p_sourceSchema, p_sourceSequenceNamesFnct);
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_migration IS NULL THEN
+        RAISE EXCEPTION 'register_sequence: the p_migration parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'register_sequence: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_sequence IS NULL THEN
+        RAISE EXCEPTION 'register_sequence: the p_sequence parameter cannot be NULL.';
+    END IF;
+-- Effectively register the sequence
+    RETURN @extschema@.register_sequences(p_migration, p_schema, '^' || p_sequence || '$', NULL, p_sourceSchema, p_sourceSequenceNamesFnct);
+END;
 $register_sequence$;
 
 -- The assign_tables_to_batch() function assigns a set of tables of a single schema to a batch.
@@ -1535,9 +1561,22 @@ CREATE FUNCTION assign_table_to_batch(
     p_schema                 TEXT,               -- The schema holding the table to assign
     p_table                  TEXT                -- The table to assign
     )
-    RETURNS INTEGER LANGUAGE sql AS              -- Returns the number of effectively assigned tables.
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned tables.
 $assign_table_to_batch$
-    SELECT @extschema@.assign_tables_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_table_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_table_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_table_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+-- Effectively assign the table to the batch.
+    RETURN @extschema@.assign_tables_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
+END;
 $assign_table_to_batch$;
 
 -- The assign_table_part_to_batch() function assigns a table's part to a batch.
@@ -1861,10 +1900,23 @@ CREATE FUNCTION assign_table_checks_to_batch(
     p_schema                 TEXT,               -- The schema holding the table to assign
     p_table                  TEXT                -- The table to assign
     )
-    RETURNS INTEGER LANGUAGE sql AS              -- Returns the number of effectively assigned tables.
-$assign_table_to_batch$
-    SELECT @extschema@.assign_tables_checks_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
-$assign_table_to_batch$;
+    RETURNS INTEGER LANGUAGE plpgsql AS          -- Returns the number of effectively assigned tables.
+$assign_table_checks_to_batch$
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'assign_table_checks_to_batch: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_schema IS NULL THEN
+        RAISE EXCEPTION 'assign_table_checks_to_batch: the p_schema parameter cannot be NULL.';
+    END IF;
+    IF p_table IS NULL THEN
+        RAISE EXCEPTION 'assign_table_checks_to_batch: the p_table parameter cannot be NULL.';
+    END IF;
+-- Effectively assign the table checks to the batch.
+    RETURN @extschema@.assign_tables_checks_to_batch(p_batchName, p_schema, '^' || p_table || '$', NULL);
+END;
+$assign_table_checks_to_batch$;
 
 -- The assign_sequences_to_batch() function assigns a set of sequences of a single schema to a batch
 -- Two regexp filter sequences already registered to a migration to include and exclude to the batch.
