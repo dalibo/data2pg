@@ -10,7 +10,7 @@ Here are details about the migrations configuration API.
 
 ## Migrations management
 
-### create_migration()
+### create_migration()
 
 The `create_migration()` function registers a new migration and creates:
 
@@ -30,7 +30,7 @@ The input parameters are:
 
 The function returns the number of created migration, i.e. 1.
 
-### drop_migration()
+### drop_migration()
 
 The `drop_migration()` function drops an existing migration and all related objects (registered tables, batches, steps, etc).
 
