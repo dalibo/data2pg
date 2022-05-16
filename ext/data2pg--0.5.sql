@@ -61,6 +61,7 @@ CREATE TABLE migration (
                                                         --   like 'user ''postgres'', password ''pwd''', but the password is masked
     mgr_import_schema_options  TEXT,                    -- The options added to the IMPORT FOREIGN SCHEMA statement when registering tables
     mgr_config_completed       BOOLEAN,                 -- Boolean indicating whether the migration configuration is completed or not
+    mgr_config_completion_ts   TIMESTAMPTZ,             -- The timestamp of the latest configuration completion
     PRIMARY KEY (mgr_name)
 );
 
@@ -2250,7 +2251,7 @@ BEGIN
     END IF;
 -- Set the migration's config_completed flag as true.
     UPDATE @extschema@.migration
-        SET mgr_config_completed = TRUE
+        SET mgr_config_completed = TRUE, mgr_config_completion_ts = current_timestamp
         WHERE mgr_name = p_migration;
 -- Get the list of related batches.
     SELECT array_agg(bat_name) INTO v_batchArray
