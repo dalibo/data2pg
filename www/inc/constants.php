@@ -4,7 +4,7 @@
 // It contains some constants.
 
 	// Current Data2Pg version.
-	$const['version']				= '0.5';
+	$const['version']				= '0.6';
 
 	// Data2Pg role, schema and application names.
 	$const['d2pUser']				= 'data2pg';

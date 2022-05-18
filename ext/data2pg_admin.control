@@ -1,6 +1,6 @@
 # Data2Pg core extension
 comment = 'Data2Pg admininistration'
-default_version = '0.5'
+default_version = '0.6'
 module_pathname = '$libdir/data2pg_admin'
 superuser = no
 relocatable = no
