@@ -1041,7 +1041,7 @@ BEGIN
                 (tic_schema, tic_table, tic_object, tic_type, tic_definition,
                  tic_drop_for_copy)
             SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
-                   coalesce(v_sourceRows > v_rowsThreshold, TRUE)
+                   coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
                        AND NOT indisclustered
                        AND NOT EXISTS(
                                        SELECT 0 FROM pg_catalog.pg_constraint
