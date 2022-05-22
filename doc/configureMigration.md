@@ -213,6 +213,8 @@ The input parameters are:
 
 The function returns the number of effectively assigned tables.
 
+The generated steps name profile is <schema>_<table>.
+
 ### assign_table_to_batch()
 
 The `assign_table_to_batch()` function assigns a single table to a batch. It is a simple wrapper over the *assign_tables_to_batch()* function.
@@ -224,6 +226,8 @@ The input parameters are:
   * p_table                 : (TEXT) The table to assign
 
 The function returns the number of effectively assigned tables, i.e. 1.
+
+The generated step name profile is <schema>_<table>.
 
 ### assign_table_parts_to_batch()
 
@@ -239,6 +243,8 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts.
 
+The generated steps name profile is <schema>_<table>_<table_part>.
+
 ### assign_table_part_to_batch()
 
 The `assign_table_part_to_batch()` function assigns a single table's part to a batch.
@@ -251,6 +257,8 @@ The input parameters are:
   * p_partId                : (TEXT) The part id to assign to the batch
 
 The function returns the number of effectively assigned table parts, i.e. 1.
+
+The generated step name profile is <schema>_<table>_<table_part>.
 
 ### assign_indexes_to_batch()
 
@@ -265,6 +273,8 @@ The input parameters are:
   * p_objectsToExclude      : (TEXT) The regexp defining the indexes/constraints to exclude (by default NULL to exclude no index)
 
 The function returns the number of effectively assigned indexes.
+
+The generated steps name profile is <schema>_<table>_<index>.
 
 ### assign_index_to_batch()
 
@@ -281,6 +291,8 @@ The function returns the number of effectively assigned indexes, i.e. 1.
 
 The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
 
+The generated step name profile is <schema>_<table>_<index>.
+
 ### assign_tables_checks_to_batch()
 
 The `assign_tables_checks_to_batch()` function assigns a set of table checks of a single schema to a batch. Two regexps filter tables already registered to a migration to include and exclude to the batch.
@@ -294,6 +306,8 @@ The input parameters are:
 
 The function returns the number of effectively assigned table checks.
 
+The generated steps name profile is <schema>_<table>_check.
+
 ### assign_table_checks_to_batch()
 
 The `assign_table_checks_to_batch()` function assigns checks for a single table to a batch. It is a simple wrapper over the *assign_tables_checks_to_batch()* function.
@@ -305,6 +319,8 @@ The input parameters are:
   * p_table                 : (TEXT) The table which check has to be assigned to the batch
 
 The function returns the number of effectively assigned tables, i.e. 1.
+
+The generated step name profile is <schema>_<table>_check.
 
 ### assign_sequences_to_batch()
 
@@ -319,6 +335,8 @@ The input parameters are:
 
 The function returns the number of effectively assigned sequences.
 
+The generated steps name profile is <schema>_<sequence>.
+
 ### assign_sequence_to_batch()
 
 The `assign_sequence_to_batch()` function assigns a single sequence to a batch. It is a simple wrapper over the *assign_sequences_to_batch()* function.
@@ -330,6 +348,8 @@ The input parameters are:
   * p_sequence              : (TEXT) The sequence name to assign
 
 The function returns the number of effectively assigned sequences, i.e. 1.
+
+The generated step name profile is <schema>_<sequence>.
 
 ### assign_fkey_checks_to_batch()
 
@@ -344,6 +364,8 @@ The input parameters are:
 
 The function returns the number of effectively assigned fkey check steps.
 
+The generated steps name profile is <schema>_<table>_<fkey>.
+
 ### assign_custom_step_to_batch()
 
 The `assign_custom_step_to_batch()` function assigns a step that will call a custom function. It is intended to excute any specific processing for a component to migrate. This function must already exist into the schema holding the data2pg extension. If the custom step needs to have parent steps, these relationship must be set using the *add_step_parent()* function.
@@ -351,7 +373,7 @@ The `assign_custom_step_to_batch()` function assigns a step that will call a cus
 The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
-  * p_stepName              : (TEXT) The step identifier, which must be unique within the batch
+  * p_stepName              : (TEXT) The step name, which must be unique within the batch
   * p_function              : (TEXT) The function to execute, whose API must conform the step execution functions
   * p_schema                : (TEXT) A schema name, if it is meaningful for the processing
   * p_object                : (TEXT) An object name (for instance a table name), if it is meaningful for the processing
@@ -367,8 +389,8 @@ The `add_step_parent()` function creates an additional dependancy between 2 step
 The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
-  * p_step                  : (TEXT) Step identifier
-  * p_parent_step           : (TEXT) Parent step identifier
+  * p_step                  : (TEXT) Step name
+  * p_parent_step           : (TEXT) Parent step name
 
 The function returns the number of effectively assigned parents, i.e. 1.
 
