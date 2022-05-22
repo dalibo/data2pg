@@ -213,7 +213,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned tables.
 
-The generated steps name profile is <schema>_<table>.
+The generated steps name profile is <schema>\_<table>.
 
 ### assign_table_to_batch()
 
@@ -227,7 +227,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned tables, i.e. 1.
 
-The generated step name profile is <schema>_<table>.
+The generated step name profile is <schema>\_<table>.
 
 ### assign_table_parts_to_batch()
 
@@ -243,7 +243,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts.
 
-The generated steps name profile is <schema>_<table>_<table_part>.
+The generated steps name profile is <schema>\_<table>\_<table_part>.
 
 ### assign_table_part_to_batch()
 
@@ -258,7 +258,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned table parts, i.e. 1.
 
-The generated step name profile is <schema>_<table>_<table_part>.
+The generated step name profile is <schema>\_<table>\_<table_part>.
 
 ### assign_indexes_to_batch()
 
@@ -274,7 +274,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned indexes.
 
-The generated steps name profile is <schema>_<table>_<index>.
+The generated steps name profile is <schema>\_<table>\_<index>.
 
 ### assign_index_to_batch()
 
@@ -291,7 +291,7 @@ The function returns the number of effectively assigned indexes, i.e. 1.
 
 The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
 
-The generated step name profile is <schema>_<table>_<index>.
+The generated step name profile is <schema>\_<table>\_<index>.
 
 ### assign_tables_checks_to_batch()
 
@@ -306,7 +306,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned table checks.
 
-The generated steps name profile is <schema>_<table>_check.
+The generated steps name profile is <schema>\_<table>\_check.
 
 ### assign_table_checks_to_batch()
 
@@ -320,7 +320,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned tables, i.e. 1.
 
-The generated step name profile is <schema>_<table>_check.
+The generated step name profile is <schema>\_<table>\_check.
 
 ### assign_sequences_to_batch()
 
@@ -335,7 +335,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned sequences.
 
-The generated steps name profile is <schema>_<sequence>.
+The generated steps name profile is <schema>\_<sequence>.
 
 ### assign_sequence_to_batch()
 
@@ -349,7 +349,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned sequences, i.e. 1.
 
-The generated step name profile is <schema>_<sequence>.
+The generated step name profile is <schema>\_<sequence>.
 
 ### assign_fkey_checks_to_batch()
 
@@ -364,7 +364,7 @@ The input parameters are:
 
 The function returns the number of effectively assigned fkey check steps.
 
-The generated steps name profile is <schema>_<table>_<fkey>.
+The generated steps name profile is <schema>\_<table>\_<fkey>.
 
 ### assign_custom_step_to_batch()
 
