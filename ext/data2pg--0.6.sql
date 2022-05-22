@@ -2223,6 +2223,7 @@ $complete_migration_configuration$
 DECLARE
     v_isConfigCompleted      BOOLEAN;
     v_batchArray             TEXT[];
+    v_countCopyBatch         INT;
     v_countBatchWithInitStep INT;
     v_countBatchWithEndStep  INT;
     v_parents                TEXT[];
@@ -2258,18 +2259,20 @@ BEGIN
         FROM @extschema@.batch
         WHERE bat_migration = p_migration;
 -- Raise a warning if none or several batches of type COPY have an INIT step or an END step.
-    SELECT count(bat_name) FILTER (WHERE bat_with_init_step), count(bat_name) FILTER (WHERE bat_with_end_step)
-        INTO v_countBatchWithInitStep, v_countBatchWithEndstep
+    SELECT count(*), count(bat_name) FILTER (WHERE bat_with_init_step), count(bat_name) FILTER (WHERE bat_with_end_step)
+        INTO v_countCopyBatch, v_countBatchWithInitStep, v_countBatchWithEndstep
         FROM @extschema@.batch
         WHERE bat_migration = p_migration
           AND bat_type = 'COPY';
-    IF v_countBatchWithInitStep <> 1 THEN
-        RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an initial step. It is usualy 1',
-                      v_countBatchWithInitStep;
-    END IF;
-    IF v_countBatchWithEndStep <> 1 THEN
-        RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an end step. It is usualy 1',
-                      v_countBatchWithEndStep;
+    IF v_countCopyBatch > 0 THEN
+        IF v_countBatchWithInitStep <> 1 THEN
+            RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an initial step. It is usualy 1',
+                          v_countBatchWithInitStep;
+        END IF;
+        IF v_countBatchWithEndStep <> 1 THEN
+            RAISE WARNING 'complete_migration_configuration: % batches of type COPY are declared with an end step. It is usualy 1',
+                          v_countBatchWithEndStep;
+        END IF;
     END IF;
 -- Check that all tables registered into the migration have a unique part set as the first one and a unique part as the last one.
     FOR r_tbl IN
