@@ -348,6 +348,16 @@ SELECT add_step_parent(
 );
 
 --
+-- Adjust the steps cost
+--
+
+SELECT set_step_cost_multiplier(
+    p_batchName                => 'BATCH1',
+    p_step                     => 'myschema1.mytbl1',
+    p_factor                   => 2.5
+    );
+
+--
 -- Complete the migration configuration
 --
 

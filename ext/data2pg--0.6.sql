@@ -2212,6 +2212,46 @@ BEGIN
 END;
 $add_step_parent$;
 
+-- The set_step_cost_multiplier() function modifies the cost of a given step using a multiplying factor.
+-- It may be useful in some cases when a step duration is underestimated resulting in poor scheduling.
+CREATE FUNCTION set_step_cost_multiplier(
+    p_batchName              TEXT,                -- Batch identifier
+    p_step                   TEXT,                -- Step identifier
+    p_factor                 REAL                 -- Multiplying factor to apply on the previous computed cost
+    )
+    RETURNS INT LANGUAGE plpgsql AS               -- returns the number of adjusted step costs, ie. 1
+$set_step_cost_multiplier$
+BEGIN
+-- Check that no required parameter is NULL.
+    IF p_batchName IS NULL THEN
+        RAISE EXCEPTION 'set_step_cost_multiplier: the p_batchName parameter cannot be NULL.';
+    END IF;
+    IF p_step IS NULL THEN
+        RAISE EXCEPTION 'set_step_cost_multiplier: the p_step parameter cannot be NULL.';
+    END IF;
+    IF p_factor IS NULL THEN
+        RAISE EXCEPTION 'set_step_cost_multiplier: the p_factor parameter cannot be NULL.';
+    END IF;
+-- Check that the batch exists and set the migration as in-progress.
+    PERFORM @extschema@.check_batch(p_batchName);
+-- Check that the step exists.
+    PERFORM 0
+        FROM @extschema@.step
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'set_step_cost_multiplier: step % in batch % not found.', p_step, p_batchName;
+    END IF;
+-- Modify the cost.
+    UPDATE @extschema@.step
+        SET stp_cost = stp_cost * p_factor
+        WHERE stp_batch_name = p_batchName
+          AND stp_name = p_step;
+--
+    RETURN 1;
+END;
+$set_step_cost_multiplier$;
+
 -- The complete_migration_configuration() function is the final function in migration's configuration.
 -- It checks that all registered and assigned data are consistent and builds the chaining constraints between steps.
 -- It returns the number of effectively processed migration configuration, i.e. 1, or 0 if the configuration is already completed.

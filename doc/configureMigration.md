@@ -394,3 +394,14 @@ The input parameters are:
 
 The function returns the number of effectively assigned parents, i.e. 1.
 
+### set_step_cost_multiplier()
+
+The `set_step_cost_multiplier()` function allows to adjust the cost of a given step by applying a multiplier factor. It is sometime useful when an underestimated cost computed from the table size in the source database statistics leads to a poor scheduling.
+
+The input parameters are:
+
+  * p_batchName             : (TEXT) The batch name
+  * p_step                  : (TEXT) Step name
+  * p_factor                : (REAL) Multiplier factor
+
+The function returns the number of effectively adjusted costs, i.e. 1.
