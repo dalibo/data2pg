@@ -124,9 +124,9 @@ If several comparison rules are applied for the same column, only the last one d
 
 The `register_table_part()` function defines a table's subset that will be processed by its own migration step. The related table must have been already registered. A table part step includes 1 or 2 of the usual 3 elementary actions of a table processing:
 
-  * pre-processing: dropping constraints and indexes
+  * pre-processing: dropping indexes
   * data processing
-  * post-processing: creating constraints and indexes, get statistics on the table
+  * post-processing: rebuilding indexes, get statistics on the table
 
 Using table parts allows to parallelize a single table copy, and/or anticipate the copy of a table subset.
 
@@ -262,15 +262,15 @@ The generated step name profile is &lt;schema>\_&lt;table>\_&lt;table_part>.
 
 ### assign_indexes_to_batch()
 
-The `assign_indexes_to_batch()` function assigns a set of indexes re-creation to a batch. This may speed up the index recreation of large tables having several indexes.
+The `assign_indexes_to_batch()` function assigns a set of index rebuilds to a batch. This may speed up the index rebuild of large tables having several indexes.
 
 The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema holding the table
   * p_table                 : (TEXT) The table name
-  * p_objectsToInclude      : (TEXT) The regexp defining the indexes/constraints to assign for the table (all by default)
-  * p_objectsToExclude      : (TEXT) The regexp defining the indexes/constraints to exclude (by default NULL to exclude no index)
+  * p_objectsToInclude      : (TEXT) The regexp defining the indexes to assign for the table (all by default)
+  * p_objectsToExclude      : (TEXT) The regexp defining the indexes to exclude (by default NULL to exclude no index)
 
 The function returns the number of effectively assigned indexes.
 
@@ -278,18 +278,18 @@ The generated steps name profile is &lt;schema>\_&lt;table>\_&lt;index>.
 
 ### assign_index_to_batch()
 
-The `assign_index_to_batch()` function assigns a single index re-creation to a batch.
+The `assign_index_to_batch()` function assigns a single index rebuild to a batch.
 
 The input parameters are:
 
   * p_batchName             : (TEXT) The batch name
   * p_schema                : (TEXT) The schema holding the table
   * p_table                 : (TEXT) The table name
-  * p_object                : (TEXT) The index or constraint to assign
+  * p_object                : (TEXT) The index to assign
 
 The function returns the number of effectively assigned indexes, i.e. 1.
 
-The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
+The related table must have at least 2 table parts to be able to schedule the index rebuild between the rows copy and the post-processing.
 
 The generated step name profile is &lt;schema>\_&lt;table>\_&lt;index>.
 

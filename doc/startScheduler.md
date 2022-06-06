@@ -125,8 +125,8 @@ Number of processed steps : 44
 Aggregated indicators
      COPIED_TABLES        : 16
      COPIED_ROWS          : 126011
-     DROPPED_INDEXES      : 3
-     RECREATED_INDEXES    : 3
+     INVALIDATED_INDEXES  : 9
+     REBUILT_INDEXES      : 10
      COPIED_SEQUENCES     : 7
      CHECKED_FKEYS        : 4
      CHECKED_TABLES       : 9

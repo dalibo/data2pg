@@ -140,20 +140,17 @@ CREATE TABLE table_column (
     FOREIGN KEY (tco_schema, tco_table) REFERENCES table_to_process(tbl_schema, tbl_name)
 );
 
--- The table_index table contains a row for each index or constraint.
+-- The table_index table contains a row for each index.
 CREATE TABLE table_index (
     tic_schema                 TEXT NOT NULL,           -- The schema of the target table
     tic_table                  TEXT NOT NULL,           -- The table name
-    tic_object                 TEXT NOT NULL,           -- The name of the index or constraint
-    tic_type                   VARCHAR(2) NOT NULL      -- The object type (I for index / Cp pour PKEY, Cu for UNIQUE constraint
-                                                        --   or Cx for EXCLUDE constraint)
-                               CHECK (tic_type IN ('I', 'Cp', 'Cu', 'Cx')),
-    tic_definition             TEXT NOT NULL,           -- The index or constraint definition
-    tic_drop_for_copy          BOOLEAN,                 -- A boolean indicating whether the index or constraint must be dropped at bulk insert time
-    tic_last_drop_ts           TIMESTAMPTZ,             -- The timestamp of the latest drop of this index or constraint
-    tic_last_create_ts         TIMESTAMPTZ,             -- The timestamp of the latest re-creation of this index or constraint
-    tic_last_create_duration   INTERVAL,                -- The last recreation duration
-    PRIMARY KEY (tic_schema, tic_table, tic_object),
+    tic_index                  TEXT NOT NULL,           -- The index name
+    tic_is_unique              BOOLEAN NOT NULL,        -- A boolean indicating whether the index is UNIQUE
+    tic_rebuild_after_copy     BOOLEAN,                 -- A boolean indicating whether the index must be set as NOT READY and then rebuilt at copy time
+    tic_last_not_ready_ts      TIMESTAMPTZ,             -- The timestamp of the latest NOT VALID setting of this index
+    tic_last_rebuild_ts        TIMESTAMPTZ,             -- The timestamp of the latest index rebuild
+    tic_last_rebuild_duration  INTERVAL,                -- The last rebuild duration
+    PRIMARY KEY (tic_schema, tic_table, tic_index),
     FOREIGN KEY (tic_schema, tic_table) REFERENCES table_to_process (tbl_schema, tbl_name)
 );
 
@@ -585,7 +582,7 @@ BEGIN
         USING @extschema@.table_to_process
         WHERE tco_schema = tbl_schema AND tco_table = tbl_name
           AND tbl_migration = p_migration;
--- Remove indexes and constraints associated to tables belonging to the migration.
+-- Remove indexes associated to tables belonging to the migration.
     DELETE FROM @extschema@.table_index
         USING @extschema@.table_to_process
         WHERE tic_schema = tbl_schema AND tic_table = tbl_name
@@ -773,7 +770,7 @@ DECLARE
     v_compareKeyColNb        SMALLINT[];
     v_nbColInIdx             SMALLINT;
     v_nbColInKey             SMALLINT;
-    v_rowsThreshold          CONSTANT BIGINT = 10000;      -- The estimated number of rows limit to drop and recreate indexes and constraints
+    v_rowsThreshold          CONSTANT BIGINT = 1000;      -- The estimated number of rows limit to invalide and rebuild indexes
     r_tbl                    RECORD;
     r_col                    RECORD;
 BEGIN
@@ -1018,39 +1015,14 @@ BEGIN
                  CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
                  CASE WHEN v_pgVersion >= 120000 THEN 'attgenerated' ELSE '''''::TEXT' END,
                  v_compareKeyColNb, r_tbl.table_oid);
--- Insert the indexes and constraints into the table_index table.
--- Start with PKEY, UNIQUE or EXCLUDE constraints.
--- Constraints will be dropped and recreated only if there are enough rows to justify it and if they are not linked to another constraint (like a FK).
+-- Insert the indexes into the table_index table.
+-- Indexes will be set NOT READY and rebuilt only if there are enough rows to justify it.
         INSERT INTO @extschema@.table_index
-                (tic_schema, tic_table, tic_object, tic_type, tic_definition,
-                 tic_drop_for_copy)
-            SELECT p_schema, r_tbl.relname, c1.conname, 'C' || c1.contype, pg_get_constraintdef(c1.oid),
-                   coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
-                       AND NOT EXISTS(
-                                       SELECT 0 FROM pg_catalog.pg_constraint c2
-                                       WHERE c2.conindid = c1.conindid AND c2.oid <> c1.oid
-                                      )
-                FROM pg_catalog.pg_constraint c1
-                WHERE c1.conrelid = r_tbl.table_oid
-                  AND c1.contype IN ('p', 'u', 'x');
--- Continue with indexes
--- These indexes are not clustered indexes that are not linked to any constraint (pkey or others).
--- Indexes will be dropped and recreated only if there are enough rows to justify it, if it is not a cluster index
---   and if they are not linked to another constraint (like a FK).
-        INSERT INTO @extschema@.table_index
-                (tic_schema, tic_table, tic_object, tic_type, tic_definition,
-                 tic_drop_for_copy)
-            SELECT p_schema, r_tbl.relname, relname, 'I', pg_get_indexdef(pg_class.oid),
-                   coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
-                       AND NOT indisclustered
-                       AND NOT EXISTS(
-                                       SELECT 0 FROM pg_catalog.pg_constraint
-                                       WHERE pg_constraint.conindid = pg_class.oid
-                                      )
+                (tic_schema, tic_table, tic_index, tic_is_unique, tic_rebuild_after_copy)
+            SELECT p_schema, r_tbl.relname, relname, indisunique, coalesce(v_sourceRows >= v_rowsThreshold, TRUE)
                 FROM pg_catalog.pg_index
                      JOIN pg_catalog.pg_class ON (pg_class.oid = indexrelid)
-                WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid
-            ON CONFLICT DO NOTHING;
+                WHERE relnamespace = r_tbl.schema_oid AND indrelid = r_tbl.table_oid;
 --    Update the global statistics on pg_class (reltuples and relpages) for the just created foreign table.
 --    This will let the optimizer choose a proper plan for the _compare_table() function, without the cost of an ANALYZE.
         IF v_sourceRows IS NOT NULL AND v_sourceKBytes IS NOT NULL THEN
@@ -1525,7 +1497,7 @@ BEGIN
                 FROM @extschema@.table_index
                 WHERE tic_schema = p_schema
                   AND tic_table = r_tbl.tbl_name
-                  AND tic_type IN ('Cp', 'Cu');
+                  AND tic_is_unique;
             IF NOT FOUND THEN
                 RAISE WARNING 'assign_tables_to_batch: The table %.% has neither PK nor UNIQUE index.'
                               ' All columns are used as sort key, without being sure that there will not be duplicates',
@@ -1720,16 +1692,16 @@ BEGIN
 END;
 $assign_table_parts_to_batch$;
 
--- The assign_indexes_to_batch() function assigns a set of index re-creations to a batch for a given table.
--- This speeds up the processing of large tables by parallelizing the index creation phase when there are several indexes to rebuild.
--- The related table must have at least 2 table parts to be able to schedule the index creation between the rows copy and the post-processing.
+-- The assign_indexes_to_batch() function assigns a set of index rebuilds to a batch for a given table.
+-- This speeds up the processing of large tables by parallelizing the index rebuild phase when there are several indexes to rebuild.
+-- The related table must have at least 2 table parts to be able to schedule the index rebuild between the rows copy and the post-processing.
 CREATE FUNCTION assign_indexes_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
-    p_objectsToInclude       TEXT                -- Regexp defining the indexes/constraints to assign for the table (all by default)
+    p_objectsToInclude       TEXT                -- Regexp defining the indexes to assign for the table (all by default)
                              DEFAULT '.*',
-    p_objectsToExclude       TEXT                -- Regexp defining the indexes/constraints to exclude (NULL to exclude none)
+    p_objectsToExclude       TEXT                -- Regexp defining the indexes to exclude (NULL to exclude none)
                              DEFAULT NULL
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes
@@ -1767,33 +1739,33 @@ BEGIN
     END IF;
 -- Process indexes
     FOR r_index IN
-        SELECT tic_object
+        SELECT tic_index
         FROM @extschema@.table_index
         WHERE tic_schema = p_schema
           AND tic_table = p_table
-          AND tic_drop_for_copy
-          AND tic_object ~ p_objectsToInclude
-          AND (p_objectsToExclude IS NULL OR tic_object !~ p_objectsToExclude)
+          AND tic_rebuild_after_copy
+          AND tic_index ~ p_objectsToInclude
+          AND (p_objectsToExclude IS NULL OR tic_index !~ p_objectsToExclude)
     LOOP
     -- Warn if the index has been already assigned to a batch.
         SELECT stp_batch_name INTO v_prevBatchName
             FROM @extschema@.step
                  JOIN @extschema@.batch ON (bat_name = stp_batch_name)
-            WHERE stp_name = p_schema || '.' || p_table || '.' || r_index.tic_object
+            WHERE stp_name = p_schema || '.' || p_table || '.' || r_index.tic_index
               AND bat_type = 'COPY';
         IF FOUND THEN
             RAISE WARNING 'assign_indexes_to_batch: The index % creation of the table %.% is already assigned to the batch %.',
-                            r_index.tic_object, p_schema, p_table, v_prevBatchName;
+                            r_index.tic_index, p_schema, p_table, v_prevBatchName;
         END IF;
-    -- Record the index creation into the step table, except if already assigned to this batch.
+    -- Record the index rebuild into the step table, except if already assigned to this batch.
         IF v_prevBatchName IS NULL OR v_prevBatchName <> p_batchName THEN
             v_nbIndex = v_nbIndex + 1;
             INSERT INTO @extschema@.step (
                     stp_name, stp_batch_name, stp_type, stp_schema, stp_object, stp_sub_object,
                     stp_sql_function, stp_cost
                 ) VALUES (
-                    p_schema || '.' || p_table || '.' || r_index.tic_object, p_batchName, 'INDEX', p_schema, p_table, r_index.tic_object,
-                    '_create_index', v_kbytes
+                    p_schema || '.' || p_table || '.' || r_index.tic_index, p_batchName, 'INDEX', p_schema, p_table, r_index.tic_index,
+                    '_rebuild_index', v_kbytes
                 );
         END IF;
     END LOOP;
@@ -1809,7 +1781,7 @@ CREATE FUNCTION assign_index_to_batch(
     p_batchName              TEXT,               -- Batch identifier
     p_schema                 TEXT,               -- The schema name of the related table
     p_table                  TEXT,               -- The table name
-    p_object                 TEXT                -- The index or constraint to assign
+    p_object                 TEXT                -- The index to assign
     )
     RETURNS INTEGER LANGUAGE plpgsql AS          -- returns the number of effectively assigned indexes, i.e. 1 in most cases
 $assign_index_to_batch$
@@ -2755,7 +2727,7 @@ $_copy_end$;
 -- The _verify_objects() function verify that all objects involved in a migration really exists.
 -- It is called by the _copy_init() and _copy_end() functions
 -- Input parameters: migration name.
--- It raises exceptions in case of detected problems, like missing schemas, tables, index, constraints, sequences.
+-- It raises exceptions in case of detected problems, like missing schemas, tables, index, sequences.
 -- The expected objects lists are built at migration configuration time.
 CREATE FUNCTION _verify_objects(
     p_migration                TEXT
@@ -2829,14 +2801,13 @@ BEGIN
         RAISE EXCEPTION '_verify_objects: Missing foreign tables detected (%).', v_list;
     END IF;
 -- Check indexes.
-    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_object, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_object)
+    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_index, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_index)
         INTO v_list
         FROM (
-            SELECT DISTINCT tic_schema, tic_table, tic_object
+            SELECT DISTINCT tic_schema, tic_table, tic_index
                 FROM @extschema@.table_index
                      JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
                 WHERE tbl_migration = p_migration
-                  AND tic_type = 'I'
             EXCEPT
             SELECT nspname, r.relname, i.relname
                 FROM pg_index
@@ -2848,24 +2819,25 @@ BEGIN
     IF v_list IS NOT NULL THEN
         RAISE EXCEPTION '_verify_objects: Missing index detected (%).', v_list;
     END IF;
--- Check PK, UNIQUE and EXCLUDE constraints.
-    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_object, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_object)
+-- Check that no index is set as NOT READY.
+    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_index, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_index)
         INTO v_list
         FROM (
-            SELECT DISTINCT tic_schema, tic_table, tic_object
+            SELECT DISTINCT tic_schema, tic_table, tic_index
                 FROM @extschema@.table_index
                      JOIN @extschema@.table_to_process ON (tic_schema = tbl_schema AND tic_table = tbl_name)
                 WHERE tbl_migration = p_migration
-                  AND tic_type LIKE 'C%'
             EXCEPT
-            SELECT nspname, r.relname, conname
-                FROM pg_constraint
-                     JOIN pg_class r ON (r.oid = conrelid)
+            SELECT nspname, r.relname, i.relname
+                FROM pg_index
+                     JOIN pg_class i ON (i.oid = indexrelid)
+                     JOIN pg_class r ON (r.oid = indrelid)
                      JOIN pg_catalog.pg_namespace ON (r.relnamespace = pg_namespace.oid)
-                WHERE contype IN ('p', 'u', 'x')
+                WHERE i.relkind = 'i'
+                  AND indisready
              ) AS t;
     IF v_list IS NOT NULL THEN
-        RAISE EXCEPTION '_verify_objects: Missing constraint detected (%).', v_list;
+        RAISE EXCEPTION '_verify_objects: NOT READY index detected (%).', v_list;
     END IF;
 --
     RETURN;
@@ -3041,13 +3013,13 @@ DECLARE
     v_selectExprList           TEXT;
     v_someGenAlwaysIdentCol    BOOLEAN;
     v_constraint               TEXT;
-    v_i                        INT;
     v_index                    TEXT;
     v_indexDef                 TEXT;
     v_stmt                     TEXT;
     v_nbRows                   BIGINT = 0;
     v_nbDroppedIndex           SMALLINT = 0;
     v_nbCreatedIndex           SMALLINT = 0;
+    v_indIsReady               BOOLEAN;
     r_obj                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -3098,50 +3070,23 @@ BEGIN
 -- Pre-processing.
 --
     IF v_isFirstStep THEN
--- Drop the constraints known as 'to be dropped' (pk, unique, exclude) and record the drop timestamp.
-        FOR r_obj IN
-            SELECT tic_object
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type LIKE 'C%'
-                  AND tic_drop_for_copy
-        LOOP
-            EXECUTE format(
-                'ALTER TABLE %I.%I DROP CONSTRAINT %I',
-                v_schema, v_table, r_obj.tic_object
-            );
-            UPDATE @extschema@.table_index
-                SET tic_last_drop_ts = clock_timestamp(),
-                    tic_last_create_ts = NULL,
-                    tic_last_create_duration = NULL
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
-            v_nbDroppedIndex = v_nbDroppedIndex + 1;
-        END LOOP;
--- Drop the indexes known as "to be dropped" during the copy processing and record the drop timestamp.
-        FOR r_obj IN
-            SELECT tic_object
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type = 'I'
-                  AND tic_drop_for_copy
-        LOOP
-            EXECUTE format(
-                'DROP INDEX %I.%I',
-                v_schema, r_obj.tic_object
-            );
-            UPDATE @extschema@.table_index
-                SET tic_last_drop_ts = clock_timestamp(),
-                    tic_last_create_ts = NULL,
-                    tic_last_create_duration = NULL
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_object = r_obj.tic_object;
-            v_nbDroppedIndex = v_nbDroppedIndex + 1;
-        END LOOP;
+-- Set the indexes known as "to be rebuilt" NOT READY to ignore them during the copy processing.
+        UPDATE pg_catalog.pg_index
+            SET indisready = FALSE
+            FROM @extschema@.table_index
+            WHERE indexrelid = (quote_ident(tic_schema) || '.' || quote_ident(tic_index))::regclass
+              AND tic_schema = v_schema
+              AND tic_table = v_table
+              AND tic_rebuild_after_copy;
+        GET DIAGNOSTICS v_nbDroppedIndex = ROW_COUNT;
+-- Reset the index time statistics.
+        UPDATE @extschema@.table_index
+            SET tic_last_not_ready_ts = clock_timestamp(),
+                tic_last_rebuild_ts = NULL,
+                tic_last_rebuild_duration = NULL
+            WHERE tic_schema = v_schema
+              AND tic_table = v_table
+              AND tic_rebuild_after_copy;
     END IF;
 --
 -- Copy processing.
@@ -3175,87 +3120,40 @@ BEGIN
 -- Post processing.
 --
     IF v_isLastStep THEN
--- Recreate the constraints that have been previously dropped.
+-- Rebuild the indexes that have been previously flagged as NOT READY and that have not been recreated by a separate step.
         FOR r_obj IN
-            SELECT tic_object, tic_type, tic_definition
+            SELECT tic_index
                 FROM @extschema@.table_index
                 WHERE tic_schema = v_schema
                   AND tic_table = v_table
-                  AND tic_type LIKE 'C%'
-                  AND tic_drop_for_copy
+                  AND tic_rebuild_after_copy
         LOOP
--- Look at the catalog to know whether the related index exists.
-            PERFORM 0
-                FROM pg_catalog.pg_class
-                     JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
-                WHERE relkind = 'i'
-                  AND nspname = v_schema
-                  AND relname = r_obj.tic_object;
-            IF NOT FOUND THEN
--- The index related to the constraint does not exist (this is the usual case), so just recreate the constraint with the common syntax.
+-- Look at the catalog to know whether the index has already been rebuilt by a separate step.
+            SELECT indisready INTO v_indIsReady
+                FROM pg_catalog.pg_index
+                WHERE indexrelid = (quote_ident(v_schema) || '.' || quote_ident(r_obj.tic_index))::regclass;
+            IF NOT v_indIsReady THEN
                 v_nbCreatedIndex = v_nbCreatedIndex + 1;
 -- Record the recreation start timestamp.
                 UPDATE @extschema@.table_index
-                    SET tic_last_create_ts = clock_timestamp()
+                    SET tic_last_rebuild_ts = clock_timestamp()
                     WHERE tic_schema = v_schema
                       AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
--- Recreate the constraint with its initial definition.
+                      AND tic_index = r_obj.tic_index;
+-- Rebuild the index.
                 EXECUTE format(
-                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
-                    v_schema, v_table, r_obj.tic_object, r_obj.tic_definition
-                );
+                    'REINDEX INDEX %I.%I',
+                    v_schema, r_obj.tic_index);
+-- Reset the index as ready to be used.
+                UPDATE pg_catalog.pg_index
+                    SET indisready = TRUE
+                    WHERE indexrelid = (quote_ident(v_schema) || '.' || quote_ident(r_obj.tic_index))::regclass;
 -- Record the recreation duration.
                 UPDATE @extschema@.table_index
-                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
+                    SET tic_last_rebuild_duration = clock_timestamp() - tic_last_rebuild_ts
                     WHERE tic_schema = v_schema
                       AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
-            ELSE
--- The index already exists. So recreate the constraint using it.
-                EXECUTE format(
-                    'ALTER TABLE %I.%I ADD CONSTRAINT %I %s USING INDEX %I',
-                    v_schema, v_table, r_obj.tic_object,
-                    CASE r_obj.tic_type
-                        WHEN 'Cp' THEN 'PRIMARY KEY'
-                        WHEN 'Cu' THEN 'UNIQUE'
-                        ELSE NULL                        -- should never happen
-                    END, r_obj.tic_object
-                );
-            END IF;
-        END LOOP;
--- Recreate the indexes that have been previously dropped and that have not been recreated by a separate step.
-        FOR r_obj IN
-            SELECT tic_object, tic_definition
-                FROM @extschema@.table_index
-                WHERE tic_schema = v_schema
-                  AND tic_table = v_table
-                  AND tic_type = 'I'
-                  AND tic_drop_for_copy
-        LOOP
--- Look at the catalog to know whether the index has already been recreated by a separate step.
-            PERFORM 0
-                FROM pg_catalog.pg_class
-                     JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
-                WHERE relkind = 'i'
-                  AND nspname = v_schema
-                  AND relname = r_obj.tic_object;
-            IF NOT FOUND THEN
-                v_nbCreatedIndex = v_nbCreatedIndex + 1;
--- Record the recreation start timestamp.
-                UPDATE @extschema@.table_index
-                    SET tic_last_create_ts = clock_timestamp()
-                    WHERE tic_schema = v_schema
-                      AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
--- Create the index.
-                EXECUTE r_obj.tic_definition;
--- Record the recreation duration.
-                UPDATE @extschema@.table_index
-                    SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-                    WHERE tic_schema = v_schema
-                      AND tic_table = v_table
-                      AND tic_object = r_obj.tic_object;
+                      AND tic_index = r_obj.tic_index;
             END IF;
         END LOOP;
 -- Get the statistics (and let the autovacuum do its job).
@@ -3281,14 +3179,14 @@ BEGIN
     r_output.sr_is_main_indicator = TRUE;
     RETURN NEXT r_output;
     IF v_nbDroppedIndex > 0 THEN
-        r_output.sr_indicator = 'DROPPED_INDEXES';
+        r_output.sr_indicator = 'INVALIDATED_INDEXES';
         r_output.sr_value = v_nbDroppedIndex;
         r_output.sr_rank = 12;
         r_output.sr_is_main_indicator = FALSE;
         RETURN NEXT r_output;
     END IF;
     IF v_nbCreatedIndex > 0 THEN
-        r_output.sr_indicator = 'RECREATED_INDEXES';
+        r_output.sr_indicator = 'REBUILT_INDEXES';
         r_output.sr_value = v_nbCreatedIndex;
         r_output.sr_rank = 13;
         r_output.sr_is_main_indicator = FALSE;
@@ -3389,11 +3287,11 @@ BEGIN
 END;
 $_get_source_sequence$;
 
--- The _create_index() function is a generic function recreate a index that has been marked as
--- 'not to be created in the copy post-processing phase'. It may be useful to create several indexes in parallel for a large table.
+-- The _rebuild_index() function rebuilds an index in a separate step.
+-- It may be useful to create several indexes in parallel for a large table.
 -- Input parameters: batch name, step name and execution options.
 -- It returns a step report.
-CREATE FUNCTION _create_index(
+CREATE FUNCTION _rebuild_index(
     p_batchName                TEXT,
     p_step                     TEXT,
     p_stepOptions              JSONB
@@ -3401,73 +3299,64 @@ CREATE FUNCTION _create_index(
     RETURNS SETOF @extschema@.step_report_type LANGUAGE plpgsql
     SET synchronous_commit = 'off'
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
-$_create_index$
+$_rebuild_index$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
     v_index                    TEXT;
-    v_type                     TEXT;
-    v_definition               TEXT;
+    v_indIsReady               BOOLEAN;
+    v_nbRebuiltIndex           INT = 0;
     r_output                   @extschema@.step_report_type;
 BEGIN
--- Get the identity of the index/constraint.
-    SELECT stp_schema, stp_object, stp_sub_object, tic_type, tic_definition
-        INTO v_schema, v_table, v_index, v_type, v_definition
+-- Get the identity of the index.
+    SELECT stp_schema, stp_object, stp_sub_object
+        INTO v_schema, v_table, v_index
         FROM @extschema@.step
-             JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_object = stp_sub_object)
+             JOIN @extschema@.table_index ON (tic_schema = stp_schema AND tic_table = stp_object AND tic_index = stp_sub_object)
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION '_create_index: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_rebuild_index: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Check that the requested index does not exist.
-    PERFORM 0
-        FROM pg_catalog.pg_class
-             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = relnamespace)
-        WHERE relkind = 'i'
-          AND nspname = v_schema
-          AND relname = v_index;
-    IF FOUND THEN
-        RAISE EXCEPTION '_create_index: the index %.% already exists.', v_schema, v_index;
+-- Look at the catalog to check that the index has not already been rebuilt by another step.
+    SELECT indisready INTO STRICT v_indIsReady
+        FROM pg_catalog.pg_index
+        WHERE indexrelid = (quote_ident(v_schema) || '.' || quote_ident(v_index))::regclass;
+    IF v_indIsReady THEN
+        RAISE NOTICE '_rebuild_index: the index %.% does not need to be rebuilt.', v_schema, v_index;
+    ELSE
+        v_nbRebuiltIndex = 1;
+-- Record the rebuild start timestamp.
+        UPDATE @extschema@.table_index
+            SET tic_last_rebuild_ts = clock_timestamp()
+            WHERE tic_schema = v_schema
+              AND tic_table = v_table
+              AND tic_index = v_index;
+-- Rebuild the index.
+        EXECUTE format(
+            'REINDEX INDEX %I.%I',
+            v_schema, v_index);
+-- Reset the index as ready to be used.
+        UPDATE pg_catalog.pg_index
+            SET indisready = TRUE
+            WHERE indexrelid = (quote_ident(v_schema) || '.' || quote_ident(v_index))::regclass;
+-- Record the rebuilt duration.
+        UPDATE @extschema@.table_index
+            SET tic_last_rebuild_duration = clock_timestamp() - tic_last_rebuild_ts
+            WHERE tic_schema = v_schema
+              AND tic_table = v_table
+              AND tic_index = v_index;
     END IF;
--- Record the recreation start timestamp.
-    UPDATE @extschema@.table_index
-        SET tic_last_create_ts = clock_timestamp()
-        WHERE tic_schema = v_schema
-          AND tic_table = v_table
-          AND tic_object = v_index;
--- Create the index of the constraint depending on its registered type.
-    CASE
-        WHEN v_type = 'I' THEN
--- It is an index.
-            EXECUTE v_definition;
-        WHEN v_type IN ('Cp', 'Cu') THEN
--- It is a constraint.
--- Create the related index in advance. The constraint will be created later in the table copy post-processing, referencing this index.
--- To get the index definition, just remove the PRIMARY KEY or UNIQUE keywords from the constraint definition.
-            EXECUTE format(
-                'CREATE UNIQUE INDEX %I ON %I.%I %s',
-                v_index, v_schema, v_table,
-                regexp_replace(v_definition, 'PRIMARY KEY |UNIQUE ', ''));
-        ELSE
-            RAISE EXCEPTION '_create_index: internal error (the index type for %.% is %, should be "I" or "Cp" or "Cu").', v_schema, v_index, v_type;
-    END CASE;
--- Record the recreation duration
-    UPDATE @extschema@.table_index
-        SET tic_last_create_duration = clock_timestamp() - tic_last_create_ts
-        WHERE tic_schema = v_schema
-          AND tic_table = v_table
-          AND tic_object = v_index;
 -- Return the step report.
-    r_output.sr_indicator = 'RECREATED_INDEXES';
-    r_output.sr_value = 1;
+    r_output.sr_indicator = 'REBUILT_INDEXES';
+    r_output.sr_value = v_nbRebuiltIndex;
     r_output.sr_rank = 13;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
 --
     RETURN;
 END;
-$_create_index$;
+$_rebuild_index$;
 
 -- The _check_table() function computes some aggregates, at least the number of rows, on both source and target tables.
 -- Results can be compared to be sure that the data content has been correctly migrated.
