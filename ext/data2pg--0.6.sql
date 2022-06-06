@@ -1739,7 +1739,7 @@ BEGIN
     END IF;
 -- Process indexes
     FOR r_index IN
-        SELECT tic_index
+        SELECT tic_index, tic_is_unique
         FROM @extschema@.table_index
         WHERE tic_schema = p_schema
           AND tic_table = p_table
@@ -1758,6 +1758,8 @@ BEGIN
                             r_index.tic_index, p_schema, p_table, v_prevBatchName;
         END IF;
     -- Record the index rebuild into the step table, except if already assigned to this batch.
+    -- The step cost is reduced by 1 when the index is not unique so that unique indexes, that take more time to rebuild, can
+    --   be assigned before the others.
         IF v_prevBatchName IS NULL OR v_prevBatchName <> p_batchName THEN
             v_nbIndex = v_nbIndex + 1;
             INSERT INTO @extschema@.step (
@@ -1765,7 +1767,7 @@ BEGIN
                     stp_sql_function, stp_cost
                 ) VALUES (
                     p_schema || '.' || p_table || '.' || r_index.tic_index, p_batchName, 'INDEX', p_schema, p_table, r_index.tic_index,
-                    '_rebuild_index', v_kbytes
+                    '_rebuild_index', v_kbytes - CASE WHEN r_index.tic_is_unique THEN 0 ELSE 1 END
                 );
         END IF;
     END LOOP;
