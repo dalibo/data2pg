@@ -41,17 +41,19 @@ echo "----------------------------------"
 
 psql <<EOF
 
-drop database if exists test_src;
-drop database if exists test_dest;
+\set ON_ERROR_STOP ON
 
-create database test_src;
-create database test_dest;
+DROP DATABASE IF EXISTS test_src;
+DROP DATABASE IF EXISTS test_dest;
+
+CREATE DATABASE test_src;
+CREATE DATABASE test_dest;
 
 EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => Role and databases successfuly created"
 fi
@@ -67,19 +69,19 @@ psql <<EOF
 
 SELECT current_database();
 
-begin transaction;
+BEGIN TRANSACTION;
 
 \i test_pg/setup.sql
 
-set search_path=myschema1;
+SET search_path=myschema1;
 \d
 
-commit;
+COMMIT;
 EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => Source database structure successfuly created"
 fi
@@ -89,22 +91,22 @@ echo "------------------------------"
 
 psql <<EOF
 
+\set ON_ERROR_STOP ON
+
 SELECT current_database();
 
-begin transaction;
-
-\set ON_ERROR_STOP ON
+BEGIN TRANSACTION;
 
 \i test_pg/populate.sql
 
-commit;
+COMMIT;
 
-analyze;
+ANALYZE;
 EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => Source database successfuly populated"
 fi
@@ -116,11 +118,11 @@ export PGDATABASE=test_dest
 
 psql <<EOF
 
+\set ON_ERROR_STOP ON
+
 SELECT current_database();
 
-begin transaction;
-
-\set ON_ERROR_STOP ON
+BEGIN TRANSACTION;
 
 \i test_pg/setup.sql
 
@@ -128,12 +130,12 @@ begin transaction;
 ALTER TABLE myschema1.mytbl4 RENAME TO "MYTBL4";
 ALTER SEQUENCE myschema2.mySeq2 RENAME TO "MYSEQ2";
 
-commit;
+COMMIT;
 EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => Destination database structure successfuly created"
 fi

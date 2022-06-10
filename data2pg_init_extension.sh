@@ -95,7 +95,7 @@ EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => the data2pg role is created"
 fi
@@ -131,7 +131,7 @@ EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => the data2pg extension is successfuly created"
 fi
@@ -143,7 +143,7 @@ if [ -f data2pg_addons.sql ]; then
   psql -f data2pg_addons.sql
   if [ $? -ne 0 ]; then
     echo "  => Problem encountered"
-    exit
+    exit 1
   else
     echo "  => the data2pg addons have been successfuly loaded"
   fi

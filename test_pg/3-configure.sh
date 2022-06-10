@@ -373,6 +373,7 @@ EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
+  exit 1
 else
   echo "  => The scheduler can use this migration configuration"
 fi

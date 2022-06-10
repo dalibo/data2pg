@@ -89,7 +89,7 @@ EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => data2pg role and database successfuly created"
 fi
@@ -110,7 +110,7 @@ EOF
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => data2pg_admin extension successfuly created"
 fi
@@ -122,7 +122,7 @@ psql data2pg -U data2pg -c "\copy ${DATA2PG_ADMIN_SCHEMA}.target_database FROM $
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
-  exit
+  exit 1
 else
   echo "  => target databases successfuly loaded."
 fi
