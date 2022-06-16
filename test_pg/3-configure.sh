@@ -2,14 +2,18 @@
 # 3-configure.sh
 # This shell script prepares the data2pg components on the destination database
 
+# Environment variables to setup
+export PGHOST=localhost
+export PGDATABASE=test_dest
+
 echo "==================================================="
 echo "Prepare the data2pg test with Postgres databases"
 echo "==================================================="
 
-# Environment variables to setup
-PGHOST_DEFAULT_VALUE=localhost
+# Default values
+PGHOST_DEFAULT_VALUE=
 PGPORT_DEFAULT_VALUE=5432
-PGDATABASE_DEFAULT_VALUE=test_dest
+PGDATABASE_DEFAULT_VALUE=postgres
 
 if [ -z ${PGHOST+x} ];
 then
