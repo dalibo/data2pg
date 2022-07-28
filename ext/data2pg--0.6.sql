@@ -358,7 +358,7 @@ BEGIN
     EXECUTE format(
         'GRANT USAGE ON FOREIGN SERVER %I TO data2pg',
         v_serverName);
--- Create the User Mapping to let the data2pg role or the current superuser installing the function log on the source database.
+-- Create the User Mapping to let the current superuser access the source database.
     EXECUTE format(
         'CREATE USER MAPPING IF NOT EXISTS FOR %s'
         '    SERVER %I'
@@ -648,7 +648,7 @@ BEGIN
 -- Check the supplied migration and get its DBMS.
     SELECT p_sourceDbms INTO v_dbms FROM @extschema@.check_migration(p_migration);
 -- Check the batch type.
-    IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'Postgres') THEN
+    IF p_batchType = 'DISCOVER' AND v_dbms NOT IN ('Oracle', 'PostgreSQL') THEN
         RAISE EXCEPTION 'create_batch: Batch of type DISCOVER are not allowed for % databases.', v_dbms;
     END IF;
     IF p_batchType <> 'COPY' AND p_batchType <> 'COMPARE' AND p_batchType <> 'DISCOVER' THEN
@@ -3857,26 +3857,14 @@ DECLARE
     v_maxRows                  BIGINT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
-    v_aggForeignTable          TEXT;
     v_serverName               TEXT;
+    v_sourceDbms               TEXT;
     v_sourceSchema             TEXT;
     v_sourceTable              TEXT;
     v_nbColumns                SMALLINT = 0;
-    v_colDefArray              TEXT[] = '{}';
-    v_colDefList               TEXT;
-    v_aggregatesArray          TEXT[] = '{}';
-    v_aggregatesList           TEXT;
-    v_insertCteArray           TEXT[] = '{}';
-    v_insertCteList            TEXT;
-    v_commonDscvColToInsert    TEXT;
-    v_skippedColumnsArray      TEXT[] = '{}';
-    v_skippedColumnsList       TEXT;
-    v_commonDscvValToInsert    TEXT;
-    v_nbNotNullValue           TEXT;
-    v_stmt                     TEXT;
-    v_foreignTableQuery        TEXT;
     v_nbRows                   BIGINT;
-    v_nbAdvice                 INTEGER = 0;
+    v_skippedColumnsList       TEXT;
+    v_nbAdvice                 INTEGER;
     r_col                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -3889,15 +3877,15 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION '_discover_table: no step % found for the batch %.', p_step, p_batchName;
     END IF;
--- Read the migration table to get the FDW server name.
-    SELECT mgr_server_name
-        INTO v_serverName
+-- Read the migration table to get the FDW server name and source RDBMS.
+    SELECT mgr_server_name, mgr_source_dbms
+        INTO v_serverName, v_sourceDbms
         FROM @extschema@.migration
              JOIN @extschema@.batch ON (bat_migration = mgr_name)
         WHERE bat_name = p_batchName;
--- Read the table_to_process table to get the foreign schema and build the foreign table name.
-    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name, tbl_foreign_name || '_agg'
-        INTO v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable, v_aggForeignTable
+-- Read the table_to_process table to get source and foreign schema and table names.
+    SELECT tbl_foreign_schema, tbl_foreign_name, tbl_source_schema, tbl_source_name
+        INTO v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable
         FROM @extschema@.table_to_process
         WHERE tbl_schema = v_schema AND tbl_name = v_table;
 -- Analyze the step options.
@@ -3914,6 +3902,88 @@ BEGIN
     DELETE FROM @extschema@.discovery_table
         WHERE dscv_schema = v_schema
           AND dscv_table = v_table;
+--
+-- Analyze the source table.
+-- As this analysis is performed by a quite complex SQL statement directly executed on the source database,
+--   it is better to have separated piece of code for each supported DBMS to handle the various SQL syntax and FDW capabilities.
+--
+-- Call the proper function, depending on the source DBMS.
+    CASE v_sourceDBMS
+        WHEN 'Oracle' THEN
+            SELECT p_nbColumns, p_nbRows, p_skippedColumnsList
+                INTO v_nbColumns, v_nbRows, v_skippedColumnsList
+                FROM @extschema@._discv_tbl_oracle(v_schema, v_table, v_maxRows, v_serverName,
+                                       v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
+        WHEN 'PostgreSQL' THEN
+            SELECT p_nbColumns, p_nbRows, p_skippedColumnsList
+                INTO v_nbColumns, v_nbRows, v_skippedColumnsList
+                FROM @extschema@._discv_tbl_postgres(v_schema, v_table, v_maxRows, v_serverName,
+                                       v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
+        ELSE
+            RAISE EXCEPTION '_discover_table: Source DBMS % is not yet supported.', v_sourceDBMS;
+    END CASE;
+--
+-- Now that the aggregates are stored into the discover_table and discover_column tables, generate advice.
+    v_nbAdvice = @extschema@._discv_tbl_gen_advice(v_schema, v_table, v_maxRows, v_nbRows, v_skippedColumnsList);
+--
+-- Return the step report.
+--
+    r_output.sr_indicator = 'DISCOVERED_COLUMNS';
+    r_output.sr_value = v_nbColumns;
+    r_output.sr_rank = 1;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'DISCOVERED_ROWS';
+    r_output.sr_value = v_nbRows;
+    r_output.sr_rank = 2;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GENERATED_ADVICE';
+    r_output.sr_value = v_nbAdvice;
+    r_output.sr_rank = 3;
+    r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+--
+    RETURN;
+END;
+$_discover_table$;
+
+-- The _discv_tbl_oracle() function is called by the _discover_table() function.
+-- It analyzes an Oracle source table.
+-- It returns the number of generated columns and rows and the list of skipped column.
+CREATE OR REPLACE FUNCTION _discv_tbl_oracle(
+    p_schema                   TEXT,
+    p_table                    TEXT,
+    p_maxRows                  BIGINT,
+    p_serverName               TEXT,
+    p_foreignSchema            TEXT,
+    p_foreignTable             TEXT,
+    p_sourceSchema             TEXT,
+    p_sourceTable              TEXT,
+    OUT p_nbColumns            BIGINT,
+    OUT p_nbRows               BIGINT,
+    OUT p_skippedColumnsList   TEXT
+    )
+    LANGUAGE plpgsql AS
+$_discv_tbl_oracle$
+DECLARE
+    v_aggForeignTable          TEXT;
+    v_colDefArray              TEXT[] = '{}';
+    v_colDefList               TEXT;
+    v_aggregatesArray          TEXT[] = '{}';
+    v_aggregatesList           TEXT;
+    v_insertCteArray           TEXT[] = '{}';
+    v_insertCteList            TEXT;
+    v_commonDscvColToInsert    TEXT;
+    v_skippedColumnsArray      TEXT[] = '{}';
+    v_commonDscvValToInsert    TEXT;
+    v_nbNotNullValue           TEXT;
+    v_stmt                     TEXT;
+    v_foreignTableQuery        TEXT;
+    r_col                      RECORD;
+BEGIN
+    v_aggForeignTable = p_foreignTable || '_agg';
+    p_nbColumns = 0;
 -- Depending on the column's type, build:
 --    - the columns definition for the foreign table
 --    - the aggregates to feed these columns
@@ -3927,8 +3997,8 @@ BEGIN
                  JOIN pg_class c ON (c.oid = a.attrelid)
                  JOIN pg_namespace n ON (n.oid = c.relnamespace)
                  JOIN pg_type t ON (t.oid = a.atttypid)
-            WHERE nspname = v_foreignSchema
-              AND relname = v_foreignTable
+            WHERE nspname = p_foreignSchema
+              AND relname = p_foreignTable
               AND attnum > 0
               AND NOT attisdropped
     LOOP
@@ -3937,8 +4007,8 @@ BEGIN
 --   and just keep the information to report it.
             v_skippedColumnsArray = array_append(v_skippedColumnsArray, r_col.attname::text);
         ELSE
-            v_nbColumns = v_nbColumns + 1;
-            v_commonDscvValToInsert = quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || quote_literal(r_col.attname)
+            p_nbColumns = p_nbColumns + 1;
+            v_commonDscvValToInsert = quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || quote_literal(r_col.attname)
                 || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
 -- Nullable columns.
             IF NOT r_col.attnotnull THEN
@@ -4045,7 +4115,7 @@ BEGIN
                     -- the greatest value
                     v_colDefArray = array_append(v_colDefArray, 'ts_max_' || r_col.attnum::text || ' TEXT');
                     v_aggregatesArray = array_append(v_aggregatesArray, 'to_char(max(' || upper(r_col.attname) || ')) AS ts_max_' || r_col.attnum::text);
-	    
+
                     v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
                         || ' AS (INSERT INTO data2pg.discovery_column (' || v_commonDscvColToInsert || ' dscv_ts_min, dscv_ts_max) '
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
@@ -4070,92 +4140,109 @@ BEGIN
             END CASE;
         END IF;
     END LOOP;
+-- Build lists
     v_colDefList = array_to_string(v_colDefArray, ', ');
     v_aggregatesList = array_to_string(v_aggregatesArray, ', ');
     v_insertCteList = array_to_string(v_insertCteArray, '');
-    v_skippedColumnsList = array_to_string(v_skippedColumnsArray, ', ');
+    p_skippedColumnsList = array_to_string(v_skippedColumnsArray, ', ');
 --
 -- Create the foreign table.
 --
-    IF v_maxRows IS NULL THEN
-	    v_foreignTableQuery := format(
-	    	'(SELECT %s FROM %I.%I)',
-	    	v_aggregatesList, v_sourceSchema, v_sourceTable
-	    );
+    IF p_maxRows IS NULL THEN
+        v_foreignTableQuery := format(
+            '(SELECT %s FROM %I.%I)',
+            v_aggregatesList, p_sourceSchema, p_sourceTable
+        );
     ELSE
-	    v_foreignTableQuery := format(
-	    	'(SELECT %s FROM (SELECT * FROM %I.%I WHERE ROWNUM <= %s))',
-	    	v_aggregatesList, v_sourceSchema, v_sourceTable, v_maxRows
-	    );
+        v_foreignTableQuery := format(
+            '(SELECT %s FROM (SELECT * FROM %I.%I WHERE ROWNUM <= %s) AS t)',
+            v_aggregatesList, p_sourceSchema, p_sourceTable, p_maxRows
+        );
     END IF;
     v_stmt = format(
         'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS ( table %L )',
-        v_foreignSchema, v_aggForeignTable, v_colDefList, v_serverName, v_foreignTableQuery
+        p_foreignSchema, v_aggForeignTable, v_colDefList, p_serverName, v_foreignTableQuery
     );
     EXECUTE v_stmt;
 --
 -- Analyze the Oracle table content by querying the foreign table.
 --
     v_stmt = 'WITH aggregates AS ('
-          || '  SELECT * FROM ' || quote_ident(v_foreignSchema) || '.' || quote_ident(v_aggForeignTable)
+          || '  SELECT * FROM ' || quote_ident(p_foreignSchema) || '.' || quote_ident(v_aggForeignTable)
           || '  ), '
           || v_insertCteList
           || '     discovered_table AS ('
           || '  INSERT INTO @extschema@.discovery_table (dscv_schema, dscv_table, dscv_max_row, dscv_nb_row)'
-          || '    SELECT ' || quote_literal(v_schema) || ', ' || quote_literal(v_table) || ', ' || coalesce(v_maxRows::TEXT, 'NULL') || ', nb_row'
+          || '    SELECT ' || quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || coalesce(p_maxRows::TEXT, 'NULL') || ', nb_row'
           || '        FROM aggregates'
           || '  ) '
           || 'SELECT nb_row FROM aggregates';
 -- Execute the first table scan. It creates a row per analyzed column into the discovery_column table
-    EXECUTE v_stmt INTO v_nbRows;
+    EXECUTE v_stmt INTO p_nbRows;
 -- Drop the foreign table, that is now useless
     EXECUTE format(
         'DROP FOREIGN TABLE %I.%I',
-        v_foreignSchema, v_aggForeignTable
+        p_foreignSchema, v_aggForeignTable
     );
-
---TODO: Get information about potential boolean columns
-
 --
--- Generate advice.
---
+    RETURN;
+END;
+$_discv_tbl_oracle$;
+
+-- The _discv_tbl_gen_advice() function is called at the end of the _discover_table() function.
+-- It generates pieces of advice from the discovered source table content, by reading the just loaded
+--   discover_table and discover_column tables. It stores the result into the discovery_advice table.
+-- It returns the number of generated pieces of advice.
+CREATE OR REPLACE FUNCTION _discv_tbl_gen_advice(
+    p_schema                   TEXT,
+    p_table                    TEXT,
+    p_maxRows                  BIGINT,
+    p_nbRows                   BIGINT,
+    p_skippedColumnsList       TEXT
+    )
+    RETURNS INTEGER LANGUAGE plpgsql AS
+$_discv_tbl_gen_advice$
+DECLARE
+    v_nbAdvice                 INTEGER = 0;
+    r_col                      RECORD;
+BEGIN
 -- Warnings at table level.
-    IF v_nbRows = 0 THEN
+    IF p_nbRows = 0 THEN
         INSERT INTO @extschema@.discovery_advice
             (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
             VALUES
-            (v_schema, v_table, 'W', 'EMPTY_TABLE', 'The table ' || v_schema || '.' || v_table || ' is empty.');
+            (p_schema, p_table, 'W', 'EMPTY_TABLE', 'The table ' || p_schema || '.' || p_table || ' is empty.');
     ELSE
-        IF v_nbRows = v_maxRows THEN
+        IF p_nbRows = p_maxRows THEN
             INSERT INTO @extschema@.discovery_advice
                (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                 VALUES
-                (v_schema, v_table, 'W', 'NOT_ALL_ROWS', 'The table ' || v_schema || '.' || v_table || ' has un-analyzed rows.');
+                (p_schema, p_table, 'W', 'NOT_ALL_ROWS', 'The table ' || p_schema || '.' || p_table || ' has un-analyzed rows.');
         END IF;
     END IF;
-    IF v_skippedColumnsList <> '' THEN
+    IF p_skippedColumnsList <> '' THEN
         INSERT INTO @extschema@.discovery_advice
             (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
             VALUES
-            (v_schema, v_table, 'W', 'SKIPPED_COLUMNS', 'For the table ' || v_schema || '.' || v_table || ', columns ' || v_skippedColumnsList || 'have not been analyzed.');
+            (p_schema, p_table, 'W', 'SKIPPED_COLUMNS', 'For the table ' || p_schema || '.' || p_table || ', columns ' || p_skippedColumnsList || 'have not been analyzed.');
     END IF;
 -- Pieces of advice at column level.
-    IF v_nbRows > 0 THEN
+    IF p_nbRows > 0 THEN
         FOR r_col IN
             SELECT c.*, t.dscv_nb_row
                 FROM @extschema@.discovery_column c
                      JOIN @extschema@.discovery_table t ON (t.dscv_schema = c.dscv_schema AND t.dscv_table = c.dscv_table)
                 WHERE dscv_nb_row > 0
-                  AND t.dscv_schema = v_schema
-                  AND t.dscv_table = v_table
+                  AND t.dscv_schema = p_schema
+                  AND t.dscv_table = p_table
         LOOP
             IF r_col.dscv_nb_not_null = 0 THEN
 -- If all values are NULL, just issue a warning
                 INSERT INTO @extschema@.discovery_advice
                    (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                     VALUES
-                    (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'W', 'ONLY_NULL',
-                     'The column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' contains nothing but NULL.');
+                    (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'W', 'ONLY_NULL',
+                     'The column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' contains nothing but NULL.');
             ELSE
 -- On integer columns.
                 IF r_col.dscv_num_max_fract_part = 0 THEN
@@ -4163,30 +4250,30 @@ BEGIN
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'SMALLINT',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'SMALLINT',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type SMALLINT.');
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type SMALLINT.');
                     ELSIF r_col.dscv_num_max_integ_part <= 8 THEN
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'INTEGER', 
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'INTEGER', 
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type INTEGER.');
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type INTEGER.');
                     ELSIF r_col.dscv_num_max_integ_part <= 18 THEN
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BIGINT',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BIGINT',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type BIGINT.');
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type BIGINT.');
                     ELSE
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_INTEGER',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_INTEGER',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' is a too large integer to be hold in a BIGINT column.');
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' is a too large integer to be hold in a BIGINT column.');
                     END IF;
                     v_nbAdvice = v_nbAdvice + 1;
 -- On numeric but not integer columns.
@@ -4195,25 +4282,25 @@ BEGIN
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'REAL_OR_NUMERIC',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'REAL_OR_NUMERIC',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type REAL or NUMERIC or ' ||
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type REAL or NUMERIC or ' ||
                              'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
                     ELSIF r_col.dscv_num_max_precision <= 15 THEN
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DOUBLE_OR_NUMERIC',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DOUBLE_OR_NUMERIC',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type DOUBLE PRECISION or NUMERIC or ' ||
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type DOUBLE PRECISION or NUMERIC or ' ||
                              'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
                     ELSE
                         INSERT INTO @extschema@.discovery_advice
                             (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                             VALUES
-                            (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NUMERIC',
+                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NUMERIC',
                              'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type NUMERIC or ' ||
+                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type NUMERIC or ' ||
                              'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
                     END IF;
                     v_nbAdvice = v_nbAdvice + 1;
@@ -4223,9 +4310,9 @@ BEGIN
                     INSERT INTO @extschema@.discovery_advice
                         (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                         VALUES
-                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DATE',
+                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DATE',
                          'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could be of type DATE.');
+                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type DATE.');
                     v_nbAdvice = v_nbAdvice + 1;
                 END IF;
 -- On boolean columns.
@@ -4233,20 +4320,20 @@ BEGIN
                     INSERT INTO @extschema@.discovery_advice
                         (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                         VALUES
-                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BOOLEAN',
+                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BOOLEAN',
                          'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column
+                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column
                           || ' has less than 3 distinct values and could be transformed into BOOLEAN type.');
                     v_nbAdvice = v_nbAdvice + 1;
                 END IF;
 -- On columns without NULL but not declared NOT NULL.
-                IF r_col.dscv_nb_not_null = least(r_col.dscv_nb_row, v_maxRows) THEN
+                IF r_col.dscv_nb_not_null = least(r_col.dscv_nb_row, p_maxRows) THEN
                     INSERT INTO @extschema@.discovery_advice
                         (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                         VALUES
-                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NOT_NULL',
+                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NOT_NULL',
                          'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could perhaps be declared NOT NULL.');
+                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could perhaps be declared NOT NULL.');
                     v_nbAdvice = v_nbAdvice + 1;
                 END IF;
 -- On CHAR or VARCHAR columns whose max size is much larger (more than twice) than the maximum data content.
@@ -4254,9 +4341,9 @@ BEGIN
                     INSERT INTO @extschema@.discovery_advice
                         (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
                         VALUES
-                        (v_schema, v_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_STRING',
+                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_STRING',
                          'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || v_schema || '.' || v_table || '.' || r_col.dscv_column || ' could perhaps be declared smaller (max size: real = '
+                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could perhaps be declared smaller (max size: real = '
                          || r_col.dscv_str_max_length || '/ declared = ' || r_col.dscv_max_size || ').');
                     v_nbAdvice = v_nbAdvice + 1;
                 END IF;
@@ -4264,27 +4351,9 @@ BEGIN
         END LOOP;
     END IF;
 --
--- Return the step report.
---
-    r_output.sr_indicator = 'DISCOVERED_COLUMNS';
-    r_output.sr_value = v_nbColumns;
-    r_output.sr_rank = 1;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
-    r_output.sr_indicator = 'DISCOVERED_ROWS';
-    r_output.sr_value = v_nbRows;
-    r_output.sr_rank = 2;
-    r_output.sr_is_main_indicator = FALSE;
-    RETURN NEXT r_output;
-    r_output.sr_indicator = 'GENERATED_ADVICE';
-    r_output.sr_value = v_nbAdvice;
-    r_output.sr_rank = 3;
-    r_output.sr_is_main_indicator = TRUE;
-    RETURN NEXT r_output;
---
-    RETURN;
+    RETURN v_nbAdvice;
 END;
-$_discover_table$;
+$_discv_tbl_gen_advice$;
 
 --
 -- Service functions called by the Data2Pg scheduler.
