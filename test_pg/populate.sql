@@ -21,7 +21,7 @@ insert into myTbl1 select i, case when i%3 = 0 then 'ABC' when i%3 = 1 then 'DEF
 
 insert into myTbl2 select i,'DEF', NULL from generate_series (1,2000) as i;
 
-insert into "myTbl3" (col33) select generate_series(1000,41000,4)/100.0;
+insert into "myTbl3" (col32, col33) select '2020/01/01', generate_series(1000,41000,4)/100.0;
 
 insert into myTbl5 values (1,'{"abc","def","ghi"}','{1,2,3}',NULL,'{}');
 insert into myTbl5 values (2,array['abc','def','ghi'],array[3,4,5],array['2000/02/01'::date,'2000/02/28'::date],'{"id":1000, "c1":"abc"}');
