@@ -125,7 +125,7 @@ DROP EXTENSION IF EXISTS :data2pg_schema CASCADE;
 DROP SCHEMA IF EXISTS :data2pg_schema CASCADE;
 
 CREATE SCHEMA :data2pg_schema;
-CREATE EXTENSION data2pg SCHEMA :data2pg_schema;
+CREATE EXTENSION data2pg SCHEMA :data2pg_schema CASCADE;
 
 EOF
 

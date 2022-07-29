@@ -201,7 +201,7 @@ SELECT create_batch(
 SELECT create_batch('BATCH1', 'PG''s db', 'COPY', false, true);
 SELECT create_batch('COMPARE_ALL', 'PG''s db', 'COMPARE', true, true);
 SELECT create_batch('CHECK_TABLES', 'PG''s db', 'COPY', false, false);
---SELECT create_batch('DISCOVER_ALL', 'PG''s db', 'DISCOVER', true, true);
+SELECT create_batch('DISCOVER_ALL', 'PG''s db', 'DISCOVER', true, true);
 
 --
 -- Assign the tables to batches
@@ -225,9 +225,9 @@ SELECT assign_tables_to_batch('COMPARE_ALL', 'myschema1', '.*', NULL);
 SELECT assign_tables_to_batch('COMPARE_ALL', 'myschema2', '.*', '^(mytbl1|mytbl5|mytbl6)$');  -- JSON or POINT types cannot be compared
 SELECT assign_tables_to_batch('COMPARE_ALL', 'phil''s schema3', '.*', NULL);
 
---SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema1', '.*', NULL);
---SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema2', '.*', NULL);
---SELECT assign_tables_to_batch('DISCOVER_ALL', 'phil''s schema3', '.*', NULL);
+SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema1', '.*', NULL);
+SELECT assign_tables_to_batch('DISCOVER_ALL', 'myschema2', '.*', NULL);
+SELECT assign_tables_to_batch('DISCOVER_ALL', 'phil''s schema3', '.*', NULL);
 
 --
 -- assign the table parts to batches

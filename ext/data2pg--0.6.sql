@@ -365,7 +365,8 @@ BEGIN
         '    OPTIONS (%s)',
         current_user, v_serverName, p_userMappingOptions);
 -- Load additional objects depending on the selected DBMS.
-    PERFORM @extschema@.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, coalesce(p_userHasPrivileges, FALSE));
+    PERFORM @extschema@.load_dbms_specific_objects(p_migration, p_sourceDbms, v_serverName, p_serverOptions,
+                                                   p_userMappingOptions, coalesce(p_userHasPrivileges, FALSE));
 --
     RETURN 1;
 END;
@@ -378,6 +379,8 @@ CREATE FUNCTION load_dbms_specific_objects(
     p_migration              TEXT,
     p_sourceDbms             TEXT,
     p_serverName             TEXT,
+    p_serverOptions          TEXT,
+    p_userMappingOptions     TEXT,
     p_userHasPrivileges      BOOLEAN DEFAULT FALSE
     )
     RETURNS VOID LANGUAGE plpgsql AS
@@ -385,11 +388,15 @@ $load_dbms_specific_objects$
 DECLARE
     v_queryTables            TEXT;
     v_querySequences         TEXT;
+    v_dblinkServerName       TEXT;
+    v_dblinkServerOptions    TEXT;
 BEGIN
-    -- perform DBMS specific tasks.
+--
+-- Oracle specific tasks.
+--
     IF p_sourceDbms = 'Oracle' THEN
-        -- Create an image for ora_tables and ora_sequences tables.
-        -- Depends of DBA privileges
+-- Create an image for ora_tables and ora_sequences tables.
+-- It depends of DBA privileges.
         IF p_userHasPrivileges THEN
             v_queryTables := '('
                 'SELECT t.owner, t.table_name, num_rows, bytes'
@@ -426,18 +433,19 @@ BEGIN
             ') SERVER %I OPTIONS ( table ''%s'')',
             p_serverName, v_querySequences
         );
-
-        -- Populate the source_table_stat table.
+-- Populate the source_table_stat table.
         INSERT INTO @extschema@.source_table_stat
             SELECT p_migration, owner, table_name, num_rows, sum(bytes) / 1024
               FROM @extschema@.ora_tables GROUP BY 1,2,3,4;
-
-        -- Drop the now useless foreign tables, but keep the ora_sequences
-        -- that will be used by the _copy_sequence() function.
+-- Drop the now useless foreign tables, but keep the ora_sequences
+-- that will be used by the _copy_sequence() function.
         DROP FOREIGN TABLE @extschema@.ora_tables;
 
     ELSIF p_sourceDbms = 'PostgreSQL' THEN
-        -- Create an image of the pg_class table.
+--
+-- Postgres specific tasks.
+--
+-- Create an image of the pg_class table.
         EXECUTE format(
             'CREATE FOREIGN TABLE @extschema@.pg_foreign_pg_class ('
             '    relname TEXT,'
@@ -447,23 +455,50 @@ BEGIN
             '    relpages BIGINT'
             ') SERVER %I OPTIONS (schema_name ''pg_catalog'', table_name ''pg_class'')',
             p_serverName);
-        -- Create an image of the pg_namespace table.
+-- Create an image of the pg_namespace table.
         EXECUTE format(
             'CREATE FOREIGN TABLE @extschema@.pg_foreign_pg_namespace ('
             '    oid OID,'
             '    nspname TEXT'
             ') SERVER %I OPTIONS (schema_name ''pg_catalog'', table_name ''pg_namespace'')',
             p_serverName);
-        -- Populate the source_table_stat table.
+-- Populate the source_table_stat table.
         INSERT INTO @extschema@.source_table_stat
             SELECT p_migration, nspname, relname, CASE WHEN reltuples = -1 THEN NULL ELSE reltuples::bigint END, relpages * 8
                 FROM @extschema@.pg_foreign_pg_class
                      JOIN @extschema@.pg_foreign_pg_namespace ON (relnamespace = pg_foreign_pg_namespace.oid)
                 WHERE relkind = 'r'
                   AND nspname NOT IN ('pg_catalog', 'information_schema');
-        -- Drop the now useless foreign tables.
+-- Drop the now useless foreign tables.
         DROP FOREIGN TABLE @extschema@.pg_foreign_pg_class, @extschema@.pg_foreign_pg_namespace;
+-- Create the dblink FDW objects used by the DISCOVERY feature.
+-- Build the dblink_fdw server name and server options, using the provided postgres_fdw server name and server options.
+-- For the server name, just replace the initial 'data2pg' by 'dblink'.
+        v_dblinkServerName = 'dblink' || right(p_serverName, -7);
+-- For the server options, only keep the host port and dbname options, if present and remove the others.
+        SELECT string_agg(srvopt, ', ') INTO v_dblinkServerOptions
+            FROM (SELECT * FROM regexp_split_to_table(p_serverOptions, '\s*,\s*') AS srvopt) AS t
+            WHERE srvopt LIKE 'host%' OR srvopt LIKE 'port%' OR srvopt LIKE 'dbname%';
+-- Create the Server used to reach the Postgres source database with dblink.
+        EXECUTE format(
+            'CREATE SERVER IF NOT EXISTS %I'
+            '    FOREIGN DATA WRAPPER dblink_fdw'
+            '    OPTIONS (%s)',
+            v_dblinkServerName, v_dblinkServerOptions);
+        EXECUTE format(
+            'GRANT USAGE ON FOREIGN SERVER %I TO data2pg',
+            v_dblinkServerName);
+-- Create the User Mapping to let the current superuser access the source database.
+        EXECUTE format(
+            'CREATE USER MAPPING IF NOT EXISTS FOR %s'
+            '    SERVER %I'
+            '    OPTIONS (%s)',
+            current_user, v_dblinkServerName, p_userMappingOptions);
+
     ELSIF p_sourceDbms = 'Sybase_ASA' THEN
+--
+-- Sybase ASA specific tasks.
+--
         -- Create an image of the systab table.
         EXECUTE format(
             'CREATE FOREIGN TABLE @extschema@.asa_foreign_systab('
@@ -490,6 +525,7 @@ BEGIN
         -- Drop the now useless foreign tables.
         DROP FOREIGN TABLE @extschema@.asa_foreign_systab;
     ELSE
+
         RAISE EXCEPTION 'load_dbms_specific_objects: The DBMS % is not yet implemented (internal error).', p_sourceDbms;
     END IF;
 END;
@@ -2896,10 +2932,6 @@ $_compare_end$
 DECLARE
     v_batchName                TEXT;
     v_migration                TEXT;
-    v_tablesList               TEXT;
-    v_nbTables                 BIGINT;
-    r_tbl                      RECORD;
-    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
@@ -2930,10 +2962,6 @@ $_discover_init$
 DECLARE
     v_batchName                TEXT;
     v_migration                TEXT;
-    v_tablesList               TEXT;
-    v_nbTables                 BIGINT;
-    r_tbl                      RECORD;
-    r_output                   @extschema@.step_report_type;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
@@ -2964,10 +2992,11 @@ $_discover_end$
 DECLARE
     v_batchName                TEXT;
     v_migration                TEXT;
-    v_tablesList               TEXT;
-    v_nbTables                 BIGINT;
-    r_tbl                      RECORD;
-    r_output                   @extschema@.step_report_type;
+    v_dblinkServerName         TEXT;
+    v_sourceDbms               TEXT;
+    v_dblinkSchema             TEXT;
+    v_viewsList                TEXT;
+    v_stmt                     TEXT;
 BEGIN
 -- Get the step characteristics.
     SELECT stp_batch_name, bat_migration INTO v_batchName, v_migration
@@ -2977,6 +3006,32 @@ BEGIN
           AND stp_name = p_step;
     IF NOT FOUND THEN
         RAISE EXCEPTION '_discover_end: no step % found for the batch %.', p_step, p_batchName;
+    END IF;
+-- Read the migration table to get the FDW server name and source RDBMS.
+    SELECT 'dblink' || right(mgr_server_name, -7), mgr_source_dbms
+        INTO v_dblinkServerName, v_sourceDbms
+        FROM @extschema@.migration
+             JOIN @extschema@.batch ON (bat_migration = mgr_name)
+        WHERE bat_name = p_batchName;
+-- For PostgreSQL source databases, drop the views created by the _discover_table() function executions.
+    IF v_sourceDBMS = 'PostgreSQL' THEN
+-- Get the schema holding the dblink extension.
+        SELECT nspname INTO v_dblinkSchema
+            FROM pg_catalog.pg_extension
+                 JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = extnamespace)
+            WHERE extname = 'dblink';
+-- Build the views list.
+        SELECT string_agg(quote_ident(tbl_source_schema) || '.' || quote_ident(tbl_source_name || '_agg'), ', '
+                          ORDER BY tbl_source_schema, tbl_source_name)
+            INTO v_viewsList
+            FROM @extschema@.table_to_process
+            WHERE tbl_migration = v_migration;
+-- ... and drop them them within a single statement.
+        v_stmt = format(
+                'DROP VIEW IF EXISTS %s',
+                v_viewsList
+        );
+        EXECUTE format('SELECT %I.dblink(%L, %L)', v_dblinkSchema, v_dblinkServerName, v_stmt);
     END IF;
 -- Return the step report.
     RETURN;
@@ -3854,11 +3909,11 @@ $_discover_table$
 DECLARE
     v_schema                   TEXT;
     v_table                    TEXT;
+    v_serverName               TEXT;
+    v_sourceDbms               TEXT;
     v_maxRows                  BIGINT;
     v_foreignSchema            TEXT;
     v_foreignTable             TEXT;
-    v_serverName               TEXT;
-    v_sourceDbms               TEXT;
     v_sourceSchema             TEXT;
     v_sourceTable              TEXT;
     v_nbColumns                SMALLINT = 0;
@@ -3951,6 +4006,8 @@ $_discover_table$;
 -- The _discv_tbl_oracle() function is called by the _discover_table() function.
 -- It analyzes an Oracle source table.
 -- It returns the number of generated columns and rows and the list of skipped column.
+-- The source table analysis is performed using a single SELECT statement that computes a lot of aggregates in a single table scan.
+-- This aggregates are loaded into the discover_column table using CTE (one by source column).
 CREATE OR REPLACE FUNCTION _discv_tbl_oracle(
     p_schema                   TEXT,
     p_table                    TEXT,
@@ -4188,6 +4245,301 @@ BEGIN
     RETURN;
 END;
 $_discv_tbl_oracle$;
+
+-- The _discv_tbl_postgres() function is called by the _discover_table() function when the source RDBMS is PostgreSQL.
+-- It analyzes a PostgreSQL source table.
+-- It returns the number of generated columns and rows and the list of skipped column.
+-- The source table analysis is performed using a single SELECT statement that computes a lot of aggregates in a single table scan.
+-- This aggregates are loaded into the discover_column table using CTE (one by source column).
+-- As the postgres_fdw does not provide any way to create a foreign table using a query, use a view instead.
+-- The view contains the aggregates definition and is created by the function via a dblink connection.
+-- Note that these views are not dropped at the end of this function, because the analysis transaction (through the postgres_fdw)
+-- is not yet commited, blocking the view drop (through the dblink_fdw). So views drop is moved to the _discover_end() function.
+-- With PG14+, we could use the postgres_fdw_disconnect() to avoid the lock and let us drop the view inside the function,
+-- but the version is too recent (code left in comment at the end of this function, for the future...).
+CREATE OR REPLACE FUNCTION _discv_tbl_postgres(
+    p_schema                   TEXT,
+    p_table                    TEXT,
+    p_maxRows                  BIGINT,
+    p_serverName               TEXT,
+    p_foreignSchema            TEXT,
+    p_foreignTable             TEXT,
+    p_sourceSchema             TEXT,
+    p_sourceTable              TEXT,
+    OUT p_nbColumns            BIGINT,
+    OUT p_nbRows               BIGINT,
+    OUT p_skippedColumnsList   TEXT
+    )
+    LANGUAGE plpgsql AS
+$_discv_tbl_postgres$
+DECLARE
+-- Constants describing aggregate functions to be directly executed on the source table.
+-- Note that we could have used the minscale function for c_num_max_precision and c_num_max_fract_part but it is only available for PG13+.
+    c_nb_not_null              CONSTANT TEXT = 'count(%I) AS nb_not_null_%s';
+    c_num_min                  CONSTANT TEXT = 'min(%I) AS num_min_%s';
+    c_num_max                  CONSTANT TEXT = 'max(%I) AS num_max_%s';
+    c_num_max_precision        CONSTANT TEXT = 'max(coalesce(length(abs(trunc(%I))::VARCHAR) + '
+                                            || 'coalesce(length(substring(%I::TEXT FROM ''\.(\d*?)0*$'')), 0),0)) AS num_max_precision_%s';
+    c_num_max_integ_part       CONSTANT TEXT = 'max(coalesce(length(abs(trunc(%I))::VARCHAR), 0)) AS num_max_integ_part_%s';
+    c_num_max_fract_part       CONSTANT TEXT = 'max(coalesce(length(substring(%I::VARCHAR FROM ''\.(\d*?)0*$'')), 0)) AS num_max_fract_part_%s';
+    c_str_avg_len              CONSTANT TEXT = 'round(avg(length(%I))) AS str_avg_len_%s';
+    c_str_max_len              CONSTANT TEXT = 'max(length(%I)) AS str_max_len_%s';
+    c_str_nul_char             CONSTANT TEXT = '0 AS str_nul_char_%s';
+    c_ts_min                   CONSTANT TEXT = 'min(%I)::VARCHAR AS ts_min_%s';
+    c_ts_max                   CONSTANT TEXT = 'max(%I)::VARCHAR AS ts_max_%s';
+    c_ts_nb_date               CONSTANT TEXT = 'sum(CASE WHEN %I::TIME = TIME ''00:00:00'' THEN 1 ELSE 0 END) AS ts_nb_date_%s';
+-- Other variables.
+    v_aggForeignTable          TEXT;
+    v_colDefArray              TEXT[] = '{}';
+    v_colDefList               TEXT;
+    v_aggregatesArray          TEXT[] = '{}';
+    v_aggregatesList           TEXT;
+    v_insertCteArray           TEXT[] = '{}';
+    v_insertCteList            TEXT;
+    v_commonDscvColToInsert    TEXT;
+    v_skippedColumnsArray      TEXT[] = '{}';
+    v_commonDscvValToInsert    TEXT;
+    v_nbNotNullValue           TEXT;
+    v_dblinkSchema             TEXT;
+    v_dblinkServerName         TEXT;
+    v_stmt                     TEXT;
+    v_foreignTableQuery        TEXT;
+    r_col                      RECORD;
+BEGIN
+    v_aggForeignTable = p_foreignTable || '_agg';
+    p_nbColumns = 0;
+-- Depending on the column's type, build 3 arrays:
+--    - the columns definition for the foreign table (v_colDefArray);
+--    - the aggregates to feed these columns (v_aggregatesArray);
+--    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table (v_insertCteArray).
+    v_colDefArray = array_append(v_colDefArray, 'nb_row BIGINT');
+    v_aggregatesArray = array_append(v_aggregatesArray, 'count(*) AS nb_row');
+    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_max_size, dscv_nb_not_null,';
+    FOR r_col IN
+        SELECT attname, attnum, typname, typcategory, CASE WHEN atttypmod >= 0 THEN atttypmod ELSE NULL END AS atttypmod, attnotnull
+            FROM pg_attribute a
+                 JOIN pg_class c ON (c.oid = a.attrelid)
+                 JOIN pg_namespace n ON (n.oid = c.relnamespace)
+                 JOIN pg_type t ON (t.oid = a.atttypid)
+            WHERE nspname = p_foreignSchema
+              AND relname = p_foreignTable
+              AND attnum > 0
+              AND NOT attisdropped
+    LOOP
+        IF cardinality(v_aggregatesArray) > 1500 THEN
+-- If there are too many columns in the foreign table statement definition, don't analyze the remaining columns of the source table
+--   and just keep the information to report it.
+-- The documented postgres limit is 1600 columns per statement or row, but it depends on the columns type. So use a more reasonable hard-coded limit.
+            v_skippedColumnsArray = array_append(v_skippedColumnsArray, r_col.attname::text);
+        ELSE
+            p_nbColumns = p_nbColumns + 1;
+            v_commonDscvValToInsert = quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || quote_literal(r_col.attname)
+                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
+-- Nullable columns.
+            IF NOT r_col.attnotnull THEN
+                v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
+                v_aggregatesArray = array_append(v_aggregatesArray,
+                    format(c_nb_not_null, r_col.attname, r_col.attnum::text));
+                v_nbNotNullValue = 'nb_not_null_' || r_col.attnum::text;
+            ELSE
+                v_nbNotNullValue = 'NULL::BIGINT';
+            END IF;
+            CASE
+                WHEN r_col.typcategory = 'N' AND r_col.typname NOT IN ('numeric', 'float4', 'float8') THEN
+-- Integer columns: get the lowest and the greatest values.
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'num_min_' || r_col.attnum::text || ' NUMERIC',
+                        'num_max_' || r_col.attnum::text || ' NUMERIC'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_num_min, r_col.attname, r_col.attnum::text),
+                        format(c_num_max, r_col.attname, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_num_min, dscv_num_max) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
+--
+                WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
+-- Numeric non integer columns: get the lowest and the greatest values, the greatest precision, integer part and fractional part.
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'num_min_' || r_col.attnum::text || ' NUMERIC',
+                        'num_max_' || r_col.attnum::text || ' NUMERIC',
+                        'num_max_precision_' || r_col.attnum::text || ' INTEGER',
+                        'num_max_integ_part_' || r_col.attnum::text || ' INTEGER',
+                        'num_max_fract_part_' || r_col.attnum::text || ' INTEGER'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_num_min, r_col.attname, r_col.attnum::text),
+                        format(c_num_max, r_col.attname, r_col.attnum::text),
+                        format(c_num_max_precision, r_col.attname, r_col.attname, r_col.attnum::text),
+                        format(c_num_max_integ_part, r_col.attname, r_col.attnum::text),
+                        format(c_num_max_fract_part, r_col.attname, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_num_min, dscv_num_max, dscv_num_max_precision, dscv_num_max_integ_part, dscv_num_max_fract_part) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ', num_max_precision_' || r_col.attnum::text
+                        || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
+--
+                WHEN r_col.typcategory = 'S' THEN
+-- String types: get the average and max lengths, and the number of \x00 characters (forced to 0 for Postgres source table)
+
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'str_avg_len_' || r_col.attnum::text || ' INTEGER',
+                        'str_max_len_' || r_col.attnum::text || ' INTEGER',
+                        'str_nul_char_' || r_col.attnum::text || ' INTEGER'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_str_avg_len, r_col.attname, r_col.attnum::text),
+                        format(c_str_max_len, r_col.attname, r_col.attnum::text),
+                        format(c_str_nul_char, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_str_avg_length, dscv_str_max_length, dscv_str_nul_char) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', str_avg_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text
+                        || ', str_nul_char_' || r_col.attnum::text || ' FROM aggregates),');
+--
+                WHEN r_col.typname = 'bytea' THEN
+-- Binary strings: get the average and max lengths.
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'str_avg_len_' || r_col.attnum::text || ' INTEGER',
+                        'str_max_len_' || r_col.attnum::text || ' INTEGER'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_str_avg_len, r_col.attname, r_col.attnum::text),
+                        format(c_str_max_len, r_col.attname, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_str_avg_length, dscv_str_max_length) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', str_avg_len_' || r_col.attnum::text || ', str_max_len_' || r_col.attnum::text || ' FROM aggregates),');
+--
+                WHEN r_col.typcategory = 'D' AND r_col.typname NOT IN ('timestamp', 'timestamptz') THEN
+-- Date or time columns: get the lowest and greatest values.
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'ts_min_' || r_col.attnum::text || ' TEXT',
+                        'ts_max_' || r_col.attnum::text || ' TEXT'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_ts_min, r_col.attname, r_col.attnum::text),
+                        format(c_ts_max, r_col.attname, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_ts_min, dscv_ts_max) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ' FROM aggregates),');
+--
+                WHEN r_col.typcategory = 'D' AND r_col.typname IN ('timestamp', 'timestamptz') THEN
+-- Timestamp columns: get the lowest and greatest values, and the number of true dates (i.e. having a time component equal to 00:00:00).
+                    v_colDefArray = array_cat(v_colDefArray, ARRAY[
+                        'ts_min_' || r_col.attnum::text || ' TEXT',
+                        'ts_max_' || r_col.attnum::text || ' TEXT',
+                        'ts_nb_date_' || r_col.attnum::text || ' BIGINT'
+                        ]);
+                    v_aggregatesArray = array_cat(v_aggregatesArray, ARRAY[
+                        format(c_ts_min, r_col.attname, r_col.attnum::text),
+                        format(c_ts_max, r_col.attname, r_col.attnum::text),
+                        format(c_ts_nb_date, r_col.attname, r_col.attnum::text)
+                        ]);
+                    v_insertCteArray = array_append(v_insertCteArray, 'ins_' || r_col.attnum::text
+                        || ' AS (INSERT INTO @extschema@.discovery_column (' || v_commonDscvColToInsert
+                        || ' dscv_ts_min, dscv_ts_max, dscv_ts_nb_date) '
+                        || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
+                        || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text
+                        || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
+                ELSE
+                    RAISE WARNING '_discover_table() : in table %.%, the column % (#%) of type % is not processed',
+                                  p_schema, p_table, r_col.attname, r_col.attnum, r_col.typname;
+            END CASE;
+        END IF;
+    END LOOP;
+--
+-- Build lists from arrays.
+    v_colDefList = array_to_string(v_colDefArray, ', ');
+    v_aggregatesList = array_to_string(v_aggregatesArray, ', ');
+    v_insertCteList = array_to_string(v_insertCteArray, '');
+    p_skippedColumnsList = array_to_string(v_skippedColumnsArray, ', ');
+--
+-- Create the foreign table.
+--
+-- As the Postgres FDW does not provide a way to directly map a foreign table on a SQL statement, use a VIEW.
+-- The view is managed by a dblink connection.
+-- Prepare the VIEW definition that will be mapped to the foreign table.
+    IF p_maxRows IS NULL THEN
+        v_foreignTableQuery := format(
+            'SELECT %s FROM %I.%I',
+            v_aggregatesList, p_sourceSchema, p_sourceTable
+        );
+    ELSE
+        v_foreignTableQuery := format(
+            'SELECT %s FROM (SELECT * FROM %I.%I LIMIT %s) AS t',
+            v_aggregatesList, p_sourceSchema, p_sourceTable, p_maxRows
+        );
+    END IF;
+-- Get the schema holding the dblink extension.
+    SELECT nspname INTO v_dblinkSchema
+        FROM pg_catalog.pg_extension
+             JOIN pg_catalog.pg_namespace ON (pg_namespace.oid = extnamespace)
+        WHERE extname = 'dblink';
+-- Build the dblink_fdw server name, using the provided postgres_fdw server name.
+    v_dblinkServerName = 'dblink' || right(p_serverName, -7);   -- Replace the initial 'data2pg' by 'dblink'
+-- Drop the view, in case it would remain from a previous run.
+    v_stmt = format(
+        'DROP VIEW IF EXISTS %I.%I',
+        p_sourceSchema, p_sourceTable || '_agg'
+    );
+    EXECUTE format('SELECT %I.dblink(%L, %L)', v_dblinkSchema, v_dblinkServerName, v_stmt);
+-- ... and create it.
+    v_stmt = format(
+        'CREATE VIEW %I.%I AS %s',
+        p_sourceSchema, p_sourceTable || '_agg', v_foreignTableQuery
+    );
+    EXECUTE format('SELECT %I.dblink(%L, %L)', v_dblinkSchema, v_dblinkServerName, v_stmt);
+-- Create the Foreign table mapped on the view.
+    v_stmt = format(
+        'CREATE FOREIGN TABLE %I.%I (%s) SERVER %I OPTIONS (schema_name %L, table_name %L )',
+        p_foreignSchema, v_aggForeignTable, v_colDefList, p_serverName, p_sourceSchema, p_sourceTable || '_agg'
+    );
+    EXECUTE v_stmt;
+--
+-- Analyze the source table content by querying the foreign table.
+--
+    v_stmt = 'WITH aggregates AS ('
+          || '  SELECT * FROM ' || quote_ident(p_foreignSchema) || '.' || quote_ident(v_aggForeignTable)
+          || '  ), '
+          || v_insertCteList
+          || '     discovered_table AS ('
+          || '  INSERT INTO @extschema@.discovery_table (dscv_schema, dscv_table, dscv_max_row, dscv_nb_row)'
+          || '    SELECT ' || quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || coalesce(p_maxRows::TEXT, 'NULL') || ', nb_row'
+          || '        FROM aggregates'
+          || '  ) '
+          || 'SELECT nb_row FROM aggregates';
+-- Execute the first table scan. It creates a row per analyzed column into the discovery_column table
+    EXECUTE v_stmt INTO p_nbRows;
+-- Drop the foreign table, that is now useless
+    EXECUTE format(
+        'DROP FOREIGN TABLE %I.%I',
+        p_foreignSchema, v_aggForeignTable
+    );
+---- Also drop the associated view in postgres source database (currently done into _discover_end()).
+---- Disconnect the fdw connection to allow the DROP VIEW using the dblink connection
+--    PERFORM postgres_fdw_disconnect(v_serverName);
+--    v_stmt = format(
+--            'DROP VIEW %I.%I',
+--            v_sourceSchema, v_sourceTable || '_agg'
+--    );
+--    EXECUTE format('SELECT %I.dblink(%L, %L)', v_dblinkSchema, v_dblinkServerName, v_stmt);
+--
+    RETURN;
+END;
+$_discv_tbl_postgres$;
 
 -- The _discv_tbl_gen_advice() function is called at the end of the _discover_table() function.
 -- It generates pieces of advice from the discovered source table content, by reading the just loaded
