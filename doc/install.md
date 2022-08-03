@@ -1,6 +1,6 @@
 # How to install Data2Pg
 
-The Data2Pg installation can be splitted into 4 steps.
+The Data2Pg installation can be splitted into 5 steps.
 
 ## Installing the software
 
@@ -25,10 +25,15 @@ This database contains a `target_database` table that describes all PostgreSQL d
    * tdb_host : the IP address to reach the PostgreSQL target database
    * tdb_port : the IP port to reach the PostgreSQL target database
    * tdb_dbname : the PostgreSQL database name
+   * tdb_user : the role used to log on the target database (optional, leave it to NULL to use the default data2pg role)
+   * tdb_pwd : the password to use to log on the target database (optional, it is preferable to leave it to NULL and rely on the .pgpass file)
+   * tdb_cnx_options : some additional options to add to the connection string (optional)
    * tdb_description : a textual description of the database (optional)
    * tdb_locked : a flag to protect the database against unattended data copy ; set it to FALSE to run batches of type COPY.
 
-The administration database can be created using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script (see below the note about the *data2pg* role password). Then type:
+The administration database can be created using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Also adjust the password of the `data2pg` role on the `CREATE ROLE` statement.
+
+Then type:
 
 ```sh
 ./data2pg_init_db.sh
@@ -47,9 +52,21 @@ In order to install the optional Web client, the `data2pg/www` subdirectory must
 
 Then the `data2pg/www/conf/config.inc.php` must be created using the `config.inc.php-dist` template.
 
+## Managing the connection passwords
+
+For the connections on the administration database or the target databases, the most secure way to manage passwords is to feed the ~/.pgpass file of the account hosting the Data2Pg software.
+
+The *data2pg.pl* scheduler and the *data2pg_monitor.pl* monitor clients only rely on the `.pgpass` file content to reach the Data2Pg administration database.
+
+To log on the target databases, the *data2pg.pl* scheduler may use either the `.pgpass` file content or the `target_database` table content from the administration database, the first being the most secure. So the `~/.pgpass` file of the OS account used to run these commands must be adjusted accordingly.
+
+The web client only accesses the Data2Pg administration database. It uses parameters set into its `config.inc.php` configuration file, including the *data2pg* password.
+
 ## Creating the data2pg extension
 
-On each target database, the `data2pg` extension must be created using the supplied `data2pg_init_extension.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Then type:
+On each target database, the `data2pg` extension must be created using the supplied `data2pg_init_extension.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script.
+
+Then type:
 
 ```sh
 ./data2pg_init_extension.sh
@@ -57,16 +74,6 @@ On each target database, the `data2pg` extension must be created using the suppl
 
 The script:
 
-   * creates a role named `data2pg`, if it does not already exist in the instance;
    * creates the `data2pg` extension inside the target database;
-   * loads custom components that may be needed for specific migration steps, by executing the `data2pg_addons.sql` SQL script file.
-
-## Managing the data2pg role password
-
-Most operations accessing PostgreSQL databases use a dedicated *data2pg* role. In this repo files, the password is set to `gp2atad`. IT HAS TO BE CHANGED!
-
-This concerns the `CREATE ROLE` statement in both *data2pg_init_admin_db.sh* and *data2pg_init_extension.sh* script files.
-
-The *data2pg.pl* scheduler only relies on the `.pgpass` file content to reach the Data2Pg administration database as well as the target databases. The *data2pg_monitor.pl* monitor clients also uses the `.pgpass` file content to reach the Data2Pg administration database (it never logs on the target databases). So the `~/.pgpass` file of the OS account used to run these commands must be adjusted accordingly.
-
-The web client only accesses the Data2Pg administration database. It uses parameters set into its `config.inc.php` configuration file, including the *data2pg* password (see above).
+   * loads custom components that may be needed for specific migration steps, by executing the `data2pg_addons.sql` SQL script file;
+   * creates or alter the role to be used for the scheduler connection, if it does not already exist in the instance.

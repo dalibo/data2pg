@@ -21,6 +21,9 @@ CREATE TABLE target_database (
     tdb_host                   TEXT,                    -- The ip adress of the database
     tdb_port                   SMALLINT,                -- The ip port of the database
     tdb_dbname                 TEXT,                    -- The database name inside the target instance
+    tdb_user                   TEXT,                    -- The role to use to log on the target database (data2pg by default, if NULL)
+    tdb_pwd                    TEXT,                    -- The password to use to log on the target database (preferably defined in the .pgpass file)
+    tdb_cnx_options            TEXT,                    -- Extra connection options when logging on the target database
     tdb_description            TEXT,                    -- A free description
     tdb_locked                 BOOLEAN DEFAULT FALSE,   -- A boolean indicating whether the Data2Pg scheduler is allowed to run a batch for this database
     PRIMARY KEY (tdb_id)

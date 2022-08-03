@@ -6,14 +6,21 @@ echo "==========================================================================
 echo "Create the data2pg role on the instance and the data2pg extension into the target database"
 echo "=========================================================================================="
 
-# Environment variables to setup
+# Environment variables
+## My values
+PGDATABASE=test_dest
+DATA2PG_ROLE=data2pg_adm
+DATA2PG_PWD=secret
+DATA2PG_SCHEMA=data2pg0.6
+
+## Default values
 PGHOST_DEFAULT_VALUE=localhost
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
-PGDATABASE_DEFAULT_VALUE=test_dest
+PGDATABASE_DEFAULT_VALUE=postgres
 DATA2PG_SCHEMA_DEFAULT_VALUE=data2pg
-
-DATA2PG_SCHEMA='data2pg03'
+DATA2PG_ROLE_DEFAULT_VALUE=data2pg
+DATA2PG_PWD_DEFAULT_VALUE=gp2atad
 
 if [ -z ${PGHOST+x} ];
 then
@@ -60,72 +67,53 @@ else
   echo "Environment variable DATA2PG_SCHEMA is already defined to ${DATA2PG_SCHEMA}."
 fi
 
-echo "Perform checks and create the role, if needed"
-echo "---------------------------------------------"
-
-psql postgres <<EOF
-\set ON_ERROR_STOP ON
-
--- Perform some checks and create the role if needed
-DO LANGUAGE plpgsql
-\$do\$
-  BEGIN
--- check the current role is a superuser
-    PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = current_user AND rolsuper;
-    IF NOT FOUND THEN
-      RAISE EXCEPTION 'The current user (%) is not a superuser.', current_user;
-    END IF;
--- check postgres version is >= 9.6
-    IF current_setting('server_version_num')::INT < 90600 THEN
-      RAISE EXCEPTION 'The current postgres version (%) is too old. It should be at least 9.6.',
-        current_setting('server_version');
-    END IF;
--- create the data2pg role, if it doesn't already exist
-    PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = 'data2pg';
-    IF NOT FOUND THEN
--- the role does not exist, so create it
-      CREATE ROLE data2pg LOGIN PASSWORD 'md5a511ab1156a0feba6acde5bbe60bd6e6';
-    END IF;
---
-    RETURN;
-  END;
-\$do\$;
-
-EOF
-
-if [ $? -ne 0 ]; then
-  echo "  => Problem encountered"
-  exit 1
+if [ -z ${DATA2PG_ROLE+x} ];
+then
+  echo "Environment variable DATA2PG_ROLE is not defined."
+  echo "  => Setting DATA2PG_ROLE to ${DATA2PG_ROLE_DEFAULT_VALUE}."
+  export DATA2PG_ROLE=${DATA2PG_ROLE_DEFAULT_VALUE}
 else
-  echo "  => the data2pg role is created"
+  echo "Environment variable DATA2PG_ROLE is already defined to ${DATA2PG_ROLE}."
+fi
+
+if [ -z ${DATA2PG_PWD+x} ];
+then
+  echo "Environment variable DATA2PG_PWD is not defined."
+  echo "  => Setting DATA2PG_PWD to the default password."
+  export DATA2PG_PWD=${DATA2PG_PWD_DEFAULT_VALUE}
+else
+  echo "Environment variable DATA2PG_PWD is already defined."
 fi
 
 echo "Create the data2pg extension in the $PGDATABASE database"
 echo "--------------------------------------------------------"
 
-psql -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
+psql $PGDATABASE -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
 \set ON_ERROR_STOP ON
 
--- If the extension is already installed, drop the existing migrations, if any, to avoid to generate orphan srcdb_XXX schemas.
-SET search_path = :'data2pg_schema';
-DO LANGUAGE plpgsql
-\$do\$
+CREATE OR REPLACE FUNCTION public.create_extension(p_schema TEXT) RETURNS void LANGUAGE plpgsql AS
+\$create_extension\$
+
   BEGIN
+-- If the extension is already installed, drop the existing migrations, if any, to avoid to generate orphan srcdb_XXX schemas.
     BEGIN
-        PERFORM drop_migration(mgr_name) FROM migration;
+      EXECUTE format('PERFORM %I.drop_migration(mgr_name) FROM migration',p_schema);
     EXCEPTION
-        WHEN OTHERS THEN  -- continue
+      WHEN OTHERS THEN  -- continue
     END;
+-- Drop the extension and schema, if any.
+    DROP EXTENSION IF EXISTS data2pg CASCADE;
+    EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', p_schema);
+-- Create the schema and extension.
+    EXECUTE format('CREATE SCHEMA %I', p_schema);
+    EXECUTE format('CREATE EXTENSION data2pg SCHEMA %I CASCADE', p_schema);
+--
     RETURN;
   END;
-\$do\$;
-RESET search_path;
+\$create_extension\$;
 
-DROP EXTENSION IF EXISTS :data2pg_schema CASCADE;
-DROP SCHEMA IF EXISTS :data2pg_schema CASCADE;
-
-CREATE SCHEMA :data2pg_schema;
-CREATE EXTENSION data2pg SCHEMA :data2pg_schema CASCADE;
+SELECT public.create_extension(:'data2pg_schema');
+DROP FUNCTION public.create_extension;
 
 EOF
 
@@ -133,20 +121,57 @@ if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
   exit 1
 else
-  echo "  => the data2pg extension is successfuly created"
+  echo "  => The data2pg extension is successfuly created"
 fi
 
 echo "Load the data2pg addons, if any"
 echo "-------------------------------"
 
 if [ -f data2pg_addons.sql ]; then
-  psql -f data2pg_addons.sql
+  psql $PGDATABASE -f data2pg_addons.sql
   if [ $? -ne 0 ]; then
     echo "  => Problem encountered"
     exit 1
   else
-    echo "  => the data2pg addons have been successfuly loaded"
+    echo "  => The data2pg addons have been successfuly loaded"
   fi
 else
   echo "Warning: no data2pg_addons.sql file found."
+fi
+
+echo "Create the role to be used by the scheduler, if needed"
+echo "------------------------------------------------------"
+
+psql $PGDATABASE -v data2pg_role=${DATA2PG_ROLE} -v data2pg_pwd=${DATA2PG_PWD}<<EOF
+\set ON_ERROR_STOP ON
+
+CREATE OR REPLACE FUNCTION public.create_role(p_role TEXT, p_pwd TEXT) RETURNS void LANGUAGE plpgsql AS
+\$create_role\$
+  BEGIN
+-- If the connection role is data2pg, just set/reset its password (It has been created by the already executed "CREATE EXTENSION data2pg" statement).
+    IF p_role = 'data2pg' THEN
+      EXECUTE format('ALTER ROLE data2pg LOGIN PASSWORD %L', p_pwd);
+    ELSE
+-- Otherwise create the requested role if it does not already exist and grant it data2pg.
+      PERFORM 0 FROM pg_catalog.pg_roles WHERE rolname = p_role;
+      IF NOT FOUND THEN
+        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', p_role, p_pwd);
+      END IF;
+      EXECUTE format('GRANT data2pg TO %I', p_role);
+    END IF;
+--
+    RETURN;
+  END;
+\$create_role\$;
+
+SELECT public.create_role(:'data2pg_role', :'data2pg_pwd');
+DROP FUNCTION public.create_role;
+
+EOF
+
+if [ $? -ne 0 ]; then
+  echo "  => Problem encountered"
+  exit 1
+else
+  echo "  => The connection role is created"
 fi

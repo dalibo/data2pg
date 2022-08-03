@@ -13,12 +13,23 @@ Regarding table content migrations, once a foreign table is created into the tar
 The Data2Pg framework has several components:
 
   * an extension installed into the target Postgres database
-  * a dedicated data2pg database that is generaly installed in a central point of the migration project
+  * a dedicated data2pg administration database that is generaly installed in a central point of the migration project
   * a scheduler that performs the requested actions
   * a monitor tool that reports the migration progress in real time and display detailed information about past migrations
   * a web client that may be used to ease the scheduler run and the batches monitoring.
 
 ![Data2pg architecture](../img/architecture.png)
+
+## Connection to PostgreSQL databases
+
+The administration database is owned by the `data2pg` role. This role is also used to log on this database.
+
+The `data2pg` extension installed into each target databases is also owned by the `data2pg` role. But the scheduler logs on the target databases using either the `data2pg` role or another role having the `data2pg` priviledges.
+
+Passwords are normally set in the .pgpass file.
+
+The administration database contains a `target_database` table that identifies all databases that may be reached by the scheduler. This table contains optional columns to define non default roles to use, passwords not set in the .pgpass file or specific connection options.
+
 
 ## Data2Pg Concepts
 

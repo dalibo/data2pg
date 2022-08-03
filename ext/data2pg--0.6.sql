@@ -4,16 +4,25 @@
 -- Complain if the script is sourced in psql, rather than a CREATE EXTENSION statement.
 \echo Use "CREATE EXTENSION data2pg" to load this file. \quit
 ---
---- Preliminary checks.
+--- Perform some checks and create the data2pg role.
 ---
 DO LANGUAGE plpgsql
-$$
+$do$
 BEGIN
     IF current_setting('server_version_num')::int < 90600 THEN
         RAISE EXCEPTION 'The current postgres version (%) is too old. It should be at least 9.6', current_setting('server_version');
     END IF;
+    IF NOT EXISTS
+         (SELECT 0
+            FROM pg_catalog.pg_roles
+            WHERE rolname = 'data2pg'
+         ) THEN
+      CREATE ROLE data2pg NOLOGIN;
+      COMMENT ON ROLE data2pg IS
+        $$Owner of the data2pg extension.$$;
+    END IF;
 END
-$$;
+$do$;
 
 --
 -- Create specific types.

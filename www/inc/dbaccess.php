@@ -61,8 +61,11 @@ function sql_getDatabases(){
 function sql_getDatabase($tdbId){
 	global $conn;
 
-	$sql = "SELECT tdb_id, tdb_host, tdb_port, tdb_dbname, coalesce(tdb_description, '') AS tdb_description, tdb_locked,
-				   count(run_id) AS nb_run
+	$sql = "SELECT tdb_id, tdb_host, tdb_port, tdb_dbname,
+				   coalesce(tdb_user, '') AS tdb_user, coalesce(tdb_pwd, '') AS tdb_pwd,
+				   coalesce(tdb_cnx_options, '') AS tdb_cnx_options,
+				   coalesce(tdb_description, '') AS tdb_description,
+				   tdb_locked, count(run_id) AS nb_run
 			FROM target_database
 				 LEFT OUTER JOIN run ON (run_database = tdb_id)
 			WHERE tdb_id = $1
@@ -96,14 +99,17 @@ function sql_existDatabase($tdbHost, $tdbPort, $tdbDbname){
 }
 
 // The sql_insertDatabase() inserts a row into the target_database table.
-function sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription){
+function sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbUser, $tdbPwd, $tdbCnxOptions, $tdbDescription){
 	global $conn;
 
 	$sql = "INSERT INTO target_database
-					(tdb_id, tdb_host, tdb_port, tdb_dbname, tdb_description)
-			VALUES  ($1, $2, $3, $4, $5)
+					(tdb_id, tdb_host, tdb_port, tdb_dbname, tdb_user, tdb_pwd, tdb_cnx_options, tdb_description)
+			VALUES  ($1, $2, $3, $4, $5, $6, $7, $8)
 			ON CONFLICT DO NOTHING";
 	$res = pg_query_params($conn, $sql, array($tdbId, $tdbHost, $tdbPort, $tdbDbname,
+											  ($tdbUser <> '') ? $tdbUser : NULL,
+											  ($tdbPwd <> '') ? $tdbPwd : NULL,
+											  ($tdbCnxOptions <> '') ? $tdbCnxOptions : NULL,
 											  ($tdbDescription <> '') ? $tdbDescription : NULL))
 		or die(pg_last_error());
 	return $res;
@@ -122,14 +128,17 @@ function sql_updateLockDatabase($tdbId, $trueFalse){
 }
 
 // The sql_updateDatabase() sets the modified database properties.
-function sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription){
+function sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbUser, $tdbPwd, $tdbCnxOptions, $tdbDescription){
 	global $conn;
 
 	$sql = "UPDATE target_database
-				SET tdb_host = $1, tdb_port = $2, tdb_dbname = $3, tdb_description = $4
-			WHERE tdb_id = $5";
-	$res = pg_query_params($conn, $sql, array($tdbHost, $tdbPort, $tdbDbname,
-											  ($tdbDescription <> '') ? $tdbDescription : NULL, $tdbId))
+				SET tdb_host = $2, tdb_port = $3, tdb_dbname = $4, tdb_user = $5, tdb_pwd = $6, tdb_cnx_options = $7, tdb_description = $8
+			WHERE tdb_id = $1";
+	$res = pg_query_params($conn, $sql, array($tdbId, $tdbHost, $tdbPort, $tdbDbname,
+											  ($tdbUser <> '') ? $tdbUser : NULL,
+											  ($tdbPwd <> '') ? $tdbPwd : NULL,
+											  ($tdbCnxOptions <> '') ? $tdbCnxOptions : NULL,
+											  ($tdbDescription <> '') ? $tdbDescription : NULL))
 		or die(pg_last_error());
 	return $res;
 }

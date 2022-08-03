@@ -1,4 +1,4 @@
-tdb_id,tdb_host,tdb_port,tdb_dbname,tdb_description,tdb_locked
-pg_test_db,localhost,5432,test_dest,"My lovely Postgres database to test Data2Pg with a Postgres source",FALSE
-another_db,localhost,5432,other,"Another target database",FALSE
-locked_db,localhost,5432,locked,"A locked target database",TRUE
+tdb_id,tdb_host,tdb_port,tdb_dbname,tdb_role,tdb_pwd,tdb_cnx_options,tdb_description,tdb_locked
+pg_test_db,localhost,5432,test_dest,data2pg_adm,secret,,"My lovely Postgres database to test Data2Pg with a Postgres source",FALSE
+another_db,localhost,5432,other,,,,"Another target database",FALSE
+locked_db,localhost,5432,locked,,,,"A locked target database",TRUE

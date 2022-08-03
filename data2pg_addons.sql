@@ -1,6 +1,6 @@
 -- data2pg_addons.sql
 -- This script contents additional components that may be needed for specific migration projects.
--- 
+--
 \set ON_ERROR_STOP ON
 
 -- Set the search_path to the data2pg extension installation schema.

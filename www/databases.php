@@ -161,20 +161,20 @@ function newDb() {
 
 // Display the form.
 	mainTitle('', "New target database", '');
-	displayDbForm('confirmNewDb', '', 'localhost', 5432, '', '');
+	displayDbForm('confirmNewDb', '', 'localhost', 5432, '', '', '', '', '');
 }
 
 // The displayDbForm() function displays the form used to either create a new database or edit an existing database.
-function displayDbForm($action, $tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription){
+function displayDbForm($action, $tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbUser, $tdbPwd, $tdbCnxOptions, $tdbDescription){
 
 	echo "<div id=\"dbForm\">\n";
 	echo "<form name=\"newDb\" action=\"databases.php\" method=\"get\">\n";
 	echo "\t<div class=\"form-container\">\n";
 	echo "\t\t<input type=\"hidden\" name=\"a\" value=\"$action\">\n";
 
-	echo "\t\t<div class=\"form-label\">Database identifier (must be unique)</div>";
+	echo "\t\t<div class=\"form-label\">Database identifier</div>";
 	($tdbId == '') ? $attr = 'required' : $attr = 'readonly';
-	echo "\t\t<div class=\"form-input\"><input name=\"tdbId\" $attr value=\"" . htmlspecialchars($tdbId) . "\"></div>";
+	echo "\t\t<div class=\"form-input\"><input name=\"tdbId\" $attr value=\"" . htmlspecialchars($tdbId) . "\">&nbsp(must be unique)</div>";
 
 	echo "\t\t<div class=\"form-label\">IP address or host name</div>";
 	echo "\t\t<div class=\"form-input\"><input name=\"tdbHost\" size=20 required value=\"" . htmlspecialchars($tdbHost) . "\"></div>\n";
@@ -184,6 +184,15 @@ function displayDbForm($action, $tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDesc
 
 	echo "\t\t<div class=\"form-label\">Database name</div>";
 	echo "\t\t<div class=\"form-input\"><input name=\"tdbDbname\" required value=\"" . htmlspecialchars($tdbDbname) . "\"></div>";
+
+	echo "\t\t<div class=\"form-label\">Connection role</div>";
+	echo "\t\t<div class=\"form-input\"><input name=\"tdbUser\" value=\"" . htmlspecialchars($tdbUser) . "\">&nbsp(optional, 'data2pg' by default)</div>";
+
+	echo "\t\t<div class=\"form-label\">Connection password</div>";
+	echo "\t\t<div class=\"form-input\"><input name=\"tdbPwd\" value=\"" . htmlspecialchars($tdbPwd) . "\">&nbsp(preferably set in the .pgpass file)</div>";
+
+	echo "\t\t<div class=\"form-label\">Connection options</div>";
+	echo "\t\t<div class=\"form-input\"><input name=\"tdbCnxOptions\" value=\"" . htmlspecialchars($tdbCnxOptions) . "\"></div>";
 
 	echo "\t\t<div class=\"form-label\">Description</div>";
 	echo "\t\t<div class=\"form-input\"><input name=\"tdbDescription\" size=60 value=\"" . htmlspecialchars($tdbDescription) . "\"></div>\n";
@@ -204,6 +213,9 @@ function confirmNewDb() {
 	$tdbHost = @$_GET["tdbHost"];
 	$tdbPort = @$_GET["tdbPort"];
 	$tdbDbname = @$_GET["tdbDbname"];
+	$tdbUser = @$_GET["tdbUser"];
+	$tdbPwd = @$_GET["tdbPwd"];
+	$tdbCnxOptions = @$_GET["tdbCnxOptions"];
 	$tdbDescription = @$_GET["tdbDescription"];
 
 // Check that the database to create doesn't already exist, either with its id or its combination of host, port and dbname.
@@ -228,6 +240,9 @@ function confirmNewDb() {
 			echo "\t\t<input type='hidden' name='tdbHost' value='$tdbHost'>\n";
 			echo "\t\t<input type='hidden' name='tdbPort' value='$tdbPort'>\n";
 			echo "\t\t<input type='hidden' name='tdbDbname' value='$tdbDbname'>\n";
+			echo "\t\t<input type='hidden' name='tdbUser' value='$tdbUser'>\n";
+			echo "\t\t<input type='hidden' name='tdbPwd' value='$tdbPwd'>\n";
+			echo "\t\t<input type='hidden' name='tdbCnxOptions' value='$tdbCnxOptions'>\n";
 			echo "\t\t<input type='hidden' name='tdbDescription' value='$tdbDescription'>\n";
 			echo "\t\t<input type='submit' value='OK'>\n";
 			echo "\t\t<input type=\"button\" value=\"Cancel\" onClick=\"window.location.href='databases.php?a=display';\">\n";
@@ -244,10 +259,13 @@ function doNewDb() {
 	$tdbHost = @$_GET["tdbHost"];
 	$tdbPort = @$_GET["tdbPort"];
 	$tdbDbname = @$_GET["tdbDbname"];
+	$tdbUser = @$_GET["tdbUser"];
+	$tdbPwd = @$_GET["tdbPwd"];
+	$tdbCnxOptions = @$_GET["tdbCnxOptions"];
 	$tdbDescription = @$_GET["tdbDescription"];
 
 // Perform the insertion
-	$res = sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription);
+	$res = sql_insertDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbUser, $tdbPwd, $tdbCnxOptions, $tdbDescription);
 
 	if (pg_affected_rows($res) <> 1) {
 		$msg = "Error: internal error while recording the new database.";
@@ -549,7 +567,8 @@ function editDb() {
 
 // Display the form.
 		mainTitle('', "Edit a target database", '');
-		displayDbForm('doEditDb', $tdbId, $db['tdb_host'], $db['tdb_port'], $db['tdb_dbname'], $db['tdb_description']);
+		displayDbForm('doEditDb', $tdbId, $db['tdb_host'], $db['tdb_port'], $db['tdb_dbname'],
+					  $db['tdb_user'], $db['tdb_pwd'], $db['tdb_cnx_options'], $db['tdb_description']);
 	}
 }
 
@@ -560,10 +579,13 @@ function doEditDb() {
 	$tdbHost = @$_GET["tdbHost"];
 	$tdbPort = @$_GET["tdbPort"];
 	$tdbDbname = @$_GET["tdbDbname"];
+	$tdbUser = @$_GET["tdbUser"];
+	$tdbPwd = @$_GET["tdbPwd"];
+	$tdbCnxOptions = @$_GET["tdbCnxOptions"];
 	$tdbDescription = @$_GET["tdbDescription"];
 
 // Perform the update.
-	$res = sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbDescription);
+	$res = sql_updateDatabase($tdbId, $tdbHost, $tdbPort, $tdbDbname, $tdbUser, $tdbPwd, $tdbCnxOptions, $tdbDescription);
 
 	if (pg_affected_rows($res) <> 1) {
 		$msg = "Error: internal error while updating the database.";

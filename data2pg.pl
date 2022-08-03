@@ -18,7 +18,7 @@ $APPNAME = 'data2pg';
 
 # Constants.
 my $d2pUser = 'data2pg';               # The role name used for the data2pg administration database connection
-my $pgUser = 'data2pg';                # The role name used for the connections to the target postgres database
+my $pgDefaultUser = 'data2pg';         # The role name used for the connections to the target postgres database
 
 my $checkCompletedOpDelay = 0.5;       # Maximum delay in seconds between 2 checks for completed operations
 my $sleepMinDuration = 0.01;           # Minimum sleep duration in the main loop (in second)
@@ -53,6 +53,8 @@ our $cfComment;                        # Comment associated to the run and regis
 our $cfRefRun;                         # Run id used as reference for the steps duration
 
 # Global variables to manage the sessions and the statements to the databases.
+my $pgUser;                            # The connection role to log on
+my $pgPwd;                             # The connection password to use, if defined in the target_database table
 my $pgDsn;                             # DSN to reach the target database
 my $d2pDbh;                            # Handle for the connection on the data2pg administration database
 my $d2pSth;                            # Handle for the statements to submit on the data2pg administration database connection
@@ -344,7 +346,7 @@ sub logonData2pg {
 # Get the connection parameters for the target database.
     $quotedTargetDb = $d2pDbh->quote($targetDb, { pg_type => PG_VARCHAR });
     $sql = qq(
-        SELECT tdb_host, tdb_port, tdb_dbname, tdb_locked
+        SELECT tdb_host, tdb_port, tdb_dbname, tdb_user, tdb_pwd, tdb_cnx_options, tdb_locked
             FROM target_database
             WHERE tdb_id = $quotedTargetDb
     );
@@ -360,6 +362,12 @@ sub logonData2pg {
     $pgDsn .= "dbname=" . $row->{'tdb_dbname'} if defined $row->{'tdb_dbname'};
     $pgDsn .= ";host=" . $row->{'tdb_host'} if defined $row->{'tdb_host'};
     $pgDsn .= ";port=" . $row->{'tdb_port'} if defined $row->{'tdb_port'};
+    $pgDsn .= ";" . $row->{'tdb_cnx_options'} if defined $row->{'tdb_cnx_options'};
+    $pgDsn .= ";application_name=$APPNAME";
+
+    $pgUser = $pgDefaultUser;
+    $pgUser = $row->{'tdb_user'} if defined $row->{'tdb_user'};
+    $pgPwd = $row->{'tdb_pwd'} if defined $row->{'tdb_pwd'};
 
 # If a reference run is provided, check its id. The run must exist and be in a completed state.
     if (defined($refRun)) {
@@ -645,7 +653,7 @@ sub openSession
 
 # Try to connect
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
-    $sessions[$i]->{dbh} = DBI->connect($pgDsn, $pgUser, undef, {AutoCommit=>0})
+    $sessions[$i]->{dbh} = DBI->connect($pgDsn, $pgUser, $pgPwd, {AutoCommit=>0})
           or abort("Error while logging on the target database ($DBI::errstr).");
     $sessions[$i]->{dbh}->{RaiseError} = 1;
     $sessions[$i]->{state} = 1;
@@ -676,8 +684,8 @@ sub openSession
         }
     }
 
-# Set the application_name and the search_path to the just opened session.
-    $sql = qq(SET application_name = $APPNAME; SET search_path TO $pgSchema);
+# Set the search_path for the just opened session.
+    $sql = qq(SET search_path TO $pgSchema);
     $sessions[$i]->{dbh}->do($sql);
 
     if (!$actionCheck) {
