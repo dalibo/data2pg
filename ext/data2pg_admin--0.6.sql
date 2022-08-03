@@ -4,6 +4,9 @@
 -- Complain if the script is sourced in psql, rather than a CREATE EXTENSION statement.
 \echo Use "CREATE EXTENSION data2pg_admin" to load this file. \quit
 
+COMMENT ON SCHEMA @extschema@ IS
+$$Contains the data2pg_admin extension.$$;
+
 --
 -- Create specific types.
 --

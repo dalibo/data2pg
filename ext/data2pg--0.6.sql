@@ -24,6 +24,9 @@ BEGIN
 END
 $do$;
 
+COMMENT ON SCHEMA @extschema@ IS
+$$Contains the data2pg extension.$$;
+
 --
 -- Create specific types.
 --
@@ -848,9 +851,7 @@ BEGIN
     END IF;
 -- Create the foreign schema if it does not exist.
     v_foreignSchema = 'srcdb_' || p_schema;
-    EXECUTE format(
-        'CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION data2pg',
-        v_foreignSchema);
+    PERFORM @extschema@.create_schema(v_foreignSchema);
 -- Compute the schema or user name in the source database.
     v_sourceSchema = coalesce(p_sourceSchema, p_schema);
 -- Get the postgres version.
@@ -1360,9 +1361,7 @@ BEGIN
     PERFORM @extschema@.check_schema(p_schema);
 -- Create the foreign schema if it does not exist.
     v_foreignSchema = 'srcdb_' || p_schema;
-    EXECUTE format(
-        'CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION data2pg',
-        v_foreignSchema);
+    PERFORM @extschema@.create_schema(v_foreignSchema);
 -- Get the array of sequences to process.
     SELECT array_agg(relname ORDER BY relname) INTO v_sequencesArray
         FROM pg_catalog.pg_class
@@ -2668,6 +2667,30 @@ BEGIN
     RETURN;
 END;
 $check_batch$;
+
+-- The create_schema() function creates a schema if it does not already exist. It also set a comment.
+CREATE FUNCTION create_schema(
+    p_schema                  TEXT
+    )
+    RETURNS void LANGUAGE plpgsql AS
+$create_schema$
+BEGIN
+-- Check that the supplied schema exists.
+    PERFORM 0 FROM pg_catalog.pg_namespace
+        WHERE nspname = p_schema;
+-- If not found, create it and set a comment.
+    IF NOT FOUND THEN
+        EXECUTE format(
+            'CREATE SCHEMA %I AUTHORIZATION data2pg',
+            p_schema);
+        EXECUTE format(
+            'COMMENT ON SCHEMA %I IS ''Data2Pg related schema.''',
+            p_schema);
+    END IF;
+--
+    RETURN;
+END;
+$create_schema$;
 
 --
 --
