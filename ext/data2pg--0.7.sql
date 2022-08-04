@@ -2890,7 +2890,7 @@ BEGIN
         RAISE EXCEPTION '_verify_objects: Missing index detected (%).', v_list;
     END IF;
 -- Check that no index is set as NOT READY.
-    SELECT string_agg(tic_schema || '.' || tic_table || '.' || tic_index, ', ' ORDER BY tic_schema || '.' || tic_table || '.' || tic_index)
+    SELECT string_agg(tic_schema || '.' || tic_index, ', ' ORDER BY tic_schema || '.' || tic_index)
         INTO v_list
         FROM (
             SELECT DISTINCT tic_schema, tic_table, tic_index
@@ -2907,7 +2907,7 @@ BEGIN
                   AND indisready
              ) AS t;
     IF v_list IS NOT NULL THEN
-        RAISE EXCEPTION '_verify_objects: NOT READY index detected (%).', v_list;
+        RAISE EXCEPTION '_verify_objects: NOT READY index detected (%). (They can be manually REINDEXed)', v_list;
     END IF;
 --
     RETURN;
