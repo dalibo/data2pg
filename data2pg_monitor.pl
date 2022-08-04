@@ -13,7 +13,7 @@ use POSIX qw(strftime floor);
 use vars qw($VERSION $PROGRAM $APPNAME);
 use Data::Dumper;
 
-$VERSION = '0.6';
+$VERSION = '0.7';
 $PROGRAM = 'data2pg_monitor.pl';
 $APPNAME = 'data2pg_monitor';
 
@@ -67,8 +67,8 @@ sub parseCommandLine
 
 # ---------------------------------------------------------------------------------------------
 sub print_help {
-  print qq{$PROGRAM belongs to the data2pg project (version $VERSION).
-It monitors data migrations towards PostgreSQL performed by the data2pg scheduler.
+  print qq{$PROGRAM belongs to the Data2Pg project (version $VERSION).
+It monitors data migrations towards PostgreSQL performed by the data2pg.pl scheduler.
 
 Usage:
   $PROGRAM [OPTION]...

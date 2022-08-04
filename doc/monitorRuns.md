@@ -6,15 +6,17 @@ The shell command syntax can be displayed with the --help option.
 
 ```sh
 perl data2pg_monitor.pl --help
-data2pg_monitor.pl belongs to the data2pg project (version 0.6).
-It monitors data migrations towards PostgreSQL performed by the data2pg scheduler.
+data2pg_monitor.pl belongs to the Data2Pg project (version 0.7).
+It monitors data migrations towards PostgreSQL performed by the data2pg.pl scheduler.
 
 Usage:
   data2pg_monitor.pl [OPTION]...
 
 Options:
-  --host      IP host of the data2pg database (default = PGHOST env. var.)
-  --port      IP port of the data2pg database (default = PGPORT env. var.)
+  --host      IP host of the Data2pg administration database (default = PGHOST env. var.)
+  --port      IP port of the Data2pg administration database (default = PGPORT env. var.)
+  --dbname    Administration database name (default = data2pg)
+  --user      Role to log on the administration database (default = data2pg)
   --lines     maximum number of lines to display (0 = default = no page size limit)
   --run       optional run id to examine. If no specific run is specified, display the latest runs
                 registered into the data2pg database

@@ -1,5 +1,5 @@
 # Data2Pg core extension
 comment = 'Data2Pg admininistration'
-default_version = '0.6'
-superuser = no
+default_version = '0.7'
+superuser = yes
 relocatable = no

@@ -12,7 +12,7 @@ use Getopt::Long;
 use Time::HiRes 'sleep';
 use vars qw($VERSION $PROGRAM $APPNAME);
 
-$VERSION = '0.6';
+$VERSION = '0.7';
 $PROGRAM = 'data2pg.pl';
 $APPNAME = 'data2pg';
 
@@ -103,7 +103,7 @@ my @sessions;
 # Online Help.
 sub usage
 {
-    print "Data2Pg is a migration framework to load PostgreSQL databases (version $VERSION)\n";
+    print "Data2Pg is a migration framework to load PostgreSQL databases.\n";
     print "Usage: $0 [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]\n\n";
     print "  --host         : IP host of the data2pg Data2pg administration database (default = PGHOST env. var.)\n";
     print "  --port         : IP port of the data2pg Data2pg administration database (default = PGPORT env. var.)\n";

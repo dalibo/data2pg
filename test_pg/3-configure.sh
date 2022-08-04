@@ -96,7 +96,7 @@ SELECT register_tables(
     p_tablesToInclude          => '^MYTBL4$',
     p_tablesToExclude          => NULL,                               -- Default
     p_sourceSchema             => NULL,                               -- Default
-    p_sourceTableNamesFnct     => '"data2pg0.6".tables_renaming_rules',
+    p_sourceTableNamesFnct     => '"data2pg0.7".tables_renaming_rules',
     p_sourceTableStatLoc       => 'source_table_stat',                -- Default
     p_createForeignTable       => TRUE,                               -- Default
     p_ForeignTableOptions      => NULL,                               -- Default

@@ -13,13 +13,15 @@ The shell command syntax can be displayed with the --help option.
 ```sh
 perl data2pg.pl --help
 
- Data2Pg - version 0.6
+ Data2Pg - version 0.7
 -----------------------
-Data2Pg is a migration framework to load PostgreSQL databases (version 0.6)
+Data2Pg is a migration framework to load PostgreSQL databases.
 Usage: data2pg.pl [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]
 
   --host         : IP host of the data2pg administration database (default = PGHOST env. var.)
   --port         : IP port of the data2pg administration database (default = PGPORT env. var.)
+  --dbname       : administration database name (default = data2pg)
+  --user         : role to log on the administration database (default = data2pg)
   --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)
   --conf         : configuration file (default = no configuration file)
   --verbose      : display additional information during the run

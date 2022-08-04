@@ -12,7 +12,7 @@ export PGHOST=localhost
 export PGDATABASE=test_dest
 export DATA2PG_ROLE=data2pg_adm
 export DATA2PG_PWD=secret
-export DATA2PG_SCHEMA=data2pg0.6
+export DATA2PG_SCHEMA=data2pg0.7
 
 ## Default values
 PGHOST_DEFAULT_VALUE=
