@@ -8,13 +8,14 @@ echo "==========================================================================
 
 # Environment variables
 ## My values
-PGDATABASE=test_dest
-DATA2PG_ROLE=data2pg_adm
-DATA2PG_PWD=secret
-DATA2PG_SCHEMA=data2pg0.6
+export PGHOST=localhost
+export PGDATABASE=test_dest
+export DATA2PG_ROLE=data2pg_adm
+export DATA2PG_PWD=secret
+export DATA2PG_SCHEMA=data2pg0.6
 
 ## Default values
-PGHOST_DEFAULT_VALUE=localhost
+PGHOST_DEFAULT_VALUE=
 PGPORT_DEFAULT_VALUE=5432
 PGUSER_DEFAULT_VALUE=postgres
 PGDATABASE_DEFAULT_VALUE=postgres
@@ -24,71 +25,64 @@ DATA2PG_PWD_DEFAULT_VALUE=gp2atad
 
 if [ -z ${PGHOST+x} ];
 then
-  echo "Environment variable PGHOST is not defined."
-  echo "  => Setting PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  echo "Setting environment variable PGHOST to its default value: ${PGHOST_DEFAULT_VALUE}"
   export PGHOST=${PGHOST_DEFAULT_VALUE}
 else
-  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+  echo "The environment variable PGHOST is already defined: ${PGHOST}"
 fi
 
 if [ -z ${PGPORT+x} ];
 then
-  echo "Environment variable PGPORT is not defined."
-  echo "  => Setting PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  echo "Setting environment variable PGPORT to its default value: ${PGPORT_DEFAULT_VALUE}"
   export PGPORT=${PGPORT_DEFAULT_VALUE}
 else
-  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+  echo "The environment variable PGPORT is already defined: ${PGPORT}"
 fi
 
 if [ -z ${PGUSER+x} ];
 then
-  echo "Environment variable PGUSER is not defined."
-  echo "  => Setting PGUSER to ${PGUSER_DEFAULT_VALUE}."
+  echo "Setting environment variable PGUSER to its default value: ${PGUSER_DEFAULT_VALUE}"
   export PGUSER=${PGUSER_DEFAULT_VALUE}
 else
-  echo "Environment variable PGUSER is already defined to ${PGUSER}."
+  echo "The environment variable PGUSER is already defined: ${PGUSER}"
 fi
 
 if [ -z ${PGDATABASE+x} ];
 then
-  echo "Environment variable PGDATABASE is not defined."
-  echo "  => Setting PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
+  echo "Setting environment variable PGDATABASE to its default value: ${PGDATABASE_DEFAULT_VALUE}"
   export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
 else
-  echo "Environment variable PGDATABASE is already defined to ${PGDATABASE}."
+  echo "The environment variable PGDATABASE is already defined: ${PGDATABASE}"
 fi
 
 if [ -z ${DATA2PG_SCHEMA+x} ];
 then
-  echo "Environment variable DATA2PG_SCHEMA is not defined."
-  echo "  => Setting DATA2PG_SCHEMA to ${DATA2PG_SCHEMA_DEFAULT_VALUE}."
+  echo "Setting environment variable DATA2PG_SCHEMA to its default value: ${DATA2PG_SCHEMA_DEFAULT_VALUE}"
   export DATA2PG_SCHEMA=${DATA2PG_SCHEMA_DEFAULT_VALUE}
 else
-  echo "Environment variable DATA2PG_SCHEMA is already defined to ${DATA2PG_SCHEMA}."
+  echo "The environment variable DATA2PG_SCHEMA is already defined: ${DATA2PG_SCHEMA}"
 fi
 
 if [ -z ${DATA2PG_ROLE+x} ];
 then
-  echo "Environment variable DATA2PG_ROLE is not defined."
-  echo "  => Setting DATA2PG_ROLE to ${DATA2PG_ROLE_DEFAULT_VALUE}."
+  echo "Setting environment variable DATA2PG_ROLE to its default value: ${DATA2PG_ROLE_DEFAULT_VALUE}"
   export DATA2PG_ROLE=${DATA2PG_ROLE_DEFAULT_VALUE}
 else
-  echo "Environment variable DATA2PG_ROLE is already defined to ${DATA2PG_ROLE}."
+  echo "The environment variable DATA2PG_ROLE is already defined: ${DATA2PG_ROLE}"
 fi
 
 if [ -z ${DATA2PG_PWD+x} ];
 then
-  echo "Environment variable DATA2PG_PWD is not defined."
-  echo "  => Setting DATA2PG_PWD to the default password."
+  echo "Setting environment variable DATA2PG_PWD to its default value: ${DATA2PG_PWD_DEFAULT_VALUE}"
   export DATA2PG_PWD=${DATA2PG_PWD_DEFAULT_VALUE}
 else
-  echo "Environment variable DATA2PG_PWD is already defined."
+  echo "The environment variable DATA2PG_PWD is already defined"
 fi
 
 echo "Create the data2pg extension in the $PGDATABASE database"
 echo "--------------------------------------------------------"
 
-psql $PGDATABASE -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
+psql -v data2pg_schema=${DATA2PG_SCHEMA}<<EOF
 \set ON_ERROR_STOP ON
 
 CREATE OR REPLACE FUNCTION public.create_extension(p_schema TEXT) RETURNS void LANGUAGE plpgsql AS
@@ -128,7 +122,7 @@ echo "Load the data2pg addons, if any"
 echo "-------------------------------"
 
 if [ -f data2pg_addons.sql ]; then
-  psql $PGDATABASE -f data2pg_addons.sql
+  psql -f data2pg_addons.sql
   if [ $? -ne 0 ]; then
     echo "  => Problem encountered"
     exit 1
@@ -142,7 +136,7 @@ fi
 echo "Create the role to be used by the scheduler, if needed"
 echo "------------------------------------------------------"
 
-psql $PGDATABASE -v data2pg_role=${DATA2PG_ROLE} -v data2pg_pwd=${DATA2PG_PWD}<<EOF
+psql -v data2pg_role=${DATA2PG_ROLE} -v data2pg_pwd=${DATA2PG_PWD}<<EOF
 \set ON_ERROR_STOP ON
 
 CREATE OR REPLACE FUNCTION public.create_role(p_role TEXT, p_pwd TEXT) RETURNS void LANGUAGE plpgsql AS

@@ -22,14 +22,13 @@ The Data2Pg framework has several components:
 
 ## Connection to PostgreSQL databases
 
-The administration database is owned by the `data2pg` role. This role is also used to log on this database.
+The administration database is owned by the `data2pg` role. Depending on the configuration, `data2pg` or another role having the `data2pg` priviledges is used for the various tools to log on this database.
 
 The `data2pg` extension installed into each target databases is also owned by the `data2pg` role. But the scheduler logs on the target databases using either the `data2pg` role or another role having the `data2pg` priviledges.
 
 Passwords are normally set in the .pgpass file.
 
 The administration database contains a `target_database` table that identifies all databases that may be reached by the scheduler. This table contains optional columns to define non default roles to use, passwords not set in the .pgpass file or specific connection options.
-
 
 ## Data2Pg Concepts
 

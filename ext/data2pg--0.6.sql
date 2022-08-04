@@ -19,7 +19,7 @@ BEGIN
          ) THEN
       CREATE ROLE data2pg NOLOGIN;
       COMMENT ON ROLE data2pg IS
-        $$Owner of the data2pg extension.$$;
+        $$Owner of the data2pg and/or data2pg_admin extensions.$$;
     END IF;
 END
 $do$;

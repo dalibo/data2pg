@@ -2,47 +2,55 @@
 # 3-configure.sh
 # This shell script prepares the data2pg components on the destination database
 
-# Environment variables to setup
-export PGHOST=localhost
-export PGDATABASE=test_dest
-
 echo "==================================================="
 echo "Prepare the data2pg test with Postgres databases"
 echo "==================================================="
 
-# Default values
+# Environment variables
+## My values
+export PGHOST=localhost
+export PGDATABASE=test_dest
+export DATA2PG_ROLE=data2pg_adm
+
+## Default values
 PGHOST_DEFAULT_VALUE=
 PGPORT_DEFAULT_VALUE=5432
 PGDATABASE_DEFAULT_VALUE=postgres
+DATA2PG_ROLE_DEFAULT_VALUE=data2pg
 
 if [ -z ${PGHOST+x} ];
 then
-  echo "Environment variable PGHOST is not defined."
-  echo "  => Setting PGHOST to ${PGHOST_DEFAULT_VALUE}"
+  echo "Setting environment variable PGHOST to its default value: ${PGHOST_DEFAULT_VALUE}"
   export PGHOST=${PGHOST_DEFAULT_VALUE}
 else
-  echo "Environment variable PGHOST is already defined to ${PGHOST}."
+  echo "The environment variable PGHOST is already defined: ${PGHOST}"
 fi
 
 if [ -z ${PGPORT+x} ];
 then
-  echo "Environment variable PGPORT is not defined."
-  echo "  => Setting PGPORT to ${PGPORT_DEFAULT_VALUE}."
+  echo "Setting environment variable PGPORT to its default value: ${PGPORT_DEFAULT_VALUE}"
   export PGPORT=${PGPORT_DEFAULT_VALUE}
 else
-  echo "Environment variable PGPORT is already defined to ${PGPORT}."
+  echo "The environment variable PGPORT is already defined: ${PGPORT}"
 fi
 
 if [ -z ${PGDATABASE+x} ];
 then
-  echo "Environment variable PGDATABASE is not defined."
-  echo "  => Setting PGDATABASE to ${PGDATABASE_DEFAULT_VALUE}."
+  echo "Setting environment variable PGDATABASE to its default value: ${PGDATABASE_DEFAULT_VALUE}"
   export PGDATABASE=${PGDATABASE_DEFAULT_VALUE}
 else
-  echo "Environment variable PGPORT is already defined to ${PGDATABASE}."
+  echo "The environment variable PGDATABASE is already defined: ${PGDATABASE}"
 fi
 
-psql -U data2pg -a<<EOF
+if [ -z ${DATA2PG_ROLE+x} ];
+then
+  echo "Setting environment variable DATA2PG_ROLE to its default value: ${DATA2PG_ROLE_DEFAULT_VALUE}"
+  export DATA2PG_ROLE=${DATA2PG_ROLE_DEFAULT_VALUE}
+else
+  echo "The environment variable DATA2PG_ROLE is already defined: ${DATA2PG_ROLE}"
+fi
+
+psql -U ${DATA2PG_ROLE} -a<<EOF
 
 \set ON_ERROR_STOP ON
 

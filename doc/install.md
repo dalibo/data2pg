@@ -17,7 +17,7 @@ The scheduler and the monitor clients are written in perl and use the DBI and DB
 
 ## Creating the administration database
 
-Data2Pg needs its own adminstration database. This database may be created into the same PostgreSQL instance as a database to populate. Its size and SQL load are very low. It will be dropped once the migration project will be completed.
+Data2Pg needs its own adminstration database. This database may be created into the same PostgreSQL instance as a target database. Its size and SQL load are very low. It will be dropped once the migration project will be completed.
 
 This database contains a `target_database` table that describes all PostgreSQL databases concerned by the migration project. This table can be fed by the Web client. It can also be populated at creation time by loading a `target_database.dat` file. In this case, the provided template file must be adjusted. The first line is a header and must be left as is. Each subsequent lines describes a target database. It contains the following fields:
 
@@ -25,13 +25,13 @@ This database contains a `target_database` table that describes all PostgreSQL d
    * tdb_host : the IP address to reach the PostgreSQL target database
    * tdb_port : the IP port to reach the PostgreSQL target database
    * tdb_dbname : the PostgreSQL database name
-   * tdb_user : the role used to log on the target database (optional, leave it to NULL to use the default data2pg role)
+   * tdb_user : the role used to log on the target database (optional, leave it to NULL to use the default `data2pg` role)
    * tdb_pwd : the password to use to log on the target database (optional, it is preferable to leave it to NULL and rely on the .pgpass file)
    * tdb_cnx_options : some additional options to add to the connection string (optional)
    * tdb_description : a textual description of the database (optional)
    * tdb_locked : a flag to protect the database against unattended data copy ; set it to FALSE to run batches of type COPY.
 
-The administration database can be created using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script. Also adjust the password of the `data2pg` role on the `CREATE ROLE` statement.
+The administration database can be created using the supplied `data2pg_init_db.sh` shell script. Before running it, adjust the environment variables defined at the beginning of the script.
 
 Then type:
 
@@ -41,9 +41,10 @@ Then type:
 
 The script:
 
-   * creates a database named `data2pg`;
    * creates a role named `data2pg`, if it does not exist yet;
-   * creates the `data2pg_admin` extension inside the `data2pg` database;
+   * creates the administration database (`data2pg` by default);
+   * creates the `data2pg_admin` extension inside the adminstration database;
+   * creates or alter the role to be used for the connections, if it does not already exist in the instance;
    * loads the file that populates the `target_database` table.
 
 ## Installing the Web client
@@ -60,7 +61,7 @@ The *data2pg.pl* scheduler and the *data2pg_monitor.pl* monitor clients only rel
 
 To log on the target databases, the *data2pg.pl* scheduler may use either the `.pgpass` file content or the `target_database` table content from the administration database, the first being the most secure. So the `~/.pgpass` file of the OS account used to run these commands must be adjusted accordingly.
 
-The web client only accesses the Data2Pg administration database. It uses parameters set into its `config.inc.php` configuration file, including the *data2pg* password.
+The web client only accesses the Data2Pg administration database. It uses parameters set into its `config.inc.php` configuration file, including the password.
 
 ## Creating the data2pg extension
 

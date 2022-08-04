@@ -17,8 +17,7 @@ $PROGRAM = 'data2pg.pl';
 $APPNAME = 'data2pg';
 
 # Constants.
-my $d2pUser = 'data2pg';               # The role name used for the data2pg administration database connection
-my $pgDefaultUser = 'data2pg';         # The role name used for the connections to the target postgres database
+my $pgDefaultUser = 'data2pg';         # The default role name used for the connections to the target postgres database
 
 my $checkCompletedOpDelay = 0.5;       # Maximum delay in seconds between 2 checks for completed operations
 my $sleepMinDuration = 0.01;           # Minimum sleep duration in the main loop (in second)
@@ -30,6 +29,8 @@ my $maxSessionsRefreshDelay = 30;      # Delay in seconds between 2 accesses of 
 my $options;                           # Options from the command line
 my $host;                              # IP host of the data2pg administration database
 my $port;                              # IP port of the data2pg administration database
+my $d2pDb = 'data2pg';                 # Administration database name
+my $d2pUser = 'data2pg';               # Connection role to log on the administration database
 my $confFile;                          # Configuration file
 my $action;                            # Action to perform: 'run' / 'restart' / 'suspend' / 'abort'
 my $targetDb;                          # The identifier of the database to migrate, as defined in the target_database table of the data2pg database
@@ -104,8 +105,10 @@ sub usage
 {
     print "Data2Pg is a migration framework to load PostgreSQL databases (version $VERSION)\n";
     print "Usage: $0 [--help] | [<options to log on the data2pg>] --action <action> [--conf <configuration_file>] [<other options>]]\n\n";
-    print "  --host         : IP host of the data2pg administration database (default = PGHOST env. var.)\n";
-    print "  --port         : IP port of the data2pg administration database (default = PGPORT env. var.)\n";
+    print "  --host         : IP host of the data2pg Data2pg administration database (default = PGHOST env. var.)\n";
+    print "  --port         : IP port of the data2pg Data2pg administration database (default = PGPORT env. var.)\n";
+    print "  --dbname       : administration database name (default = data2pg)\n";
+    print "  --user         : role to log on the administration database (default = data2pg)\n";
     print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)\n";
     print "  --conf         : configuration file (default = no configuration file)\n";
     print "  --verbose      : display additional information during the run\n";
@@ -179,6 +182,8 @@ sub parseCommandLine
         "help"           => \$help,
         "host=s"         => \$host,
         "port=s"         => \$port,
+        "dbname=s"       => \$d2pDb,
+        "user=s"         => \$d2pUser,
         "conf=s"         => \$confFile,
         "action=s"       => \$action,
         "target=s"       => \$targetDb,
@@ -317,13 +322,14 @@ sub logonData2pg {
     my $row;             # Returned row
 
 # Set the data2pg database connection DSN.
-    $d2pDsn = "dbi:Pg:dbname=data2pg";
+    $d2pDsn = "dbi:Pg:dbname=$d2pDb";
     $d2pDsn .= ";host=$host" if defined $host;
     $d2pDsn .= ";port=$port" if defined $port;
+    $d2pDsn .= ";application_name=$APPNAME";
 
 # Open the connection on the data2pg administration database.
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
-    if ($verbose) {printVerbose("Trying to connect on the data2pg administration database");}
+    if ($verbose) {printVerbose("Trying to connect on the administration database");}
     $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {AutoCommit=>0})
           or abort("Error while logging on the Data2Pg administration database ($DBI::errstr).");
     $d2pDbh->{RaiseError} = 1;
@@ -338,9 +344,8 @@ sub logonData2pg {
     ($d2pSchema) = $d2pDbh->selectrow_array($sql)
         or abort("The 'data2pg_admin' extension does not exist in the Data2Pg administration database.");
 
-# Set the application_name and the search_path.
-    $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");
-
+# Set the search_path.
+    $d2pDbh->do("SET search_path TO $d2pSchema");
     if ($verbose) {printVerbose("Log on the data2pg administration database successful");}
 
 # Get the connection parameters for the target database.
@@ -1289,7 +1294,7 @@ sub abortRun {
 
 # Check that the data2pg extension exists and get its installation schema.
         $sql = qq(
-            SELECT nspname
+            SELECT quote_ident(nspname)
                 FROM pg_catalog.pg_extension
                     JOIN pg_catalog.pg_namespace ON (extnamespace = pg_namespace.oid)
                 WHERE extname = 'data2pg'

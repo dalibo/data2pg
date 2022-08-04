@@ -292,7 +292,9 @@ function newRun() {
 // Get the available batch ids using a "data2pg.pl --action check" command.
 		$shellConn = shellOpen();
 		$cmd = $conf['schedulerPath'] .
-			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']} --action check --target ${db['tdb_id']} 2>&1";
+			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+			" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+			" --action check --target ${db['tdb_id']} 2>&1";
 		$outputCheck = shellExec($shellConn, $cmd);
 
 // Check the data2pg.pl report.
@@ -470,9 +472,11 @@ function doNewRun() {
 		}
 
 // And spawn the scheduler.
-		$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
-				   ' --action run ' . ' --run ' . $newRunId . ' --target ' . $tdbId .
-				   ' --batch ' . $batch . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+		$bashCmd = $conf['schedulerPath'] .
+			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+			" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+			" --action run --run $newRunId --target $tdbId" .
+			" --batch $batch --sessions $maxSession --asc_sessions $ascSession";
 		if ($stepOptions <> '') {
 			$bashCmd .= ' --step_options "' . $stepOptions . '"';
 		}
@@ -481,10 +485,10 @@ function doNewRun() {
 			$bashCmd .= ' --comment "' . str_replace('"', '\"', $comment) . '"';
 		}
 		if ($refRunId <> '') {
-			$bashCmd .= ' --ref_run ' . $refRunId;
+			$bashCmd .= " --ref_run $refRunId";
 		}
 		if ($conf['development_mode']) {
-			$bashCmd .= ' --verbose';
+			$bashCmd .= " --verbose";
 		}
 		// Add a \ before any \ and " in the command to spawn
 		$cmd = 'nohup bash -c "' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $bashCmd) . '" 1>' . $logFile . ' 2>&1 &';
@@ -521,7 +525,9 @@ function checkDb() {
 // Test the access using a "data2pg.pl --action check" command.
 		$shellConn = shellOpen();
 		$cmd = $conf['schedulerPath'] .
-			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']} --action check --target ${db['tdb_id']} 2>&1";
+			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+			" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+			" --action check --target ${db['tdb_id']} 2>&1";
 		$outputCheck = shellExec($shellConn, $cmd);
 // Check the data2pg.pl report.
 		if (preg_match('/Error: Error while logging on the target database \((.*?)\)/m', $outputCheck, $matches) == 1) {

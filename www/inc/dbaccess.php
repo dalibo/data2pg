@@ -6,12 +6,13 @@
 	require_once('inc/constants.php');
 	require_once('conf/config.inc.php');
 
-// The sql_connect() function opens a connection to the data2pg database and verifies that the run table exists
+// The sql_connect() function opens a connection to the data2pg administration database and verifies that the run table exists
 function sql_connect() {
 	global $const, $conf;
 
 	// Connection
-	$dsn = "host=${conf['data2pg_host']} port=${conf['data2pg_port']} dbname=${const['d2pDbName']} user=${const['d2pUser']} password=${conf['data2pg_pwd']}";
+	$dsn = "host=${conf['data2pg_host']} port=${conf['data2pg_port']} dbname=${conf['data2pg_dbname']} "
+		 . " user=${conf['data2pg_user']} password=${conf['data2pg_pwd']}";
 	$conn = pg_connect($dsn)
 		or die ("Problem while connecting to the data2pg administration database. You may have to adjust the 'data2pgDsn' configuration value.");
 
@@ -305,7 +306,7 @@ function sql_getSteps($runId, $runStatus) {
 					   to_char(date_part('epoch', stp_end_ts - stp_start_ts) * interval '1 second', 'HH24:MI:SS.US')";
 // Only compute elapse time of the in progress steps when the run is effectively in progress (i.e. has not been aborted)
 	if ($runStatus == 'In_progress') {
-		$sql .= "  CASE WHEN stp_status = 'In_progress' THEN
+		$sql .= "       WHEN stp_status = 'In_progress' THEN
 					   to_char(date_part('epoch', current_timestamp - stp_start_ts) * interval '1 second', 'HH24:MI:SS.US')";
 	}
 	$sql .= "

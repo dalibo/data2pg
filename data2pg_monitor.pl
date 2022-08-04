@@ -19,8 +19,10 @@ $APPNAME = 'data2pg_monitor';
 
 # Initialize parameters with their default values.
 my $options;                              # Options from the command line
-my $host;                                 # IP host of the data2pg database
-my $port;                                 # IP port of the data2pg database
+my $host;                                 # IP host of the administration database
+my $port;                                 # IP port of the administration database
+my $dbName = 'data2pg';                   # Administration database name
+my $user = 'data2pg';                     # Connection role
 my $help = 0;
 my $version = 0;
 my $lines = 0;                            # --lines (0 means no page size limit)
@@ -28,7 +30,6 @@ my $delay = 5;                            # --delay (in seconds, default = 5s)
 my $run = undef;                          # --run identifier
 
 # Global variables to manage the sessions and the statements to the databases.
-my $d2pUser = 'data2pg';                  # The role name used for the data2pg database connection
 my $d2pDbh;                               # Handle for the connection on the data2pg database
 my $d2pSth;                               # Handle for the statements to submit on the data2pg database connection
 
@@ -45,6 +46,8 @@ sub parseCommandLine
         "version"   => \$version,
         "host=s"    => \$host,
         "port=s"    => \$port,
+        "dbname=s"  => \$dbName,
+        "user=s"    => \$user,
         "lines=s"   => \$lines,
         "run=s"     => \$run,
         "delay=s"   => \$delay,
@@ -71,8 +74,10 @@ Usage:
   $PROGRAM [OPTION]...
 
 Options:
-  --host      IP host of the data2pg database (default = PGHOST env. var.)
-  --port      IP port of the data2pg database (default = PGPORT env. var.)
+  --host      IP host of the Data2pg administration database (default = PGHOST env. var.)
+  --port      IP port of the Data2pg administration database (default = PGPORT env. var.)
+  --dbname    Administration database name (default = data2pg)
+  --user      Role to log on the administration database (default = data2pg)
   --lines     maximum number of lines to display (0 = default = no page size limit)
   --run       optional run id to examine. If no specific run is specified, display the latest runs
                 registered into the data2pg database
@@ -115,13 +120,14 @@ sub logonData2pg {
     my $d2pSchema;       # The schema holding the extension
 
 # Set the data2pg database connection DSN.
-    $d2pDsn = "dbi:Pg:dbname=data2pg";
+    $d2pDsn = "dbi:Pg:dbname=$dbName";
     $d2pDsn .= ";host=$host" if defined $host;
     $d2pDsn .= ";port=$port" if defined $port;
+    $d2pDsn .= ";application_name=$APPNAME";
 
 # Open the connection on the data2pg adminstration database.
 # The password for the connection role is not provided to the connect() method. The pg_hba.conf and/or .pgpass files must be set accordingly.
-    $d2pDbh = DBI->connect($d2pDsn, $d2pUser, undef, {RaiseError => 1})
+    $d2pDbh = DBI->connect($d2pDsn, $user, undef, {RaiseError => 1})
         or die("Error while logging on the data2pg database ($DBI::errstr).");
 
 # Check that the data2pg_admin extension exists and get its installation schema.
@@ -134,8 +140,8 @@ sub logonData2pg {
     ($d2pSchema) = $d2pDbh->selectrow_array($sql)
         or die("The 'data2pg_admin' extension does not exist in the Data2Pg administration database.");
 
-# Set the application_name and the search_path.
-    $d2pDbh->do("SET application_name TO $APPNAME; SET search_path TO $d2pSchema");
+# Set the search_path.
+    $d2pDbh->do("SET search_path TO $d2pSchema");
 }
 
 # ---------------------------------------------------------------------------------------------

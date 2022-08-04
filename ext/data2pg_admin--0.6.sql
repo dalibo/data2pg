@@ -122,6 +122,16 @@ CREATE TABLE step_result (
     FOREIGN KEY (sr_run_id, sr_step) REFERENCES step(stp_run_id, stp_name)
 );
 
+--
+-- Set the appropriate rights.
+--
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA @extschema@ FROM public;
+
+DO $$ BEGIN EXECUTE format('GRANT ALL ON DATABASE %s TO data2pg;', current_database()); END;$$;
+GRANT ALL ON SCHEMA @extschema@ TO data2pg;
+GRANT ALL ON ALL TABLES IN SCHEMA @extschema@ TO data2pg;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA @extschema@ TO data2pg;
+
 -- Add the extension tables and sequences to the list of content that pg_dump has to save.
 SELECT pg_catalog.pg_extension_config_dump('target_database', '');
 SELECT pg_catalog.pg_extension_config_dump('external_run_start', '');

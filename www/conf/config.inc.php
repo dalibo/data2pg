@@ -4,11 +4,12 @@
 	 * Central Data2Pg web client configuration.
 	 */
 
-	// Connection parameters to reach the data2pg database.
-	// Both database and role names are fixed (and equal 'data2pg').
+	// Connection parameters to reach the data2pg administration database.
 	$conf['data2pg_host']			= 'localhost';		// The ip address must be accessible by the data2pg web client and all data2pg.pl schedulers
 	$conf['data2pg_port']			= 5432;
-	$conf['data2pg_pwd']			= 'gp2atad';
+	$conf['data2pg_dbname']			= 'data2pg';
+	$conf['data2pg_user']			= 'data2pg_adm';
+	$conf['data2pg_pwd']			= 'secret';
 
 	// If not empty, the environment and environment_desc parameters are displayed in the page header
 	// They tell the user on which Data2Pg environment he is currently working

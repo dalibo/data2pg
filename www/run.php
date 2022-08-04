@@ -332,7 +332,9 @@ function checkRun($runId) {
 		} else {
 // The run is not in execution anymore, so abort it using a "data2pg.pl --action abort" command
 			$cmd = $conf['schedulerPath'] .
-				" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']} --action abort --target ${run['run_database']} --batch ${run['run_batch_name']} 2>&1";
+				" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+				" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+				" --action abort --target ${run['run_database']} --batch ${run['run_batch_name']} 2>&1";
 			$outputAbort = shellExec($shellConn, $cmd);
 			if (strpos($outputAbort, ' has been aborted.') !== false) {
 				echo "<p align='center'>The run " . htmlspecialchars($row['run_id']) . " was not executing anymore. It has been marked as 'aborted'.</p>\n";
@@ -456,7 +458,9 @@ function doAbortRun($runId) {
 // OK, perform the run abort using a "data2pg.pl --action abort" command.
 		$shellConn = shellOpen();
 		$cmd = $conf['schedulerPath'] .
-			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']} --action abort --target ${run['run_database']} --batch ${run['run_batch_name']} 2>&1";
+			" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+			" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+			" --action abort --target ${run['run_database']} --batch ${run['run_batch_name']} 2>&1";
 		$outputAbort = shellExec($shellConn, $cmd);
 // Check the data2pg.pl report.
 		if (strpos($outputAbort, ' has been aborted.') !== false) {
@@ -651,9 +655,11 @@ function doRestartRun($runId) {
 				}
 
 // And spawn the scheduler.
-				$bashCmd = $conf['schedulerPath'] . ' --host ' . $conf['data2pg_host'] .' --port ' . $conf['data2pg_port'] .
-						' --action restart' . ' --run ' . $newRunId . ' --target ' . $run['run_database'] .
-						' --batch ' . $run['run_batch_name'] . ' --sessions ' . $maxSession . ' --asc_sessions ' . $ascSession;
+				$bashCmd = $conf['schedulerPath'] .
+					" --host ${conf['data2pg_host']} --port ${conf['data2pg_port']}" .
+					" --dbName ${conf['data2pg_dbname']} --user ${conf['data2pg_user']}" .
+					" --action restart --run $newRunId --target ${run['run_database']}" .
+					" --batch ${run['run_batch_name']} --sessions $maxSession --asc_sessions $ascSession";
 				if ($stepOptions <> '') {
 					$bashCmd .= ' --step_options "' . $stepOptions . '"';
 				}
@@ -662,7 +668,7 @@ function doRestartRun($runId) {
 					$bashCmd .= ' --comment "' . str_replace('"', '\"', $comment) . '"';
 				}
 				if ($conf['development_mode']) {
-					$bashCmd .= ' --debug';
+					$bashCmd .= " --debug";
 				}
 				// Add a \ before any \ and " in the command to spawn
 				$cmd = 'nohup bash -c "' . str_replace(array('\\', '"'), array('\\\\', '\\"'), $bashCmd) . '" 1>' . $logFile . ' 2>&1 &';
