@@ -100,17 +100,77 @@ STEP_OPTIONS = {"COPY_MAX_ROWS":10000}
 
 Once a batch run is spawned by a `perl data2pg.pl --action run ...` command, it is possible to:
 
-   * suspend its execution by issuing a `perl data2pg.pl --action suspend ...` command, i.e. let the steps in execution complete their task and then stop the run;
-   * abort its execution by issuing a `perl data2pg.pl --action abort ...` command, i.e. immediately stop the batch run;
-   * restart an aborted or suspended batch run by issuing a `perl data2pg.pl --action restart ...` command.
-
-Note that a batch run that has unexpectedly aborted must be "officialy" aborted by a `perl data2pg.pl --action abort ...` command before any rerun or restart attempt.
-
-When a batch run is restarted, a new run is spawned with a new attributed identifier. It uses the same working plan and consider all properly terminated steps of the previous run as already completed.
+   * dynamicaly change the number of sessions;
+   * suspend its execution;
+   * abort its execution;
+   * restart an aborted or suspended batch run.
 
 This chart shows the actions that can be performed on a batch run and its possible states.
 
 ![Batch runs actions and states](../img/batchRunActionsAndStates.png)
+
+All these actions can be performed easily with the web client. The paragraphs below explain how to proceed in command line terminal.
+
+### Change the number of sessions
+
+There is no command to dynamically change the number of sessions of a running batch. But this can be achieved using a SQL statement. Once connected to the administration database, execute the following statement:
+
+```
+SET search_path = \<data2pg_admin installation schema\>;
+UPDATE run SET run_max_sessions = s, run_asc_sessions = a WHERE run_id = iii;
+```
+
+Where:
+
+  * s is the requested maximum number of sessions;
+  * a is the requested number of sessions with steps allocated in ascending cost order (with a <= s);
+  * iii is the run identifier.
+
+The scheduler reads this table every 30 seconds and adjusts the number of opened sessions if needed. If new sessions are requested, they are opened immediately. If the new maximum number of sessions is lower than the previous one, exceeding sessions will be closed once their current step is completed.
+
+Note that setting the maximum number of sessions to 0 is equivalent to suspend the run.
+
+### Suspend a batch execution
+
+To suspend a running batch, just type the following command:
+
+```sh
+perl data2pg.pl --action suspend ...
+```
+
+The same options as for the run command must be used, so that the batch can be identified.
+
+The scheduler will let the in-progress steps complete their task before stopping the run.
+
+Once the run is suspended, it is possible to restart it.
+
+### Abort a batch execution
+
+To abort a running batch, just type the following command:
+
+```sh
+perl data2pg.pl --action abort ...
+```
+
+The same options as for the run command must be used, so that the batch can be identified.
+
+All in-progress steps are immediately cancelled and their transactions are rolledback.
+
+Note that a batch run that has unexpectedly aborted must be "officialy" aborted by a `perl data2pg.pl --action abort ...` command before any rerun or restart attempt. This is a protection against several simultaneous executions of the same batch.
+
+### Restart a batch execution
+
+To restart a batch that has been previously either suspended or aborted, just type the following command:
+
+```sh
+perl data2pg.pl --action restart ...
+```
+
+The same options as for the run command must be used.
+
+When a batch run is restarted, a new run is spawned with a new identifier. It uses the same working plan and considers all properly terminated steps of the previous run as already completed.
+
+A batch can be suspended/aborted and restarted several times.
 
 ## Run report
 
