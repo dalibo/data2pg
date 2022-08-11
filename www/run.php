@@ -25,11 +25,11 @@
 	  case "checkRun":
 		checkRun($runId);
 		break;
-	  case "alterRun":
-		alterRun($runId);
+	  case "modifyRun":
+		modifyRun($runId);
 		break;
-	  case "doAlterRun":
-		doAlterRun($runId);
+	  case "doModifyRun":
+		doModifyRun($runId);
 		break;
 	  case "abortRun":
 		abortRun($runId);
@@ -126,7 +126,7 @@ function runDetails($runId, $msg = '') {
 // Display additional buttons on the right div title, depending on the run status.
 		$rightTitle = '';
 		if ($conf['read_only'] == 0) {
-			$rightTitle .= "\t\t<a href=\"run.php?a=alterRun&runId=$runId\" class=\"button mainButton\">Alter</a>\n";
+			$rightTitle .= "\t\t<a href=\"run.php?a=modifyRun&runId=$runId\" class=\"button mainButton\">Modify</a>\n";
 			if ($run['run_status'] == 'Initializing' || $run['run_status'] == 'In_progress') {
 				if ($conf['exec_command'] <> 0) {
 					$rightTitle .= "\t\t<a href=\"run.php?a=checkRun&runId=$runId\" class=\"button mainButton\">Check</a>\n";
@@ -349,8 +349,8 @@ function checkRun($runId) {
 	}
 }
 
-// The alterRun() function allows to adjust number of parallel sessions for in progress runs and comment for any run.
-function alterRun($runId) {
+// The modifyRun() function allows to adjust number of parallel sessions for in progress runs and comment for any run.
+function modifyRun($runId) {
 
 // Get the run characteristics.
 	$res = sql_getRun($runId);
@@ -360,11 +360,11 @@ function alterRun($runId) {
 		$run = pg_fetch_assoc($res);
 
 // Display the form.
-		mainTitle('', "Alter the run #$runId", '');
+		mainTitle('', "Modify the run #$runId", '');
 		echo "<div id=\"newRun\">\n";
 		echo "\t<form name=\"altetRun\" action=\"run.php\" method=\"get\">\n";
 		echo "<div class=\"form-container\">\n";
-		echo "\t\t<input type=\"hidden\" name=\"a\" value=\"doAlterRun\">\n";
+		echo "\t\t<input type=\"hidden\" name=\"a\" value=\"doModifyRun\">\n";
 	
 		echo "\t\t<input type=\"hidden\" name=\"runId\" value=\"$runId\">\n";
 
@@ -392,8 +392,8 @@ function alterRun($runId) {
 	}
 }
 
-// The doAlterRun() function effectively alters a given run.
-function doAlterRun($runId) {
+// The doModifyRun() function effectively modifies a given run.
+function doModifyRun($runId) {
 
 	$comment = @$_GET["comment"];
 	$maxSession = @$_GET["maxSession"];
@@ -405,10 +405,10 @@ function doAlterRun($runId) {
 	if (pg_affected_rows($res) <> 1) {
 		$msg = "Error: internal error while updating the run's properties.";
 	} else {
-		$msg = "The run $runId has been altered.";
+		$msg = "The run $runId has been modified.";
 	}
 
-// Display the modified databases list.
+// Display the databases list.
 	runDetails($runId, $msg);
 }
 
