@@ -88,6 +88,7 @@ my $nextMaxSessionsRefreshTime;        # The next time the maxSessions parameter
 my $actionRun;
 my $actionRestart;
 my $actionSuspend;
+my $actionModify;
 my $actionAbort;
 my $actionCheck;
 
@@ -109,7 +110,7 @@ sub usage
     print "  --port         : IP port of the data2pg Data2pg administration database (default = PGPORT env. var.)\n";
     print "  --dbname       : administration database name (default = data2pg)\n";
     print "  --user         : role to log on the administration database (default = data2pg)\n";
-    print "  --action       : 'run' | 'restart' | 'suspend' | 'abort' | 'check' (no default)\n";
+    print "  --action       : 'run' | 'restart' | 'suspend' | 'modify' | 'abort' | 'check' (no default)\n";
     print "  --conf         : configuration file (default = no configuration file)\n";
     print "  --verbose      : display additional information during the run\n";
     print "  --target       : target database identifier (mandatory) (*)\n";
@@ -251,13 +252,14 @@ sub checkParameters
     # Check the action.
     if (!defined ($action)) { abort("The --action parameter is not set."); }
 
-    if ($action ne 'run' && $action ne 'restart' && $action ne 'suspend' && $action ne 'abort' && $action ne 'check') {
-        abort("The action '$action' is invalid. Possible values are 'run', 'restart', 'suspend', 'abort' or 'check'.");
+    if ($action ne 'run' && $action ne 'restart' && $action ne 'suspend' && $action ne 'modify' && $action ne 'abort' && $action ne 'check') {
+        abort("The action '$action' is invalid. Possible values are 'run', 'restart', 'suspend', 'modify', 'abort' or 'check'.");
     }
 
     $actionRun = ($action eq 'run');
     $actionRestart = ($action eq 'restart');
     $actionSuspend = ($action eq 'suspend');
+    $actionModify = ($action eq 'modify');
     $actionAbort = ($action eq 'abort');
     $actionCheck = ($action eq 'check');
 
@@ -283,10 +285,15 @@ sub checkParameters
     if (defined ($runId) && !$actionRun && !$actionRestart) { abort("The --run option is not valid for this action."); }
 
     # Check numeric values.
-    if ($actionRun || $actionRestart) {
-        # Check that the MAX_SESSIONS, ASC_SESSIONS and RUN parameters are an integer.
-        if ($maxSessions !~ /^\d+$/ || $maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be a positive integer."); }
+    if ($actionRun || $actionRestart || $actionModify) {
+        # Check that the MAX_SESSIONS, ASC_SESSIONS are an integer.
+        if ($maxSessions !~ /^\d+$/) { abort("The 'MAX_SESSIONS' parameter or the --sessions option must be an integer."); }
         if ($ascSessions !~ /^\d+$/) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option must be an integer."); }
+    }
+    if ($actionRun || $actionRestart) {
+        # Check that the MAX_SESSIONS is strictly positive.
+        if ($maxSessions == 0) { abort("The 'MAX_SESSIONS' parameter or the --sessions option cannot be 0."); }
+        # Check that the RUN parameters is an integer.
         if (defined($runId) && $runId !~ /^\d+$/) { abort("The --run option must be an integer."); }
     }
     if ($actionRun) {
@@ -1375,6 +1382,42 @@ sub suspendRun {
     print "The run #$previousRunId will be set in 'Suspended' state as soon as all the steps in execution will be completed.\n";
     print "================================================================================\n";
 }
+
+# ---------------------------------------------------------------------------------------------
+sub modifyRun {
+# Modify the current run characteristics.
+    my $quotedComment;   # Comment properly quoted for the SQL
+    my $sql;             # SQL statement
+    my $ret;             # SQL result
+
+# Check the previous run state, if any.
+    if (!$previousRunExists || !$previousRunPerlIsExecuting ||
+        $previousRunState eq 'Completed' || $previousRunState eq 'Aborted' || $previousRunState eq 'Suspended') {
+        abort("There is no run currently in execution for this batch.");
+    }
+
+# Set the new max_sessions, asc_sessions and comment for the run.
+    $quotedComment = $d2pDbh->quote($comment, { pg_type => PG_VARCHAR });
+    $sql = qq(
+      UPDATE run
+          SET run_max_sessions = $maxSessions, run_asc_sessions = $ascSessions, run_comment = $quotedComment
+          WHERE run_id = $previousRunId
+    );
+    $ret = $d2pDbh->do($sql);
+    if ($ret != 1) {
+        abort("Internal error while updating the run at modifyRun(): nb rows = $ret");
+    }
+    if ($verbose) {printVerbose("Run #$previousRunId modified with max_sessions = $maxSessions, asc_sessions = $ascSessions and comment = $quotedComment");}
+
+# Commit the change.
+    $d2pDbh->commit();
+
+# Final report.
+    print "================================================================================\n";
+    print "The changes for the run #$previousRunId have been recorded.\n";
+    print "================================================================================\n";
+}
+
 # ---------------------------------------------------------------------------------------------
 sub checkDb {
 # Check the target database et return the configured batches.
@@ -1426,6 +1469,7 @@ sub checkDb {
 
     print "\n";
 }
+
 # ---------------------------------------------------------------------------------------------
 # The main function.
 
@@ -1455,6 +1499,8 @@ if ($actionAbort) {
     abortRun();
 } elsif ($actionSuspend) {
     suspendRun();
+} elsif ($actionModify) {
+    modifyRun();
 } elsif ($actionCheck) {
     checkDb();
 } else {              # $actionRun or $actionRestart

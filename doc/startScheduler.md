@@ -111,22 +111,17 @@ This chart shows the actions that can be performed on a batch run and its possib
 
 All these actions can be performed easily with the web client. The paragraphs below explain how to proceed in command line terminal.
 
-### Change the number of sessions
+### Change run characteristics
 
-There is no command to dynamically change the number of sessions of a running batch. But this can be achieved using a SQL statement. Once connected to the administration database, execute the following statement:
+The maximum number of sessions, the number of sessions in cost ascending order and/or the run comment can be modified while the run is in progress. To do this, just type the following command:
 
+```sh
+perl data2pg.pl --action modify ...
 ```
-SET search_path = \<data2pg_admin installation schema\>;
-UPDATE run SET run_max_sessions = s, run_asc_sessions = a WHERE run_id = iii;
-```
 
-Where:
+The new values can be set either in a modified configuration file or in the command line options (--sessions --asc_sessions and --comment), the later always overiding the former.
 
-  * s is the requested maximum number of sessions;
-  * a is the requested number of sessions with steps allocated in ascending cost order (with a <= s);
-  * iii is the run identifier.
-
-The scheduler reads this table every 30 seconds and adjusts the number of opened sessions if needed. If new sessions are requested, they are opened immediately. If the new maximum number of sessions is lower than the previous one, exceeding sessions will be closed once their current step is completed.
+The scheduler reads the information about the number of sessions every 30 seconds and adjusts the number of opened sessions if needed. Then, if new sessions are requested, they are opened immediately. If the new maximum number of sessions is lower than the previous one, exceeding sessions will be closed once their current step is completed.
 
 Note that setting the maximum number of sessions to 0 is equivalent to suspend the run.
 
