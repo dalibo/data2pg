@@ -138,7 +138,7 @@ To suspend a running batch, just type the following command:
 perl data2pg.pl --action suspend ...
 ```
 
-The same options as for the run command must be used, so that the batch can be identified.
+The same options as for the run command must be used, so that the batch run can be identified (at least the target database and the batch name must be properly set).
 
 The scheduler will let the in-progress steps complete their task before stopping the run.
 
@@ -152,7 +152,7 @@ To abort a running batch, just type the following command:
 perl data2pg.pl --action abort ...
 ```
 
-The same options as for the run command must be used, so that the batch can be identified.
+The same options as for the run command must be used, so that the batch run can be identified (at least the target database and the batch name must be properly set).
 
 All in-progress steps are immediately cancelled and their transactions are rolledback.
 
