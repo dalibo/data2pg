@@ -301,6 +301,11 @@ sub checkParameters
         if (defined($refRun) && $refRun !~ /^\d+$/) { abort("The 'REFERENCE_RUN' parameter or the --ref_run option must be an integer."); }
     }
 
+    # Check that asc_sessions is not greater than max_sessions.
+    if ($actionRun || $actionRestart || $actionModify) {
+        if ($ascSessions > $maxSessions) { abort("The 'ASC_SESSIONS' parameter or the --asc_sessions option can not be greater than the 'MAX_SESSIONS' parameter or the --sessions option."); }
+    }
+
     # The step_options content checks will be performed later, during the run/restart initilization.
 
 #### TODO: checks directories used to manage shell scripts executions
