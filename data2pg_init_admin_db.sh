@@ -121,17 +121,16 @@ else
   echo "  => data2pg role successfuly created"
 fi
 
-echo "Create the database"
-echo "-------------------"
+echo "Create the database (if it does not exist)"
+echo "------------------------------------------"
 
-psql template1 -c "DROP DATABASE IF EXISTS ${PGDATABASE}"
-psql template1 -c "CREATE DATABASE ${PGDATABASE} OWNER data2pg"
+psql template1 -tc "SELECT 1 FROM pg_database WHERE datname = '${PGDATABASE}'" | grep -q 1 || psql template1 -c "CREATE DATABASE ${PGDATABASE} OWNER data2pg"
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
   exit 1
 else
-  echo "  => administration database successfuly created"
+  echo "  => Administration database created"
 fi
 
 echo "Create the data2pg administration extension"
@@ -208,7 +207,7 @@ fi
 echo "Load the target databases list"
 echo "------------------------------"
 
-psql data2pg -U ${DATA2PG_ROLE} -c "\copy \"${DATA2PG_ADMIN_SCHEMA}\".target_database FROM $TARGET_DB_FILE CSV HEADER"
+psql -U ${DATA2PG_ROLE} -c "\copy \"${DATA2PG_ADMIN_SCHEMA}\".target_database FROM $TARGET_DB_FILE CSV HEADER"
 
 if [ $? -ne 0 ]; then
   echo "  => Problem encountered"
