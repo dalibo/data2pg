@@ -205,7 +205,7 @@ DROP TABLE IF EXISTS myTbl4 ;
 CREATE TABLE myTbl4 (
   col41       INT              NOT NULL,
   col42       TEXT             ,
-  col43       INT              ,
+  col43       NUMERIC          ,
   col44       DECIMAL(7)       ,
   col45       CHAR(10)         ,
   PRIMARY KEY (col41),

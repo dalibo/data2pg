@@ -253,7 +253,6 @@ CREATE TABLE discovery_column (
     dscv_column              TEXT NOT NULL,              -- The analyzed column name
     dscv_column_num          INTEGER,                    -- The column rank in the pg_attribute table (i.e. its attnum)
     dscv_type                TEXT,                       -- The column data type in the foreign table
-    dscv_max_size            INTEGER,                    -- The column max size when declared as character varying
     dscv_nb_not_null         BIGINT,                     -- The number of NOT NULL values
     dscv_num_min             NUMERIC,                    -- The minimum value for a numeric column
     dscv_num_max             NUMERIC,                    -- The maximum value for a numeric column
@@ -271,18 +270,17 @@ CREATE TABLE discovery_column (
     PRIMARY KEY (dscv_schema, dscv_table, dscv_column),
     FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
 );
--- The discovery_advice table contains pieces of advice deducted from the discovery_table and discovery_column content.
-CREATE TABLE discovery_advice (
+-- The discovery_message table contains messages deducted from the discovery_table and discovery_column content.
+CREATE TABLE discovery_message (
     dscv_schema              TEXT NOT NULL,              -- The name of the schema holding the foreign table
     dscv_table               TEXT NOT NULL,              -- The analyzed foreign table name
     dscv_column              TEXT,                       -- The column associated to the advice, NULL for table level piece of advice
     dscv_column_num          INTEGER,                    -- The column rank in the pg_attribute table (i.e. its attnum)
-    dscv_advice_type         TEXT NOT NULL               -- The advice type (W = Warning, A = Advice)
-                             CHECK (dscv_advice_type IN ('W', 'A')),
-    dscv_advice_code         TEXT,                       -- A coded representation of the advice, like 'INTEGER' for the message
+    dscv_msg_type            TEXT NOT NULL               -- The message type (A = Advice, C = Corruption, E = Error, W = Warning)
+                             CHECK (dscv_msg_type IN ('A', 'C', 'E', 'W')),
+    dscv_msg_code            TEXT,                       -- A coded representation of the message, like 'INTEGER' for the message
                                                          --   "column ... could be an INTEGER"
-    dscv_advice_msg          TEXT,                       -- The textual representation of the piece of advice that can be infered from
-                                                         --   collected data
+    dscv_msg_text            TEXT,                       -- The textual representation of the message that can be infered from collected data
     FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
 );
 
@@ -613,7 +611,7 @@ BEGIN
         EXECUTE 'DROP SCHEMA IF EXISTS ' || v_schemaList;
     END IF;
 -- Remove rows from the discovery tables for tables belonging to the migration
-    DELETE FROM @extschema@.discovery_advice
+    DELETE FROM @extschema@.discovery_message
         USING @extschema@.table_to_process
         WHERE dscv_schema = tbl_schema AND dscv_table = tbl_name
           AND tbl_migration = p_migration;
@@ -2668,7 +2666,7 @@ BEGIN
 END;
 $check_batch$;
 
--- The create_schema() function creates a schema if it does not already exist. It also set a comment.
+-- The create_schema() function creates a schema if it does not already exist. It also sets a comment.
 CREATE FUNCTION create_schema(
     p_schema                  TEXT
     )
@@ -3926,10 +3924,13 @@ BEGIN
 END;
 $_check_fkey$;
 
--- The _discover_table() function scans a foreign table to compute some statistics useful to decide the best postgres data type for its columns.
+-- The _discover_table() function scans a source table to
+--   - detect some data content that would lead to data copy errors or truncation;
+--   - and compute some statistics useful to decide the best postgres data type for its columns.
+-- It stores the scan result into the discovery_table and discovery_column tables.
+-- Then, it analyzes these data and produce messages stored into the discovery_message table.
 -- Input parameters: batch name, step name and execution options.
--- It stores the result into the discovery_column table.
--- It returns a step report including the number of analyzed columns and rows.
+-- It returns a step report including the number of analyzed columns and rows and the number of generated messages.
 CREATE OR REPLACE FUNCTION _discover_table(
     p_batchName                TEXT,
     p_step                     TEXT,
@@ -3951,7 +3952,10 @@ DECLARE
     v_nbColumns                SMALLINT = 0;
     v_nbRows                   BIGINT;
     v_skippedColumnsList       TEXT;
-    v_nbAdvice                 INTEGER;
+    v_nbErrorMsg               INTEGER;
+    v_nbCorruptionMsg          INTEGER;
+    v_nbAdviceMsg              INTEGER;
+    v_nbWarningMsg             INTEGER;
     r_col                      RECORD;
     r_output                   @extschema@.step_report_type;
 BEGIN
@@ -3978,9 +3982,9 @@ BEGIN
 -- Analyze the step options.
     v_maxRows = p_stepOptions->>'DISCOVER_MAX_ROWS';
 --
--- Remove from the discovery_table, discovery_column and discovery_advice tables the previous collected data for the table to process.
+-- Remove from the discovery_table, discovery_column and discovery_message tables the previous collected data for the table to process.
 --
-    DELETE FROM @extschema@.discovery_advice
+    DELETE FROM @extschema@.discovery_message
         WHERE dscv_schema = v_schema
           AND dscv_table = v_table;
     DELETE FROM @extschema@.discovery_column
@@ -4000,18 +4004,21 @@ BEGIN
             SELECT p_nbColumns, p_nbRows, p_skippedColumnsList
                 INTO v_nbColumns, v_nbRows, v_skippedColumnsList
                 FROM @extschema@._discv_tbl_oracle(v_schema, v_table, v_maxRows, v_serverName,
-                                       v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
+                                                   v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
         WHEN 'PostgreSQL' THEN
             SELECT p_nbColumns, p_nbRows, p_skippedColumnsList
                 INTO v_nbColumns, v_nbRows, v_skippedColumnsList
                 FROM @extschema@._discv_tbl_postgres(v_schema, v_table, v_maxRows, v_serverName,
-                                       v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
+                                                     v_foreignSchema, v_foreignTable, v_sourceSchema, v_sourceTable);
         ELSE
             RAISE EXCEPTION '_discover_table: Source DBMS % is not yet supported.', v_sourceDBMS;
     END CASE;
 --
 -- Now that the aggregates are stored into the discover_table and discover_column tables, generate advice.
-    v_nbAdvice = @extschema@._discv_tbl_gen_advice(v_schema, v_table, v_maxRows, v_nbRows, v_skippedColumnsList);
+    SELECT p_nbErrorMsg, p_nbCorruptionMsg, p_nbAdviceMsg, p_nbWarningMsg
+        INTO v_nbErrorMsg, v_nbCorruptionMsg, v_nbAdviceMsg, v_nbWarningMsg
+        FROM @extschema@._discv_tbl_gen_message(v_schema, v_table, v_foreignSchema, v_foreignTable,
+                                                v_maxRows, v_nbRows, v_skippedColumnsList) AS t;
 --
 -- Return the step report.
 --
@@ -4025,10 +4032,30 @@ BEGIN
     r_output.sr_rank = 2;
     r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
-    r_output.sr_indicator = 'GENERATED_ADVICE';
-    r_output.sr_value = v_nbAdvice;
+    r_output.sr_indicator = 'GENERATED_MESSAGES';
+    r_output.sr_value = v_nbErrorMsg + v_nbCorruptionMsg + v_nbAdviceMsg + v_nbWarningMsg;
     r_output.sr_rank = 3;
     r_output.sr_is_main_indicator = TRUE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GEN_ERROR_MSG';
+    r_output.sr_value = v_nbErrorMsg;
+    r_output.sr_rank = 4;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GEN_CORRUPTION_MSG';
+    r_output.sr_value = v_nbCorruptionMsg;
+    r_output.sr_rank = 5;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GEN_ADVICE_MSG';
+    r_output.sr_value = v_nbAdviceMsg;
+    r_output.sr_rank = 6;
+    r_output.sr_is_main_indicator = FALSE;
+    RETURN NEXT r_output;
+    r_output.sr_indicator = 'GEN_WARNING_MSG';
+    r_output.sr_value = v_nbWarningMsg;
+    r_output.sr_rank = 7;
+    r_output.sr_is_main_indicator = FALSE;
     RETURN NEXT r_output;
 --
     RETURN;
@@ -4091,14 +4118,14 @@ BEGIN
     v_aggForeignTable = p_foreignTable || '_agg';
     p_nbColumns = 0;
 -- Depending on the column's type, build:
---    - the columns definition for the foreign table
---    - the aggregates to feed these columns
---    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table
+--    - the columns definition for the foreign table;
+--    - the aggregates to feed these columns;
+--    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table.
     v_colDefArray = array_append(v_colDefArray, 'nb_row BIGINT');
     v_aggregatesArray = array_append(v_aggregatesArray, 'count(*) AS nb_row');
-    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_max_size, dscv_nb_not_null,';
+    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_nb_not_null,';
     FOR r_col IN
-        SELECT attname, attnum, typname, typcategory, CASE WHEN atttypmod >= 0 THEN atttypmod ELSE NULL END AS atttypmod, attnotnull
+        SELECT attname, attnum, typname, typcategory, attnotnull
             FROM pg_attribute a
                  JOIN pg_class c ON (c.oid = a.attrelid)
                  JOIN pg_namespace n ON (n.oid = c.relnamespace)
@@ -4115,7 +4142,7 @@ BEGIN
         ELSE
             p_nbColumns = p_nbColumns + 1;
             v_commonDscvValToInsert = quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || quote_literal(r_col.attname)
-                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
+                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ';
 -- Nullable columns.
             IF NOT r_col.attnotnull THEN
                 v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
@@ -4294,9 +4321,9 @@ BEGIN
           || '        FROM aggregates'
           || '  ) '
           || 'SELECT nb_row FROM aggregates';
--- Execute the first table scan. It creates a row per analyzed column into the discovery_column table
+-- Execute the first table scan. It creates a row per analyzed column into the discovery_column table.
     EXECUTE v_stmt INTO p_nbRows;
--- Drop the foreign table, that is now useless
+-- Drop the foreign table, that is now useless.
     EXECUTE format(
         'DROP FOREIGN TABLE %I.%I',
         p_foreignSchema, v_aggForeignTable
@@ -4374,9 +4401,9 @@ BEGIN
 --    - the insert cte that will copy the computed aggregates from the foreign table to the discover_column table (v_insertCteArray).
     v_colDefArray = array_append(v_colDefArray, 'nb_row BIGINT');
     v_aggregatesArray = array_append(v_aggregatesArray, 'count(*) AS nb_row');
-    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_max_size, dscv_nb_not_null,';
+    v_commonDscvColToInsert = 'dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_type, dscv_nb_not_null,';
     FOR r_col IN
-        SELECT attname, attnum, typname, typcategory, CASE WHEN atttypmod >= 0 THEN atttypmod ELSE NULL END AS atttypmod, attnotnull
+        SELECT attname, attnum, typname, typcategory, attnotnull
             FROM pg_attribute a
                  JOIN pg_class c ON (c.oid = a.attrelid)
                  JOIN pg_namespace n ON (n.oid = c.relnamespace)
@@ -4394,7 +4421,7 @@ BEGIN
         ELSE
             p_nbColumns = p_nbColumns + 1;
             v_commonDscvValToInsert = quote_literal(p_schema) || ', ' || quote_literal(p_table) || ', ' || quote_literal(r_col.attname)
-                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ' || coalesce(r_col.atttypmod::TEXT, 'NULL') || ', ';
+                || ', ' || r_col.attnum || ', ' || quote_literal(r_col.typname) || ', ';
 -- Nullable columns.
             IF NOT r_col.attnotnull THEN
                 v_colDefArray = array_append(v_colDefArray, 'nb_not_null_' || r_col.attnum::text || ' BIGINT');
@@ -4445,7 +4472,7 @@ BEGIN
                         || ', num_max_integ_part_' || r_col.attnum::text || ', num_max_fract_part_' || r_col.attnum::text || ' FROM aggregates),');
 --
                 WHEN r_col.typcategory = 'S' THEN
--- String types: get the average and max lengths, and the number of \x00 characters (forced to 0 for Postgres source table)
+-- String types: get the average and max lengths, and the number of \x00 characters (forced to 0 for Postgres source table).
 
                     v_colDefArray = array_cat(v_colDefArray, ARRAY[
                         'str_avg_len_' || r_col.attnum::text || ' INTEGER',
@@ -4581,9 +4608,9 @@ BEGIN
           || '        FROM aggregates'
           || '  ) '
           || 'SELECT nb_row FROM aggregates';
--- Execute the first table scan. It creates a row per analyzed column into the discovery_column table
+-- Execute the first table scan. It creates a row per analyzed column into the discovery_column table.
     EXECUTE v_stmt INTO p_nbRows;
--- Drop the foreign table, that is now useless
+-- Drop the foreign table, that is now useless.
     EXECUTE format(
         'DROP FOREIGN TABLE %I.%I',
         p_foreignSchema, v_aggForeignTable
@@ -4601,171 +4628,335 @@ BEGIN
 END;
 $_discv_tbl_postgres$;
 
--- The _discv_tbl_gen_advice() function is called at the end of the _discover_table() function.
--- It generates pieces of advice from the discovered source table content, by reading the just loaded
---   discover_table and discover_column tables. It stores the result into the discovery_advice table.
--- It returns the number of generated pieces of advice.
-CREATE OR REPLACE FUNCTION _discv_tbl_gen_advice(
+-- The _discv_tbl_gen_message() function is called at the end of the _discover_table() function.
+-- It analyzes data just loaded into discover_table and discover_column tables, and generates messages into the discovery_message table.
+-- It returns the number of generated messages by message type.
+CREATE OR REPLACE FUNCTION _discv_tbl_gen_message(
     p_schema                   TEXT,
     p_table                    TEXT,
+    p_foreignSchema            TEXT,
+    p_foreignTable             TEXT,
     p_maxRows                  BIGINT,
     p_nbRows                   BIGINT,
-    p_skippedColumnsList       TEXT
+    p_skippedColumnsList       TEXT,
+    OUT p_nbErrorMsg           INTEGER,
+    OUT p_nbCorruptionMsg      INTEGER,
+    OUT p_nbAdviceMsg          INTEGER,
+    OUT p_nbWarningMsg         INTEGER
     )
-    RETURNS INTEGER LANGUAGE plpgsql AS
-$_discv_tbl_gen_advice$
+    RETURNS RECORD LANGUAGE plpgsql AS
+$_discv_tbl_gen_message$
 DECLARE
-    v_nbAdvice                 INTEGER = 0;
-    r_col                      RECORD;
+    v_nbMessage                INTEGER = 0;
+    v_ftAttname                TEXT;
+    v_ftTypeName               TEXT;
+    v_ftAttnotnull             BOOLEAN;
+    r_trgCol                   RECORD;
+    r_aggregates               RECORD;
 BEGIN
--- Warnings at table level.
+    p_nbErrorMsg = 0;
+    p_nbCorruptionMsg = 0;
+    p_nbAdviceMsg = 0;
+    p_nbWarningMsg = 0;
+--
+-- Messages at table level.
+--
     IF p_nbRows = 0 THEN
-        INSERT INTO @extschema@.discovery_advice
-            (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+        INSERT INTO @extschema@.discovery_message
+            (dscv_schema, dscv_table, dscv_msg_type, dscv_msg_code, dscv_msg_text)
             VALUES
             (p_schema, p_table, 'W', 'EMPTY_TABLE', 'The table ' || p_schema || '.' || p_table || ' is empty.');
-    ELSE
-        IF p_nbRows = p_maxRows THEN
-            INSERT INTO @extschema@.discovery_advice
-               (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                VALUES
-                (p_schema, p_table, 'W', 'NOT_ALL_ROWS', 'The table ' || p_schema || '.' || p_table || ' has un-analyzed rows.');
-        END IF;
+        p_nbWarningMsg = p_nbWarningMsg + 1;
+-- No other message is generated for empty table.
+        RETURN;
+    END IF;
+    IF p_nbRows = p_maxRows THEN
+        INSERT INTO @extschema@.discovery_message
+            (dscv_schema, dscv_table, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+            VALUES
+            (p_schema, p_table, 'W', 'NOT_ALL_ROWS', 'The table ' || p_schema || '.' || p_table || ' has un-analyzed rows.');
+        p_nbWarningMsg = p_nbWarningMsg + 1;
     END IF;
     IF p_skippedColumnsList <> '' THEN
-        INSERT INTO @extschema@.discovery_advice
-            (dscv_schema, dscv_table, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
+        INSERT INTO @extschema@.discovery_message
+            (dscv_schema, dscv_table, dscv_msg_type, dscv_msg_code, dscv_msg_text)
             VALUES
             (p_schema, p_table, 'W', 'SKIPPED_COLUMNS', 'For the table ' || p_schema || '.' || p_table || ', columns ' || p_skippedColumnsList || 'have not been analyzed.');
-    END IF;
--- Pieces of advice at column level.
-    IF p_nbRows > 0 THEN
-        FOR r_col IN
-            SELECT c.*, t.dscv_nb_row
-                FROM @extschema@.discovery_column c
-                     JOIN @extschema@.discovery_table t ON (t.dscv_schema = c.dscv_schema AND t.dscv_table = c.dscv_table)
-                WHERE dscv_nb_row > 0
-                  AND t.dscv_schema = p_schema
-                  AND t.dscv_table = p_table
-        LOOP
-            IF r_col.dscv_nb_not_null = 0 THEN
--- If all values are NULL, just issue a warning
-                INSERT INTO @extschema@.discovery_advice
-                   (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                    VALUES
-                    (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'W', 'ONLY_NULL',
-                     'The column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' contains nothing but NULL.');
-            ELSE
--- On integer columns.
-                IF r_col.dscv_num_max_fract_part = 0 THEN
-                    IF r_col.dscv_num_max_integ_part <= 4 THEN
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'SMALLINT',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type SMALLINT.');
-                    ELSIF r_col.dscv_num_max_integ_part <= 8 THEN
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'INTEGER', 
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type INTEGER.');
-                    ELSIF r_col.dscv_num_max_integ_part <= 18 THEN
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BIGINT',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type BIGINT.');
-                    ELSE
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_INTEGER',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' is a too large integer to be hold in a BIGINT column.');
-                    END IF;
-                    v_nbAdvice = v_nbAdvice + 1;
--- On numeric but not integer columns.
-                ELSIF r_col.dscv_num_max_fract_part > 0 THEN
-                    IF r_col.dscv_num_max_precision <= 7 THEN
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'REAL_OR_NUMERIC',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type REAL or NUMERIC or ' ||
-                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
-                    ELSIF r_col.dscv_num_max_precision <= 15 THEN
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DOUBLE_OR_NUMERIC',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type DOUBLE PRECISION or NUMERIC or ' ||
-                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
-                    ELSE
-                        INSERT INTO @extschema@.discovery_advice
-                            (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                            VALUES
-                            (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NUMERIC',
-                             'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                             'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type NUMERIC or ' ||
-                             'NUMERIC(' || r_col.dscv_num_max_integ_part + r_col.dscv_num_max_fract_part || ', ' || r_col.dscv_num_max_fract_part || ').');
-                    END IF;
-                    v_nbAdvice = v_nbAdvice + 1;
-                END IF;
--- On DATE columns.
-                IF r_col.dscv_ts_nb_date = coalesce(r_col.dscv_nb_not_null, r_col.dscv_nb_row) THEN
-                    INSERT INTO @extschema@.discovery_advice
-                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                        VALUES
-                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'DATE',
-                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could be of type DATE.');
-                    v_nbAdvice = v_nbAdvice + 1;
-                END IF;
--- On boolean columns.
-                IF r_col.dscv_has_2_values THEN
-                    INSERT INTO @extschema@.discovery_advice
-                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                        VALUES
-                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'BOOLEAN',
-                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column
-                          || ' has less than 3 distinct values and could be transformed into BOOLEAN type.');
-                    v_nbAdvice = v_nbAdvice + 1;
-                END IF;
--- On columns without NULL but not declared NOT NULL.
-                IF r_col.dscv_nb_not_null = least(r_col.dscv_nb_row, p_maxRows) THEN
-                    INSERT INTO @extschema@.discovery_advice
-                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                        VALUES
-                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'NOT_NULL',
-                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could perhaps be declared NOT NULL.');
-                    v_nbAdvice = v_nbAdvice + 1;
-                END IF;
--- On CHAR or VARCHAR columns whose max size is much larger (more than twice) than the maximum data content.
-                IF r_col.dscv_max_size > 0 AND r_col.dscv_str_max_length > 2 * r_col.dscv_max_size THEN
-                    INSERT INTO @extschema@.discovery_advice
-                        (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_advice_type, dscv_advice_code, dscv_advice_msg)
-                        VALUES
-                        (p_schema, p_table, r_col.dscv_column, r_col.dscv_column_num, 'A', 'TOO_LARGE_STRING',
-                         'From ' || coalesce (r_col.dscv_nb_not_null, r_col.dscv_nb_row) || ' examined values, ' ||
-                         'the column ' || p_schema || '.' || p_table || '.' || r_col.dscv_column || ' could perhaps be declared smaller (max size: real = '
-                         || r_col.dscv_str_max_length || '/ declared = ' || r_col.dscv_max_size || ').');
-                    v_nbAdvice = v_nbAdvice + 1;
-                END IF;
-            END IF;
-        END LOOP;
+        p_nbWarningMsg = p_nbWarningMsg + 1;
     END IF;
 --
-    RETURN v_nbAdvice;
+-- Messages at column level.
+--
+-- Get each column of the target table.
+    FOR r_trgCol IN
+        SELECT attname, attnum, attnotnull, typname, typcategory,
+               CASE WHEN typcategory = 'S' AND atttypmod >= 0 THEN atttypmod - 4 ELSE NULL END AS declared_max_length,
+               CASE WHEN typname = 'numeric' AND atttypmod >= 0 THEN ((atttypmod - 4) >> 16) & 65535 ELSE NULL END AS declared_max_precision,
+               CASE WHEN typname = 'numeric' AND atttypmod >= 0 THEN (atttypmod - 4) & 65535 ELSE NULL END AS declared_max_scale,
+               tco_copy_source_expr
+            FROM pg_attribute a
+                 JOIN pg_class c ON (c.oid = a.attrelid)
+                 JOIN pg_namespace n ON (n.oid = c.relnamespace)
+                 JOIN pg_type t ON (t.oid = a.atttypid)
+                 LEFT OUTER JOIN @extschema@.table_column ON (tco_schema = p_schema AND tco_table = p_table AND tco_name = attname)
+            WHERE nspname = p_schema
+              AND relname = p_table
+              AND attnum > 0
+              AND NOT attisdropped
+    LOOP
+-- Unquote the tco_copy_source_expr column, so it could be used as column name (the expression is a single column).
+        v_ftAttname = regexp_replace(r_trgCol.tco_copy_source_expr, '"(.*)"', '\1');
+-- Get the computed aggregates for the column.
+        SELECT * INTO r_aggregates
+            FROM @extschema@.discovery_column
+            WHERE dscv_schema = p_schema
+              AND dscv_table = p_table
+              AND dscv_column = v_ftAttname;
+        IF NOT FOUND THEN
+-- Generate a warning if the column has not been analyzed (e.g. if the column is built with an expression or its type is not suitable).
+            INSERT INTO @extschema@.discovery_message
+                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                VALUES
+                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'W', 'NOT_ANALYZED',
+                 'The column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type ' || r_trgCol.typname || ' has not been analyzed.');
+            p_nbWarningMsg = p_nbWarningMsg + 1;
+        ELSE
+-- Get the column format in the foreign table.
+            SELECT typname, attnotnull
+                INTO v_ftTypeName, v_ftAttnotnull
+                FROM pg_attribute a
+                     JOIN pg_class c ON (c.oid = a.attrelid)
+                     JOIN pg_namespace n ON (n.oid = c.relnamespace)
+                     JOIN pg_type t ON (t.oid = a.atttypid)
+                WHERE nspname = p_foreignSchema
+                  AND relname = p_foreignTable
+                  AND attname = v_ftAttname;
+-- Messages related to NULL.
+            IF r_aggregates.dscv_nb_not_null < p_nbRows AND r_trgCol.attnotnull THEN
+-- If some values are NULL but the target column is declared NOT NULL, issue an error.
+                INSERT INTO @extschema@.discovery_message
+                   (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                    VALUES
+                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'NULL_VALUES',
+                     'The column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' contains NULL but the target column is declared NOT NULL.');
+                p_nbErrorMsg = p_nbErrorMsg + 1;
+            END IF;
+            IF r_aggregates.dscv_nb_not_null = 0 THEN
+-- If all values are NULL, just issue a warning and stop the analysis.
+                INSERT INTO @extschema@.discovery_message
+                   (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                    VALUES
+                    (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'W', 'ONLY_NULL',
+                     'The column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' contains nothing but NULL.');
+                p_nbWarningMsg = p_nbWarningMsg + 1;
+            ELSE
+                IF r_aggregates.dscv_nb_not_null = p_nbRows AND NOT r_trgCol.attnotnull THEN
+-- If no value is NULL but the target column is not declared NOT NULL, issue an advice message.
+                    INSERT INTO @extschema@.discovery_message
+                       (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                        VALUES
+                    (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'A', 'NOT_NULL',
+                         'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                         'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' does not contain any NULL value. ' ||
+                         'The target column could perhaps be declared NOT NULL.');
+                    p_nbAdviceMsg = p_nbAdviceMsg + 1;
+                END IF;
+-- Messages depending on the type category.
+                CASE r_trgCol.typcategory
+-- For textual columns ...
+                    WHEN 'S' THEN
+-- If it contains \x00 characters, issue an error.
+                        IF r_aggregates.dscv_str_nul_char > 0 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'x00_CHARACTERS',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' contains ' ||
+                                 r_aggregates.dscv_str_nul_char || ' x00 characters.');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If a max size exists but is too small to receive the largest data, issue an error message.
+                        IF r_trgCol.declared_max_length > 0 AND r_aggregates.dscv_str_max_length > r_trgCol.declared_max_length THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_STRING',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' is too small to receive the largest data ' ||
+                                 '(max size: declared = ' || r_trgCol.declared_max_length || ' / real = ' || r_aggregates.dscv_str_max_length || ').');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If a max size exists and is greater than 10 but is much larger (more than twice) than the maximum data content, issue an advice message.
+                        IF r_trgCol.declared_max_length > 10 AND r_trgCol.declared_max_length > 2 * r_aggregates.dscv_str_max_length THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'A', 'CONSIDER_SHORTER_STRING',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' could perhaps be declared smaller ' ||
+                                 '(max size: declared = ' || r_trgCol.declared_max_length || ' / real = ' || r_aggregates.dscv_str_max_length || ').');
+                            p_nbAdviceMsg = p_nbAdviceMsg + 1;
+                        END IF;
+-- For binary columns ...
+                    WHEN 'U' THEN
+-- If the maximum length is greater than 1 GB, issue an error.
+                        IF r_aggregates.dscv_str_max_length > 10^9 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_BINARY',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' is too small to receive the largest binary data ' ||
+                                 '(max size: real = ' || r_aggregates.dscv_str_max_length || ').');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If a maximum length is larger than 50 MB, issue an advice message.
+                        IF r_aggregates.dscv_str_max_length > 50000000 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'A', 'CONSIDER_LO',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' could perhaps be handled as LARGE OBJECT ' ||
+                                 '(max size: real = ' || r_aggregates.dscv_str_max_length || ').');
+                            p_nbAdviceMsg = p_nbAdviceMsg + 1;
+                        END IF;
+-- For Date/Time columns ...
+                    WHEN 'D' THEN
+-- If the target column is a DATE and some time components need to be stored, issue a corruption message.
+                        IF r_trgCol.typname = 'date' AND coalesce(r_aggregates.dscv_nb_not_null, p_nbRows) - r_aggregates.dscv_ts_nb_date > 0  THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'TIME',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' should be of type TIMESTAMP to hold time components.');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
+-- If the target column is a TIMESTAMP and no time components need to be stored, issue an advice message.
+                        IF r_trgCol.typname = 'timestamp' AND coalesce(r_aggregates.dscv_nb_not_null, p_nbRows) - r_aggregates.dscv_ts_nb_date = 0 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'A', 'CONSIDER_DATE',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' could be of type DATE.');
+                            p_nbAdviceMsg = p_nbAdviceMsg + 1;
+                        END IF;
+-- For Numeric columns ...
+                    WHEN 'N' THEN
+-- If the target column is a SMALLINT but need to receive larger integer than its maximum range, issue an error message.
+                        IF r_trgCol.typname = 'int2' AND (r_aggregates.dscv_num_min < -32768 OR r_aggregates.dscv_num_max > +32767) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_INTEGER',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type SMALLINT cannot hold ' ||
+                                 'the smallest (' || r_aggregates.dscv_num_min || ') or the largest (' || r_aggregates.dscv_num_max || ') values.');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If the target column is an INTEGER but need to receive larger integer than its maximum range, issue an error message.
+                        IF r_trgCol.typname = 'int4' AND (r_aggregates.dscv_num_min < -2147483648 OR r_aggregates.dscv_num_max > +2147483647) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_INTEGER',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type INTEGER cannot hold ' ||
+                                 'the smallest (' || r_aggregates.dscv_num_min || ') or the largest (' || r_aggregates.dscv_num_max || ') values.');
+
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If the target column is a BIGINT but need to receive larger integer than its maximum range, issue an error message.
+                        IF r_trgCol.typname = 'int8' AND (r_aggregates.dscv_num_min < -9223372036854775808 OR r_aggregates.dscv_num_max > +9223372036854775807) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_INTEGER',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type BIGINT cannot hold ' ||
+                                 'the smallest (' || r_aggregates.dscv_num_min || ') or the largest (' || r_aggregates.dscv_num_max || ') values.');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If the target column is of type integer (SMALLINT, INT or BIGINT) but needs to receive non integer values, issue a corruption message.
+                        IF r_trgCol.typname LIKE 'int_' AND r_aggregates.dscv_num_max_fract_part > 0 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'NON_INTEGER',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' will truncate non integer values.');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
+-- If the target column is a BIGINT but the lowest and largest values could be hold by an INTEGER, issue an advice message.
+                        IF r_trgCol.typname = 'int8' AND r_aggregates.dscv_num_min > -2147483648 AND r_aggregates.dscv_num_max < +2147483647 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'A', 'CONSIDER_INTEGER',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type BIGINT will contain ' ||
+                                 'values in range [' || r_aggregates.dscv_num_min || ' , ' || r_aggregates.dscv_num_max ||
+                                 ']. It could perhaps be of type INTEGER.');
+                            p_nbAdviceMsg = p_nbAdviceMsg + 1;
+                        END IF;
+-- If the target column is a NUMERIC but the integer part is not large enough, issue an error message.
+                        IF r_trgCol.typname = 'numeric' AND (r_trgCol.declared_max_precision - r_trgCol.declared_max_scale) < r_aggregates.dscv_num_max_integ_part THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'TOO_SHORT_NUMERIC',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type NUMERIC cannot hold smallest or largest values ' ||
+                                 '(declared = ' || r_trgCol.declared_max_precision - r_trgCol.declared_max_scale || ' / real = ' || r_aggregates.dscv_num_max_integ_part || ').');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If the target column is a NUMERIC but the fractional part is not large enough, issue a corruption message.
+                        IF r_trgCol.typname = 'numeric' AND r_trgCol.declared_max_scale < r_aggregates.dscv_num_max_fract_part THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'TOO_SHORT_SCALE',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type NUMERIC has a too short scale ' ||
+                                 '(declared = ' || r_trgCol.declared_max_scale || ' / real = ' || r_aggregates.dscv_num_max_fract_part || ').');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
+-- If the target column is a MONEY but the integer part is not large enough, issue an error message.
+                        IF r_trgCol.typname = 'money' AND (r_aggregates.dscv_num_min < -92233720368547758.08 OR r_aggregates.dscv_num_max > +92233720368547758.07) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'E', 'MONEY',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type MONEY cannot hold smallest or largest values.');
+                            p_nbErrorMsg = p_nbErrorMsg + 1;
+                        END IF;
+-- If the target column is a MONEY but the scale is not large enough, issue an corruption message.
+                        IF r_trgCol.typname = 'money' AND r_aggregates.dscv_num_max_fract_part > 2 THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'TOO_SHORT_SCALE',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type MONEY has a too short scale ' ||
+                                 '(declared = 2 / real = ' || r_aggregates.dscv_num_max_fract_part || ').');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
+-- Float column to be add here
+                    ELSE
+                        RAISE WARNING '_discv_tbl_gen_message: The column %.%.% (type % category %) has not been processed. This is a non blocking internal error.',
+                            p_schema, p_table, r_trgCol.attname, r_trgCol.typname, r_trgCol.typcategory;
+                END CASE;
+            END IF;
+        END IF;
+    END LOOP;
+--
+    RETURN;
 END;
-$_discv_tbl_gen_advice$;
+$_discv_tbl_gen_message$;
 
 --
 -- Service functions called by the Data2Pg scheduler.
@@ -4926,4 +5117,4 @@ SELECT pg_catalog.pg_extension_config_dump('source_table_stat', '');
 SELECT pg_catalog.pg_extension_config_dump('content_diff', '');
 SELECT pg_catalog.pg_extension_config_dump('discovery_table', '');
 SELECT pg_catalog.pg_extension_config_dump('discovery_column', '');
-SELECT pg_catalog.pg_extension_config_dump('discovery_advice', '');
+SELECT pg_catalog.pg_extension_config_dump('discovery_message', '');
