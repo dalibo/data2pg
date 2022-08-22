@@ -158,14 +158,12 @@ CREATE TABLE myTbl6 (
   PRIMARY KEY (col61)
 );
 
--- This table will remain outside table groups and a foreign key will be created later in createDrop.sql
 DROP TABLE IF EXISTS myTbl7 ;
 CREATE TABLE myTbl7 (
   col71       INT              NOT NULL,
   PRIMARY KEY (col71)
 );
 
--- This table will remain outside table groups and a foreign key will be created later in createDrop.sql
 DROP TABLE IF EXISTS myTbl8 ;
 CREATE TABLE myTbl8 (
   col81       INT              NOT NULL,
@@ -174,7 +172,6 @@ CREATE TABLE myTbl8 (
 
 CREATE SEQUENCE mySeq1 MINVALUE 1000 MAXVALUE 2000 CYCLE;
 
--- This sequence will remain outside any groups until the addition into a group in logging state
 CREATE SEQUENCE mySeq2;
 
 --
