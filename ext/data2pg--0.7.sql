@@ -4174,7 +4174,7 @@ BEGIN
                         || ' dscv_num_min, dscv_num_max) '
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
                         || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
-                WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
+                WHEN r_col.typcategory = 'N' AND r_col.typname IN ('numeric', 'float4', 'float8') THEN
 -- Numeric non integer columns: get the lowest and the greatest values, the greatest precision, integer part and fractional part.
                     v_colDefArray = array_cat(v_colDefArray, ARRAY[
                         'num_min_' || r_col.attnum::text || ' NUMERIC',
@@ -4448,7 +4448,7 @@ BEGIN
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
                         || ', num_min_' || r_col.attnum::text || ', num_max_' || r_col.attnum::text || ' FROM aggregates),');
 --
-                WHEN r_col.typcategory = 'N' AND r_col.typname = 'numeric' THEN
+                WHEN r_col.typcategory = 'N' AND r_col.typname IN ('numeric', 'float4', 'float8') THEN
 -- Numeric non integer columns: get the lowest and the greatest values, the greatest precision, integer part and fractional part.
                     v_colDefArray = array_cat(v_colDefArray, ARRAY[
                         'num_min_' || r_col.attnum::text || ' NUMERIC',
@@ -4891,7 +4891,8 @@ BEGIN
                             p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
                         END IF;
 -- If the target column is a BIGINT but the lowest and largest values could be hold by an INTEGER, issue an advice message.
-                        IF r_trgCol.typname = 'int8' AND r_aggregates.dscv_num_min > -2147483648 AND r_aggregates.dscv_num_max < +2147483647 THEN
+                        IF r_trgCol.typname = 'int8' AND r_aggregates.dscv_num_max_fract_part > 0  AND
+                           r_aggregates.dscv_num_min > -2147483648 AND r_aggregates.dscv_num_max < +2147483647 THEN
                             INSERT INTO @extschema@.discovery_message
                                 (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
                                 VALUES
@@ -4945,7 +4946,29 @@ BEGIN
                                  '(declared = 2 / real = ' || r_aggregates.dscv_num_max_fract_part || ').');
                             p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
                         END IF;
--- Float column to be add here
+-- If the target column is a REAL or a DOUBLE PRECISION, and the source column is of different type, but the precision is not large enough, issue a corruption message.
+                        IF r_trgCol.typname = 'float4' AND v_ftTypeName <> 'float4' AND
+                            (v_ftTypeName = 'float8' OR r_aggregates.dscv_num_max_precision > 6 OR
+                             (v_ftTypeName LIKE 'int_' AND (r_aggregates.dscv_num_max < -2^23 OR r_aggregates.dscv_num_max > 2^23))) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'PRECISION_LOSS',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type REAL will lead to precision loss.');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
+                        IF r_trgCol.typname = 'float8' AND v_ftTypeName <> 'float4' AND v_ftTypeName <> 'float8' AND
+                            (r_aggregates.dscv_num_max_precision > 15 OR
+                             (v_ftTypeName = 'int8' AND (r_aggregates.dscv_num_max < -2^53 OR r_aggregates.dscv_num_max > 2^53))) THEN
+                            INSERT INTO @extschema@.discovery_message
+                                (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
+                                VALUES
+                                (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'C', 'PRECISION_LOSS',
+                                 'From ' || coalesce (r_aggregates.dscv_nb_not_null, p_nbRows) || ' examined values, ' ||
+                                 'the column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type DOUBLE PRECISION will lead to precision loss.');
+                            p_nbCorruptionMsg = p_nbCorruptionMsg + 1;
+                        END IF;
                     ELSE
                         RAISE WARNING '_discv_tbl_gen_message: The column %.%.% (type % category %) has not been processed. This is a non blocking internal error.',
                             p_schema, p_table, r_trgCol.attname, r_trgCol.typname, r_trgCol.typcategory;

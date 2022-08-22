@@ -45,7 +45,7 @@ The `discovery_message` table has the following structure:
    * dscv_msg_code          : A coded representation of the message 'TOO_SHORT_INTEGER' for the message "column ... cannot hold smallest or largest values"
    * dscv_msg_text          : The textual representation of the message that can be infered from collected data
 
-The *Error* messages reports the following cases:
+The **Error** messages reports the following cases:
 
    * NULL_VALUES: The source column contains NULL but the target column is declared NOT NULL.
    * x00_CHARACTERS: The source column contains x00 characters that arenot allowed in postgres textual values.
@@ -55,13 +55,14 @@ The *Error* messages reports the following cases:
    * TOO_SHORT_NUMERIC: The target column is of type NUMERIC but the integer part is not large enough.
    * MONEY: The target column is of type MONEY, but the integer part does't fit the type limits.
 
-The *Corruption* messages reports the following cases:
+The **Corruption** messages reports the following cases:
 
    * TIME: The target column is of type DATE but needs to hold time components. It should be of type TIMESTAMP to not loose the time components.
    * NON_INTEGER: The target column is of type SMALLINT, INT or BIGINT, but needs to receive non integer values. The fractional parts will be lost.
    * TOO_SHORT_SCALE: The target column is of type NUMERIC or MONEY, but has a too short scale. Some fractional parts will be truncated.
+   * PRECISION_LOSS: The target column is of type REAL ou DOUBLE PRECISION, but the source content copy will lead to precision loss.
 
-The *Advice* messages reports the following cases:
+The **Advice** messages reports the following cases:
 
    * CONSIDER_NOT_NULL: The column does not contain any NULL value. It could perhaps be declared NOT NULL (if the data life cycle allows it).
    * CONSIDER_SHORTER_STRING: The column max size is greater than 10 and is more than twice as large as the largest content. It could perhaps be declared shorter.
@@ -69,7 +70,7 @@ The *Advice* messages reports the following cases:
    * CONSIDER_DATE: The target column is of type TIMESTAMP but could be of type DATE.
    * CONSIDER_INTEGER: The target column is a BIGINT but the lowest and largest values could be hold by an INTEGER.
 
-The *Warning* messages reports the following cases:
+The **Warning** messages reports the following cases:
 
    * EMPTY_TABLE: The table is empty.
    * NOT_ALL_ROWS: The table has un-analyzed rows, because of the DISCOVER_MAX_ROWS option set at batch run.
@@ -90,4 +91,3 @@ For batches of type COMPARE, the steps record the detected differences between s
    * diff_other_cols         : The JSON representation of the table columns not in key, for rows that are different between both databases or the sequence characteristics that are different between both databases
 
 Several comparisons results can be registered for the same table. Diff data are accumulated into the *content_diff* table until the *COMPARE_TRUNCATE_DIFF* step option is set to *TRUE* at COMPARE batch start.
-
