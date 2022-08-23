@@ -4278,7 +4278,8 @@ BEGIN
                         || 'SELECT ' || v_commonDscvValToInsert || v_nbNotNullValue
                         || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text || ', ts_nb_date_' || r_col.attnum::text
                         || ' FROM aggregates),');
-                ELSE CONTINUE;
+                ELSE
+                   CONTINUE;
             END CASE;
         END IF;
     END LOOP;
@@ -4540,8 +4541,7 @@ BEGIN
                         || ', ts_min_' || r_col.attnum::text || ', ts_max_' || r_col.attnum::text
                         || ', ts_nb_date_' || r_col.attnum::text || ' FROM aggregates),');
                 ELSE
-                    RAISE WARNING '_discover_table() : in table %.%, the column % (#%) of type % is not processed',
-                                  p_schema, p_table, r_col.attname, r_col.attnum, r_col.typname;
+                    CONTINUE;
             END CASE;
         END IF;
     END LOOP;
@@ -4716,7 +4716,8 @@ BEGIN
                 (dscv_schema, dscv_table, dscv_column, dscv_column_num, dscv_msg_type, dscv_msg_code, dscv_msg_text)
                 VALUES
                 (p_schema, p_table, r_trgCol.attname, r_trgCol.attnum, 'W', 'NOT_ANALYZED',
-                 'The column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' of type ' || r_trgCol.typname || ' has not been analyzed.');
+                 'The column ' || p_schema || '.' || p_table || '.' || r_trgCol.attname || ' has not been analyzed (type=' ||
+                 r_trgCol.typname || ', mapped on ' || coalesce(v_ftAttname, 'NULL') || ').');
             p_nbWarningMsg = p_nbWarningMsg + 1;
         ELSE
 -- Get the column format in the foreign table.
