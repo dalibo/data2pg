@@ -265,8 +265,6 @@ CREATE TABLE discovery_column (
     dscv_ts_min              TEXT,                       -- The minimum value for a date/time column
     dscv_ts_max              TEXT,                       -- The maximum value for a date/time column
     dscv_ts_nb_date          BIGINT,                     -- The number of pure dates for a timestamp column (i.e. with time part set to 00:00:00)
-    dscv_stats_ndistinct     REAL,                       -- The ndistinct value from the pg_stats view after an ANALYZE on the foreign table
-    dscv_has_2_values        BOOLEAN,                    -- True if the column is a hidden boolean
     PRIMARY KEY (dscv_schema, dscv_table, dscv_column),
     FOREIGN KEY (dscv_schema, dscv_table) REFERENCES discovery_table (dscv_schema, dscv_table)
 );
