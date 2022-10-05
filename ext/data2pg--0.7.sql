@@ -2723,7 +2723,7 @@ BEGIN
         RAISE EXCEPTION '_copy_init: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Check the components. It raises an exception in case of trouble.
-    PERFORM @extschema@._verify_objects(v_migration);
+    PERFORM @extschema@._verify_objects(v_migration, FALSE);
 -- Truncate all application tables linked to the migration.
 -- Build the tables list.
     SELECT string_agg('ONLY ' || quote_ident(tbl_schema) || '.' || quote_ident(tbl_name), ', ' ORDER BY tbl_schema, tbl_name), count(*)
@@ -2775,10 +2775,10 @@ BEGIN
         WHERE stp_batch_name = p_batchName
           AND stp_name = p_step;
     IF NOT FOUND THEN
-        RAISE EXCEPTION '_copy_init: no step % found for the batch %.', p_step, p_batchName;
+        RAISE EXCEPTION '_copy_end: no step % found for the batch %.', p_step, p_batchName;
     END IF;
 -- Check the components. It raises an exception in case of trouble.
-    PERFORM @extschema@._verify_objects(v_migration);
+    PERFORM @extschema@._verify_objects(v_migration, TRUE);
 -- Return the step report.
     r_output.sr_indicator = 'FINAL_CHECKS_OK';
     r_output.sr_value = 1;
@@ -2790,13 +2790,14 @@ BEGIN
 END;
 $_copy_end$;
 
--- The _verify_objects() function verify that all objects involved in a migration really exists.
+-- The _verify_objects() function verifies that all objects involved in a migration really exist.
 -- It is called by the _copy_init() and _copy_end() functions
--- Input parameters: migration name.
+-- Input parameters: migration name, a boolean indicating whether this is a final migration check.
 -- It raises exceptions in case of detected problems, like missing schemas, tables, index, sequences.
 -- The expected objects lists are built at migration configuration time.
 CREATE FUNCTION _verify_objects(
-    p_migration                TEXT
+    p_migration                TEXT,
+    p_isFinalCheck             BOOLEAN
     )
     RETURNS VOID LANGUAGE plpgsql
     SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS
@@ -2886,6 +2887,7 @@ BEGIN
         RAISE EXCEPTION '_verify_objects: Missing index detected (%).', v_list;
     END IF;
 -- Check that no index is set as NOT READY.
+-- It aborts the migration when executed in final checks, and otherwise only issues a warning.
     SELECT string_agg(tic_schema || '.' || tic_index, ', ' ORDER BY tic_schema || '.' || tic_index)
         INTO v_list
         FROM (
@@ -2903,7 +2905,11 @@ BEGIN
                   AND indisready
              ) AS t;
     IF v_list IS NOT NULL THEN
-        RAISE EXCEPTION '_verify_objects: NOT READY index detected (%). (They can be manually REINDEXed)', v_list;
+        IF p_isFinalCheck THEN
+            RAISE EXCEPTION '_verify_objects: NOT READY indexes detected (%). (They can be manually REINDEXed)', v_list;
+        ELSE
+            RAISE WARNING '_verify_objects: NOT READY indexes detected (%) (They should be rebuilt by the copy processing).', v_list;
+        END IF;
     END IF;
 --
     RETURN;
