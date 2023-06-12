@@ -3,7 +3,11 @@ Data2Pg
 
 Data2Pg is a tools framework that helps migrating non-PostgreSQL database contents into PostgreSQL.
 
-Version: 0.7
+*Please note:*
+
+Last status of this project is *Alpha* and is now *inactive*, so please use it in an isolated, controlled environment and for the Web interface, please consider adding authentication via .htaccess or other means to mitigate security issue. 
+
+Version: 0.7 (alpha and currently inactive)
 
 # License
 
